@@ -12,6 +12,6 @@ struct nanaApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-        }
+        }.windowStyle(HiddenTitleBarWindowStyle())
     }
 }
