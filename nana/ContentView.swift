@@ -27,33 +27,52 @@ struct CircularPlusButton: View {
     var action: () -> Void
     var colorScheme: ColorScheme = .light
     var size: CGFloat = 50
+    @State var hover = false
     
     var body: some View {
         Button(action: action) {
             ZStack {
                 Circle()
-                    .fill(colorA(colorScheme: colorScheme))
+                    .fill(colorA(colorScheme: colorScheme).mix(with: .black, by: hover ? 0.1 : 0.0))
                     .frame(width: size, height: size)
                     .shadow(radius: 2)
+                    .tint(hover ? .green : .clear)
                 
                 Image(systemName: "plus")
                     .font(.system(size: size * 0.5))
                     .foregroundColor(colorB(colorScheme: colorScheme))
             }
         }.buttonStyle(PlainButtonStyle())
+            .onHover{ _ in
+                self.hover.toggle()
+                print(self.hover)
+            }
+            
     }
 }
 
 struct SearchButton: View {
-    var action: () -> Void
     var colorScheme: ColorScheme = .light
     var size: CGFloat = 50
+    @State var shouldPresentSheet = false
+    @State var hover = false
+    
+    @State private var notes: [Note] = [
+        Note(id: 0, created: Date(), modified: Date(), relpath: "/foo/bar", content: li1),
+        Note(id: 1, created: Date(), modified: Date(), relpath: "/foo/bar2", content: li2),
+        Note(id: 2, created: Date(), modified: Date(), relpath: "/foo/bar3", content: li3),
+        Note(id: 3, created: Date(), modified: Date(), relpath: "/foo/bar4", content: li3),
+        Note(id: 4, created: Date(), modified: Date(), relpath: "/foo/bar5", content: li3),
+        Note(id: 5, created: Date(), modified: Date(), relpath: "/foo/bar6", content: li3),
+        Note(id: 6, created: Date(), modified: Date(), relpath: "/foo/bar7", content: li3),
+    ]
     
     var body: some View {
-        Button(action: action) {
-            ZStack {
+        Button (action: {shouldPresentSheet.toggle()}){
+            ZStack() {
                 Circle()
-                    .fill(colorA(colorScheme: colorScheme))
+                    .fill(colorA(colorScheme: colorScheme).mix(with: .black, by: hover ? 0.1 : 0.0))
+
                     .frame(width: size, height: size)
                     .shadow(radius: 2)
                 
@@ -61,7 +80,16 @@ struct SearchButton: View {
                     .font(.system(size: size * 0.5))
                     .foregroundColor(colorB(colorScheme: colorScheme))
             }
-        }.buttonStyle(PlainButtonStyle())
+        }
+        .sheet(isPresented: $shouldPresentSheet) {
+            FileList(notes: notes)
+        }
+        .interactiveDismissDisabled(false)
+        .buttonStyle(PlainButtonStyle())
+        .onHover{ _ in
+            self.hover.toggle()
+            print(self.hover)
+        }
     }
 }
 
@@ -83,9 +111,7 @@ struct ContentView: View {
                 Spacer()
                 VStack() {
                     Spacer()
-                    SearchButton(action: {
-                        print("Button tapped!")
-                    }, colorScheme: colorScheme)
+                    SearchButton(colorScheme: colorScheme)
                     CircularPlusButton(action: {
                         print("Button tapped!")
                     }, colorScheme: colorScheme)
@@ -104,19 +130,12 @@ let li2 = "Pellentesque non iaculis purus. Maecenas laoreet feugiat massa in vol
 let li3 = "Aenean at mauris est. Etiam felis velit, tempor a ipsum quis, ornare ornare orci. Phasellus vehicula fermentum justo quis dictum. Sed sollicitudin quam augue, placerat gravida libero lacinia vitae. Vivamus lobortis mollis libero quis cursus. Vestibulum erat arcu, tincidunt ac lacus vel, luctus tincidunt magna. Duis rutrum at sapien et finibus. Proin lectus lacus, laoreet vitae auctor vitae, congue at nisi. Phasellus orci nisl, imperdiet ac magna eget, ornare dignissim sapien. Nullam ultricies dui ornare ante eleifend, at faucibus quam facilisis. Nulla tempus eros tincidunt porttitor hendrerit."
 
 struct FileList: View {
+    var notes: [Note]
+    @Environment(\.dismiss) private var dismiss // For macOS 12+
     @State private var query: String = "eve"
     //@Environment(\.colorScheme) var colorScheme
-    @State private var colorScheme: ColorScheme = .light
-
-    @State private var notes: [Note] = [
-        Note(id: 0, created: Date(), modified: Date(), relpath: "/foo/bar", content: li1),
-        Note(id: 1, created: Date(), modified: Date(), relpath: "/foo/bar2", content: li2),
-        Note(id: 2, created: Date(), modified: Date(), relpath: "/foo/bar3", content: li3),
-        Note(id: 3, created: Date(), modified: Date(), relpath: "/foo/bar4", content: li3),
-        Note(id: 4, created: Date(), modified: Date(), relpath: "/foo/bar5", content: li3),
-        Note(id: 5, created: Date(), modified: Date(), relpath: "/foo/bar6", content: li3),
-        Note(id: 6, created: Date(), modified: Date(), relpath: "/foo/bar7", content: li3),
-    ]
+    @State private var colorScheme: ColorScheme = .dark
+    @State var hoverClose = false
     
     var body: some View {
         VStack(spacing: 0) {
@@ -131,6 +150,21 @@ struct FileList: View {
                 .font(.system(size: 20))
                 .foregroundStyle(colorA(colorScheme: colorScheme))
                 .textFieldStyle(.plain)
+                Spacer()
+                Button(action: {dismiss()}){
+                    ZStack {
+                        Circle()
+                            .fill(colorB(colorScheme: colorScheme))
+                            .frame(width:25, height:25)
+                        Image(systemName: "xmark")
+                            .font(.system(size: 20))
+                            .foregroundColor(colorC(colorScheme: colorScheme).mix(with: .black, by: hoverClose ? 0.2 : 0.0))
+                    }
+                }.buttonStyle(PlainButtonStyle())
+                    .onHover{ _ in
+                        self.hoverClose.toggle()
+                        print(self.hoverClose)
+                    }
             }
             .padding()
             //.border(.white)
@@ -157,6 +191,7 @@ struct FileList: View {
             //.border(.white)
         }
         .background(colorB(colorScheme: colorScheme))
+        .frame(minHeight: 200)
         .cornerRadius(15)
     }
 }
@@ -165,6 +200,16 @@ struct FileList: View {
     ContentView()
 }
 
-#Preview("File List") {
-    FileList()
+#Preview("Notes") {
+    var notes: [Note] = [
+        Note(id: 0, created: Date(), modified: Date(), relpath: "/foo/bar", content: li1),
+        Note(id: 1, created: Date(), modified: Date(), relpath: "/foo/bar2", content: li2),
+        Note(id: 2, created: Date(), modified: Date(), relpath: "/foo/bar3", content: li3),
+        Note(id: 3, created: Date(), modified: Date(), relpath: "/foo/bar4", content: li3),
+        Note(id: 4, created: Date(), modified: Date(), relpath: "/foo/bar5", content: li3),
+        Note(id: 5, created: Date(), modified: Date(), relpath: "/foo/bar6", content: li3),
+        Note(id: 6, created: Date(), modified: Date(), relpath: "/foo/bar7", content: li3),
+    ]
+    FileList(notes: notes)
 }
+
