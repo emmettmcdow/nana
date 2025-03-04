@@ -1,72 +1,34 @@
 const std = @import("std");
 
-pub fn main() !void {
-    // Prints to stderr (it's a shortcut based on `std.io.getStdErr()`)
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
+const expect = std.testing.expect;
 
-    // stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    const stdout_file = std.io.getStdOut().writer();
-    var bw = std.io.bufferedWriter(stdout_file);
-    const stdout = bw.writer();
+const Runtime = struct {
+    basedir: std.fs.Dir,
+    db: std.fs.File,
+};
 
-    try stdout.print("Run `zig build test` to run the tests.\n", .{});
+const DB_LOCATION = "./db.db";
 
-    try bw.flush(); // don't forget to flush!
+pub fn init(b: std.fs.Dir) !Runtime {
+    const db = b.createFile(DB_LOCATION, .{ .read = true, .exclusive = true, .mode = 0o600, .truncate = false }) catch |err| switch (err) {
+        std.fs.File.OpenError.PathAlreadyExists => try b.openFile(DB_LOCATION, std.fs.File.OpenFlags{ .mode = .read_write }),
+        else => {
+            return err;
+        },
+    };
+    return Runtime{ .basedir = b, .db = db };
 }
 
-// Input: 0 terminated query
-// Output: -1 if failure, ID if success
-export fn nana_search(query: [*:0]u8) c_int {
-    _ = query;
-    return 0;
-}
+test "init DB" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
 
-// Input: Search ID from nana_search, buffer, buffer size
-// Output: -1 if no more results, otherwise NoteID
-export fn nana_next_result(searchID: c_int) c_int {
-    _ = searchID;
-    return 0;
-}
+    var rt = try init(tmpD.dir);
+    try expect(tmpD.dir.fd == rt.basedir.fd);
+    _ = try rt.db.stat();
 
-// Input: NoteID
-// Output: Create/Mod Time
-export fn nana_create_time(noteID: c_int) c_int {
-    _ = noteID;
-    return 0;
-}
-export fn nana_mod_time(noteID: c_int) c_int {
-    _ = noteID;
-    return 0;
-}
-
-// Input: NoteID, buffer, buffer size
-// Output: -1 if failure, otherwise written bytes
-export fn nana_contents(noteID: c_int, buffer: [*]u8, bufSize: c_int) c_int {
-    _ = noteID;
-    _ = buffer;
-    _ = bufSize;
-    return 0;
-}
-
-// Input: NoteID, buffer, buffer size
-// Output: -1 if failure, 0 if success
-export fn nana_update(noteID: c_int, buffer: [*]u8, bufSize: c_int) c_int {
-    _ = noteID;
-    _ = buffer;
-    _ = bufSize;
-    return 0;
-}
-
-// Output: -1 if failure, NoteID if success
-export fn nana_create() void {
-    return;
-}
-
-test "simple test" {
-    var list = std.ArrayList(i32).init(std.testing.allocator);
-    defer list.deinit(); // try commenting this out and see if zig detects the memory leak!
-    try list.append(42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
+    // Don't recreate db file if exists
+    rt.db.close();
+    rt = try init(tmpD.dir);
+    _ = try rt.db.stat();
 }
