@@ -35,6 +35,15 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const sqlite = b.dependency("sqlite", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    exe.root_module.addImport("sqlite", sqlite.module("sqlite"));
+
+    // links the bundled sqlite3, so leave this out if you link the system one
+    exe.linkLibrary(sqlite.artifact("sqlite"));
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
@@ -79,6 +88,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    exe_unit_tests.root_module.addImport("sqlite", sqlite.module("sqlite"));
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
