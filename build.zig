@@ -40,10 +40,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    exe.root_module.addImport("sqlite", sqlite.module("sqlite"));
+    lib.root_module.addImport("sqlite", sqlite.module("sqlite"));
 
     // links the bundled sqlite3, so leave this out if you link the system one
-    exe.linkLibrary(sqlite.artifact("sqlite"));
+    lib.linkLibrary(sqlite.artifact("sqlite"));
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
@@ -80,6 +80,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    lib_unit_tests.root_module.addImport("sqlite", sqlite.module("sqlite"));
 
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
@@ -88,7 +89,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    exe_unit_tests.root_module.addImport("sqlite", sqlite.module("sqlite"));
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
@@ -102,10 +102,11 @@ pub fn build(b: *std.Build) void {
     const lldb = b.addSystemCommand(&.{
         "lldb",
         // add lldb flags before --
-        "--",
+        // Uncomment this if lib_unit_tests needs lldb args or test args
+        // "--",
     });
     // appends the unit_tests executable path to the lldb command line
-    lldb.addArtifactArg(exe_unit_tests);
+    lldb.addArtifactArg(lib_unit_tests);
 
     // lldb.addArg can add arguments after the executable path
     const lldb_step = b.step("debug", "run the tests under lldb");

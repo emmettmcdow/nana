@@ -1,5 +1,10 @@
 // nana.h
 
+enum Error {
+  DoubleInit = -1,
+  NotInit = -2,
+};
+
 int nana_search(char *);
 int nana_next_result(int);
 int nana_create_time(int);

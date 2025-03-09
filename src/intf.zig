@@ -1,8 +1,35 @@
 const std = @import("std");
+const nana = @import("root.zig");
+
+var rt: nana.Runtime = undefined;
+var init: bool = false;
+
+const CError = enum(c_int) {
+    DoubleInit = -1,
+    NotInit = -2,
+};
+const RUNTIME_DIR = "TODO";
 
 // Input: 0 terminated query
 // Output: -1 if failure, ID if success
 export fn nana_init() c_int {
+    if (init) {
+        return CError.DoubleInit;
+    }
+
+    const d = std.fs.openDirAbsolute(RUNTIME_DIR, .{}) catch |err| {};
+    rt = nana.init(
+        d,
+        false,
+    ) catch |err| {};
+
+    return 0;
+}
+
+export fn nana_deinit() c_int {
+    if (!init) {
+        return CError.NotInit;
+    }
     return 0;
 }
 
