@@ -44,7 +44,7 @@ const SchemaRow = struct {
 const Runtime = struct {
     basedir: std.fs.Dir,
     db: sqlite.Db,
-    _next_id: NoteID = 0,
+    _next_id: NoteID = 1,
 
     pub fn create(self: *Runtime) !NoteID {
         const created = std.time.microTimestamp();

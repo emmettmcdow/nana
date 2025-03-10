@@ -1,14 +1,24 @@
 // nana.h
 
-enum Error {
+enum Error { 
+  Success = 0,
   DoubleInit = -1,
   NotInit = -2,
+  DirCreationFail = -3,
+  InitFail = -4,
+  DeinitFail = -5,
+  CreateFail = -6,
+  GetFail = -7
 };
 
-int nana_search(char *);
-int nana_next_result(int);
+int nana_init();
+int nana_deinit();
+int nana_create(void);
 int nana_create_time(int);
 int nana_mod_time(int);
-int nana_contents(int, char *, int);
-int nana_update(int, char *, int);
-int nana_create(void);
+
+// TODO
+// int nana_search(char *);
+// int nana_next_result(int);
+// int nana_contents(int, char *, int);
+// int nana_update(int, char *, int);
