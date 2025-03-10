@@ -4,25 +4,6 @@ const testing_allocator = std.testing.allocator;
 const std = @import("std");
 const sqlite = @import("sqlite");
 
-pub const std_options = .{
-    // Define logFn to override the std implementation
-    .logFn = noopLog,
-};
-
-pub fn noopLog(
-    comptime level: std.log.Level,
-    comptime scope: @Type(.enum_literal),
-    comptime format: []const u8,
-    args: anytype,
-) void {
-    _ = level;
-    _ = scope;
-    _ = format;
-    _ = args;
-
-    return;
-}
-
 // pub const RuntimeGetError = error{NotFound};
 const DB_LOCATION = "./db.db";
 
@@ -77,7 +58,7 @@ const Runtime = struct {
 
         var diags = sqlite.Diagnostics{};
         var stmt = self.db.prepareWithDiags(INSERT_NOTE, .{ .diags = &diags }) catch |err| {
-            std.log.err("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
+            std.log.info("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
             try self.basedir.deleteFile(path);
             return err;
         };
@@ -134,7 +115,7 @@ const Runtime = struct {
     }
 
     pub fn deinit(self: *Runtime) void {
-        _ = self;
+        self.db.deinit();
     }
 };
 
@@ -221,10 +202,9 @@ test "cleanup FS on DB failure create" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var rt = try init(tmpD.dir, true);
-    defer rt.deinit();
+    rt.deinit();
 
-    rt.db.deinit(); // Will cause DB failure
-    // TODO: figure out how to throw away this logging
+    // Should throw an error - we de-init the db
     _ = rt.create() catch |err| {
         try expect(err == sqlite.Error.SQLiteMisuse);
         var dirIterator = rt.basedir.iterate();
