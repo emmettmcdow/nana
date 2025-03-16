@@ -41,7 +41,7 @@ const SchemaRow = struct {
     unk3: u8 = 0,
 };
 
-const Runtime = struct {
+pub const Runtime = struct {
     basedir: std.fs.Dir,
     db: sqlite.Db,
     _next_id: NoteID = 1,
@@ -180,8 +180,8 @@ test "r/w DB" {
     const noteID = try rt.create();
     const note1 = try rt.get(noteID, arena.allocator());
 
-    try expect(note1.id == 0);
-    try expectEqlStrings("0", note1.path);
+    try expect(note1.id == 1);
+    try expectEqlStrings("1", note1.path);
     try expect(note1.created - now < 1_000); // Happened in the last millisecond(?)
     try expect(note1.modified - now < 1_000);
     try rt.basedir.access(note1.path, .{ .mode = .read_write });
@@ -190,8 +190,8 @@ test "r/w DB" {
     const noteID2 = try rt.create();
     const note2 = try rt.get(noteID2, arena.allocator());
 
-    try expect(note2.id == 1);
-    try expectEqlStrings("1", note2.path);
+    try expect(note2.id == 2);
+    try expectEqlStrings("2", note2.path);
     try expect(note2.created - now2 < 1_000);
     try expect(note2.modified - now2 < 1_000);
     try rt.basedir.access(note2.path, .{ .mode = .read_write });
@@ -228,8 +228,8 @@ test "update DB" {
     const then = std.time.microTimestamp();
     const noteID = try rt.create();
     var resNote = try rt.get(noteID, arena.allocator());
-    try expect(resNote.id == 0);
-    try expectEqlStrings("0", resNote.path);
+    try expect(resNote.id == 1);
+    try expectEqlStrings("1", resNote.path);
     try expect(resNote.created - then < 1_000); // Happened in the last millisecond(?)
     try expect(resNote.modified - then < 1_000);
     try rt.basedir.access(resNote.path, .{ .mode = .read_write });
@@ -238,9 +238,9 @@ test "update DB" {
     const now = std.time.microTimestamp();
     try rt.update(resNote);
     resNote = try rt.get(resNote.id, arena.allocator());
-    try expect(resNote.id == 0);
+    try expect(resNote.id == 1);
     // Path should be same, shouldn't be able to update
-    try expectEqlStrings("0", resNote.path);
+    try expectEqlStrings("1", resNote.path);
     try expect(resNote.created - then < 1_000);
     try expect(resNote.modified - now < 1_000);
     try expect(resNote.created < resNote.modified);

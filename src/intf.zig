@@ -5,74 +5,82 @@ var rt: nana.Runtime = undefined;
 var init: bool = false;
 
 const CError = enum(c_int) { Success = 0, DoubleInit = -1, NotInit = -2, DirCreationFail = -3, InitFail = -4, DeinitFail = -5, CreateFail = -6, GetFail = -7 };
-const RUNTIME_DIR = "TODO";
+const RUNTIME_DIR = "/tmp/nana";
 
 // Output: CError
 export fn nana_init() c_int {
     if (init) {
-        return CError.DoubleInit;
+        return @intFromEnum(CError.DoubleInit);
     }
 
     const d = std.fs.openDirAbsolute(RUNTIME_DIR, .{}) catch |err| {
-        std.log.err("Failed to create working directory '{s}': {}\n", RUNTIME_DIR, err);
-        return CError.DirCreationFail;
+        std.log.err("Failed to create working directory '{s}': {}\n", .{ RUNTIME_DIR, err });
+        return @intFromEnum(CError.DirCreationFail);
     };
     rt = nana.init(
         d,
         false,
     ) catch |err| {
-        std.log.err("Failed to initialize nana: {}\n", err);
-        return CError.NanaInitFail;
+        std.log.err("Failed to initialize nana: {}\n", .{err});
+        return @intFromEnum(CError.InitFail);
     };
 
     init = true;
 
-    return CError.Success;
+    return @intFromEnum(CError.Success);
 }
 
 // Output: CError
 export fn nana_deinit() c_int {
     if (!init) {
-        return CError.NotInit;
+        return @intFromEnum(CError.NotInit);
     }
-    rt = nana.deinit() catch |err| {
-        std.log.err("Failed to deinitialize nana: {}\n", err);
-        return CError.NanaDeinitFail;
-    };
-
+    rt.deinit();
     return 0;
 }
 
 // Output: CError on failure, NoteID if success
-export fn nana_create() CError!c_int {
+export fn nana_create() c_int {
     if (!init) {
-        return CError.NotInit;
+        return @intFromEnum(CError.NotInit);
     }
-    rt = nana.create() catch |err| {
-        std.log.err("Failed to deinitialize nana: {}\n", err);
-        return CError.NanaDeinitFail;
+    const id = rt.create() catch |err| {
+        std.log.err("Failed to create note: {}\n", .{err});
+        return @intFromEnum(CError.CreateFail);
     };
 
-    return 0;
+    return @intCast(id);
 }
 
 // Input: NoteID
 // Output: Create/Mod Time
 export fn nana_create_time(noteID: c_int) c_int {
-    const note = rt.get(noteID) catch |err| {
-        std.log.err("Failed to get note with id '{d}': {}\n", noteID, err);
-        return CError.GetFail;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const alloc = gpa.allocator();
+    defer {
+        const deinit_status = gpa.deinit();
+        if (deinit_status == .leak) @panic("TEST FAIL");
+    }
+    const note = rt.get(@intCast(noteID), alloc) catch |err| {
+        std.log.err("Failed to get note with id '{d}': {}\n", .{ noteID, err });
+        return @intFromEnum(CError.GetFail);
     };
 
-    return note.created;
+    return @intCast(note.created);
 }
 export fn nana_mod_time(noteID: c_int) c_int {
-    const note = rt.get(noteID) catch |err| {
-        std.log.err("Failed to get note with id '{d}': {}\n", noteID, err);
-        return CError.GetFail;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const alloc = gpa.allocator();
+    defer {
+        const deinit_status = gpa.deinit();
+        if (deinit_status == .leak) @panic("TEST FAIL");
+    }
+    const note = rt.get(@intCast(noteID), alloc) catch |err| {
+        std.log.err("Failed to get note with id '{d}': {}\n", .{ noteID, err });
+        return @intFromEnum(CError.GetFail);
     };
 
-    return note.modified;
+    return @intCast(note.modified);
 }
 
 // TODO
