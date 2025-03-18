@@ -4,41 +4,73 @@ const Step = std.Build.Step;
 const RunStep = std.Build.Step.Run;
 const LazyPath = std.Build.LazyPath;
 
+// This file is a crime against zig. But I am deferring making it unfugly until I know more about
+// the zig build system.
+
+const targets: []const std.Target.Query = &.{
+    .{ .cpu_arch = .aarch64, .os_tag = .macos },
+    .{ .cpu_arch = .x86_64, .os_tag = .macos },
+};
+
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const lib2 = b.addStaticLibrary(.{
-        .name = "nana2",
-        .root_source_file = b.path("src/intf.zig"),
-        .target = target,
-        .optimize = optimize,
+    var ltSteps = [2]*LibtoolStep{ undefined, undefined };
+    for (targets, 0..) |t, i| {
+        const target = b.resolveTargetQuery(t);
+        const lib2 = b.addStaticLibrary(.{
+            .name = "nana2",
+            .root_source_file = b.path("src/intf.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        const sqlite = b.dependency("sqlite", .{
+            .target = target,
+            .optimize = optimize,
+        });
+        const sqliteArtifact = sqlite.artifact("sqlite");
+        lib2.root_module.addImport("sqlite", sqlite.module("sqlite"));
+        lib2.linkLibrary(sqliteArtifact);
+        lib2.bundle_compiler_rt = true;
+        lib2.linkLibC();
+        b.default_step.dependOn(&lib2.step);
+
+        var libSources = [_]LazyPath{
+            lib2.getEmittedBin(),
+            sqliteArtifact.getEmittedBin(),
+        };
+        const os = target.query.os_tag.?;
+        const cpu = target.query.cpu_arch.?;
+        const outfile = b.fmt("libnana-{s}-{s}.a", .{ @tagName(os), @tagName(cpu) });
+        const libtool = createLibtoolStep(b, .{
+            .name = "nana",
+            .out_name = outfile,
+            .sources = libSources[0..],
+        });
+        libtool.step.dependOn(&lib2.step);
+        ltSteps[i] = libtool;
+        b.default_step.dependOn(libtool.step);
+        const lib_install = b.addInstallLibFile(libtool.output, outfile);
+        b.getInstallStep().dependOn(&lib_install.step);
+    }
+
+    const outfile = "libnana.a";
+    const static_lib_universal = createLipoStep(b, .{
+        .name = "nana",
+        .out_name = outfile,
+        .input_a = ltSteps[0].output,
+        .input_b = ltSteps[1].output,
     });
+    static_lib_universal.step.dependOn(ltSteps[0].step);
+    static_lib_universal.step.dependOn(ltSteps[1].step);
+    const lib_install = b.addInstallLibFile(static_lib_universal.output, outfile);
+    b.getInstallStep().dependOn(&lib_install.step);
+
+    const target = b.standardTargetOptions(.{});
     const sqlite = b.dependency("sqlite", .{
         .target = target,
         .optimize = optimize,
     });
-    const sqliteArtifact = sqlite.artifact("sqlite");
-    lib2.root_module.addImport("sqlite", sqlite.module("sqlite"));
-    lib2.linkLibrary(sqliteArtifact);
-    lib2.bundle_compiler_rt = true;
-    lib2.linkLibC();
-    b.default_step.dependOn(&lib2.step);
-
-    var libSources = [_]LazyPath{
-        lib2.getEmittedBin(),
-        sqliteArtifact.getEmittedBin(),
-    };
-    const libtool = createLibtoolStep(b, .{
-        .name = "nana",
-        .out_name = "libnana-amd64-bundle.a",
-        .sources = libSources[0..],
-    });
-    libtool.step.dependOn(&lib2.step);
-    b.default_step.dependOn(libtool.step);
-    const lib_install = b.addInstallLibFile(libtool.output, "libnana-amd64-bundle.a");
-    b.getInstallStep().dependOn(&lib_install.step);
-
     ////////////////
     // Unit Tests //
     ////////////////
@@ -61,10 +93,7 @@ pub fn build(b: *std.Build) void {
         // Uncomment this if lib_unit_tests needs lldb args or test args
         // "--",
     });
-    // appends the unit_tests executable path to the lldb command line
     lldb.addArtifactArg(lib_unit_tests);
-
-    // lldb.addArg can add arguments after the executable path
     const lldb_step = b.step("debug", "run the tests under lldb");
     lldb_step.dependOn(&lldb.step);
 }
@@ -109,7 +138,6 @@ pub fn createLibtoolStep(b: *std.Build, opts: LibtoolStep.Options) *LibtoolStep 
     return self;
 }
 
-// TODO: set it up so that we can make a universal binary
 const LipoStep = struct {
     pub const Options = struct {
         /// The name of the xcframework to create.
