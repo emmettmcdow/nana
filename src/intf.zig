@@ -5,16 +5,18 @@ var rt: nana.Runtime = undefined;
 var init: bool = false;
 
 const CError = enum(c_int) { Success = 0, DoubleInit = -1, NotInit = -2, DirCreationFail = -3, InitFail = -4, DeinitFail = -5, CreateFail = -6, GetFail = -7 };
-const RUNTIME_DIR = "/tmp/nana";
+// const RUNTIME_DIR = "data/";
 
 // Output: CError
 export fn nana_init() c_int {
     if (init) {
         return @intFromEnum(CError.DoubleInit);
     }
+    var buf: [1000]u8 = undefined;
+    const cwd = std.process.getCwd(&buf) catch unreachable;
 
-    const d = std.fs.openDirAbsolute(RUNTIME_DIR, .{}) catch |err| {
-        std.log.err("Failed to create working directory '{s}': {}\n", .{ RUNTIME_DIR, err });
+    const d = std.fs.openDirAbsolute(cwd, .{ .iterate = true }) catch |err| {
+        std.log.err("Failed to access working directory '{s}': {}\n", .{ cwd, err });
         return @intFromEnum(CError.DirCreationFail);
     };
     rt = nana.init(

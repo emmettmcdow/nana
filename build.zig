@@ -15,6 +15,9 @@ const targets: []const std.Target.Query = &.{
 pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
+    ///////////////////
+    // Build the Lib //
+    ///////////////////
     var ltSteps = [2]*LibtoolStep{ undefined, undefined };
     for (targets, 0..) |t, i| {
         const target = b.resolveTargetQuery(t);
@@ -29,7 +32,8 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         const sqliteArtifact = sqlite.artifact("sqlite");
-        lib2.root_module.addImport("sqlite", sqlite.module("sqlite"));
+        const mod = sqlite.module("sqlite");
+        lib2.root_module.addImport("sqlite", mod);
         lib2.linkLibrary(sqliteArtifact);
         lib2.bundle_compiler_rt = true;
         lib2.linkLibC();
@@ -66,14 +70,23 @@ pub fn build(b: *std.Build) void {
     const lib_install = b.addInstallLibFile(static_lib_universal.output, outfile);
     b.getInstallStep().dependOn(&lib_install.step);
 
+    const xcframework = createXCFrameworkStep(b, .{
+        .name = "NanaKit",
+        .out_path = "macos/NanaKit.xcframework",
+        .library = static_lib_universal.output,
+        .headers = .{ .cwd_relative = "include" },
+    });
+    xcframework.step.dependOn(static_lib_universal.step);
+    b.getInstallStep().dependOn(xcframework.step);
+
+    ////////////////
+    // Unit Tests //
+    ////////////////
     const target = b.standardTargetOptions(.{});
     const sqlite = b.dependency("sqlite", .{
         .target = target,
         .optimize = optimize,
     });
-    ////////////////
-    // Unit Tests //
-    ////////////////
     const lib_unit_tests = b.addTest(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -169,6 +182,58 @@ pub fn createLipoStep(b: *std.Build, opts: LipoStep.Options) *LipoStep {
     self.* = .{
         .step = &run_step.step,
         .output = output,
+    };
+
+    return self;
+}
+
+const XCFrameworkStep = struct {
+    pub const Options = struct {
+        /// The name of the xcframework to create.
+        name: []const u8,
+
+        /// The path to write the framework
+        out_path: []const u8,
+
+        /// Library file (dylib, a) to package.
+        library: LazyPath,
+
+        /// Path to a directory with the headers.
+        headers: LazyPath,
+    };
+
+    step: *Step,
+};
+
+pub fn createXCFrameworkStep(b: *std.Build, opts: XCFrameworkStep.Options) *XCFrameworkStep {
+    const self = b.allocator.create(XCFrameworkStep) catch @panic("OOM");
+
+    // We have to delete the old xcframework first since we're writing
+    // to a static path.
+    const run_delete = run: {
+        const run = RunStep.create(b, b.fmt("xcframework delete {s}", .{opts.name}));
+        run.has_side_effects = true;
+        run.addArgs(&.{ "rm", "-rf", opts.out_path });
+        break :run run;
+    };
+
+    // Then we run xcodebuild to create the framework.
+    const run_create = run: {
+        const run = RunStep.create(b, b.fmt("xcframework {s}", .{opts.name}));
+        run.has_side_effects = true;
+        run.addArgs(&.{ "xcodebuild", "-create-xcframework" });
+        run.addArg("-library");
+        run.addFileArg(opts.library);
+        run.addArg("-headers");
+        run.addFileArg(opts.headers);
+        run.addArg("-output");
+        run.addArg(opts.out_path);
+        break :run run;
+    };
+    run_create.step.dependOn(&run_delete.step);
+
+    self.* = .{
+        .step = &run_create.step,
     };
 
     return self;

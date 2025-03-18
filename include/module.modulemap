@@ -1,0 +1,4 @@
+module NanaKit {
+    umbrella header "nana.h"
+    export *
+}

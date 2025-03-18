@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		C0D1937F2D74E82800B400F5 /* SwiftUIIntrospect in Frameworks */ = {isa = PBXBuildFile; productRef = C0D1937E2D74E82800B400F5 /* SwiftUIIntrospect */; };
+		C040F8852D890EFD0032E53D /* NanaKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C040F8842D890EFD0032E53D /* NanaKit.xcframework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -28,6 +28,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		C040F8842D890EFD0032E53D /* NanaKit.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = NanaKit.xcframework; path = ../macos/NanaKit.xcframework; sourceTree = SOURCE_ROOT; };
 		C0D13D852D6ED5B200D0032D /* nana.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = nana.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C0D13D962D6ED5B500D0032D /* nanaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = nanaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C0D13DA02D6ED5B500D0032D /* nanaUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = nanaUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -56,7 +57,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				C0D1937F2D74E82800B400F5 /* SwiftUIIntrospect in Frameworks */,
+				C040F8852D890EFD0032E53D /* NanaKit.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -84,6 +85,7 @@
 				C0D13D992D6ED5B500D0032D /* nanaTests */,
 				C0D13DA32D6ED5B500D0032D /* nanaUITests */,
 				C0D13D862D6ED5B200D0032D /* Products */,
+				C040F8842D890EFD0032E53D /* NanaKit.xcframework */,
 			);
 			sourceTree = "<group>";
 		};
@@ -117,7 +119,6 @@
 			);
 			name = nana;
 			packageProductDependencies = (
-				C0D1937E2D74E82800B400F5 /* SwiftUIIntrospect */,
 			);
 			productName = nana;
 			productReference = C0D13D852D6ED5B200D0032D /* nana.app */;
@@ -202,7 +203,6 @@
 			mainGroup = C0D13D7C2D6ED5B200D0032D;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				C0D1937D2D74E82800B400F5 /* XCRemoteSwiftPackageReference "SwiftUI-Introspect" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = C0D13D862D6ED5B200D0032D /* Products */;
@@ -418,6 +418,7 @@
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 15.2;
 				MARKETING_VERSION = 1.0;
+				"OTHER_LDFLAGS[arch=*]" = "-fsanitize=address";
 				PRODUCT_BUNDLE_IDENTIFIER = mcdow.nana;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
@@ -592,25 +593,6 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
-
-/* Begin XCRemoteSwiftPackageReference section */
-		C0D1937D2D74E82800B400F5 /* XCRemoteSwiftPackageReference "SwiftUI-Introspect" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/siteline/SwiftUI-Introspect";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.3.0;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		C0D1937E2D74E82800B400F5 /* SwiftUIIntrospect */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = C0D1937D2D74E82800B400F5 /* XCRemoteSwiftPackageReference "SwiftUI-Introspect" */;
-			productName = SwiftUIIntrospect;
-		};
-/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = C0D13D7D2D6ED5B200D0032D /* Project object */;
 }
