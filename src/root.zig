@@ -25,6 +25,8 @@ const UPDATE_NOTE =
 ;
 const GET_COLS = "PRAGMA table_info(notes);";
 
+const SEARCH_NO_QUERY = "SELECT id FROM notes ORDER BY modified DESC LIMIT ?;";
+
 const NoteID = u64;
 const Note = struct {
     id: NoteID,
@@ -143,6 +145,39 @@ pub const Runtime = struct {
         }
 
         return buf[0..n];
+    }
+
+    // Search should query the database and return max of buf.len items
+    pub fn search(self: *Runtime, query: []u8, buf: []NoteID) ![]NoteID {
+        if (query.len != 0) {
+            unreachable;
+        }
+
+        const limit = buf.len;
+
+        var diags = sqlite.Diagnostics{};
+        var stmt = self.db.prepareWithDiags(SEARCH_NO_QUERY, .{ .diags = &diags }) catch |err| {
+            std.log.err("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
+            return err;
+        };
+
+        defer stmt.deinit();
+
+        var iter = try stmt.iterator(NoteID, .{
+            .limit = limit,
+        });
+
+        var i: usize = 0;
+        while (try iter.next(.{})) |id| : (i += 1) {
+            if (i >= limit) {
+                // TOO MANY ITEMS
+                unreachable;
+            }
+            buf[i] = id;
+        }
+
+        // Shrink the output buffer to the actual # of returns
+        return buf[0..i];
     }
 
     pub fn deinit(self: *Runtime) void {
@@ -337,4 +372,55 @@ test "r/w-all too smol output buffer" {
     };
 
     try expect(false);
+}
+
+test "search no query" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var rt = try init(tmpD.dir, true);
+    defer rt.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    var i: usize = 0;
+    while (i < 9) : (i += 1) {
+        _ = try rt.create();
+    }
+
+    var buffer: [10]NoteID = undefined;
+    const output = try rt.search("", &buffer);
+    try expect(output.len == 9);
+
+    i = 0;
+    while (i < 9) : (i += 1) {
+        // std.debug.print("Want: {d}, Got: {d}\n", .{ i + 1, output[i] });
+        try expect(output[8 - i] == i + 1);
+    }
+}
+
+test "search no query orderby modified" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var rt = try init(tmpD.dir, true);
+    defer rt.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    const noteID1 = try rt.create();
+    const noteID2 = try rt.create();
+
+    var buffer: [10]NoteID = undefined;
+    const output = try rt.search("", &buffer);
+    try expect(output.len == 2);
+    try expect(output[0] == noteID2);
+    try expect(output[1] == noteID1);
+
+    const note1 = try rt.get(noteID1, arena.allocator());
+    try rt.update(note1);
+
+    var buffer2: [10]NoteID = undefined;
+    const output2 = try rt.search("", &buffer2);
+    try expect(output2.len == 2);
+    try expect(output2[0] == noteID1);
+    try expect(output2[1] == noteID2);
 }
