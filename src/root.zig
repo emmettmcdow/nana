@@ -4,7 +4,7 @@ const testing_allocator = std.testing.allocator;
 const std = @import("std");
 const sqlite = @import("sqlite");
 
-// pub const RuntimeGetError = error{NotFound};
+pub const Error = error{ NotFound, BufferTooSmall };
 const DB_LOCATION = "./db.db";
 
 const GET_NOTE = "SELECT id,created,modified,path FROM notes WHERE id = ?;";
@@ -112,6 +112,37 @@ pub const Runtime = struct {
             .modified = modified,
             .id = note.id,
         });
+    }
+
+    pub fn writeAll(self: *Runtime, id: NoteID, content: []const u8) !void {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const note = try self.get(id, arena.allocator());
+
+        const f = try self.basedir.openFile(note.path, .{ .mode = .read_write });
+        defer f.close();
+        try f.writeAll(content);
+
+        try self.update(note);
+
+        return;
+    }
+
+    pub fn readAll(self: *Runtime, id: NoteID, buf: []u8) ![]u8 {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const note = try self.get(id, arena.allocator());
+
+        const f = try self.basedir.openFile(note.path, .{});
+        defer f.close();
+
+        const n = try f.readAll(buf);
+
+        if (n == buf.len) {
+            return Error.BufferTooSmall;
+        }
+
+        return buf[0..n];
     }
 
     pub fn deinit(self: *Runtime) void {
@@ -246,4 +277,64 @@ test "update DB" {
     try expect(resNote.created < resNote.modified);
     // Path should be same, shouldn't be able to update
     // try rt.basedir.access(resNote.path, .{ .mode = .read_write });
+}
+
+test "r/w-all note" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var rt = try init(tmpD.dir, true);
+    defer rt.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    const noteID = try rt.create();
+
+    var expected = "Contents of a note!";
+    try rt.writeAll(noteID, expected[0..]);
+
+    var buffer: [20]u8 = undefined;
+    const got = try rt.readAll(noteID, &buffer);
+
+    try std.testing.expectEqualStrings(expected, got);
+}
+
+test "r/w-all updated time" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var rt = try init(tmpD.dir, true);
+    defer rt.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    const noteID = try rt.create();
+    const oldNote = try rt.get(noteID, arena.allocator());
+
+    var expected = "Contents of a note!";
+    try rt.writeAll(noteID, expected[0..]);
+
+    const newNote = try rt.get(noteID, arena.allocator());
+
+    try expect(newNote.modified > oldNote.modified);
+}
+
+test "r/w-all too smol output buffer" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var rt = try init(tmpD.dir, true);
+    defer rt.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    const noteID = try rt.create();
+
+    var expected = "Should be way too big!!!";
+    try rt.writeAll(noteID, expected[0..]);
+
+    var buffer: [1]u8 = undefined;
+    _ = rt.readAll(noteID, &buffer) catch |err| {
+        try expect(err == Error.BufferTooSmall);
+        return;
+    };
+
+    try expect(false);
 }
