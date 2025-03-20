@@ -17,6 +17,8 @@ int nana_create(void);
 int nana_create_time(int);
 int nana_mod_time(int);
 
+int nana_write_all(int, const char *);
+
 // TODO
 // int nana_search(char *);
 // int nana_next_result(int);

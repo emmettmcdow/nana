@@ -35,6 +35,7 @@ struct CircularPlusButton: View {
 }
 
 struct SearchButton: View {
+    var action: () -> Void
     var colorScheme: ColorScheme = .light
     var size: CGFloat = 50
     @State var shouldPresentSheet = false
@@ -51,7 +52,7 @@ struct SearchButton: View {
     ]
     
     var body: some View {
-        Button (action: {shouldPresentSheet.toggle()}){
+        Button (action: {action(); shouldPresentSheet.toggle()}){
             ZStack() {
                 Circle()
                     .fill(colorA(colorScheme: colorScheme).mix(with: .black, by: hover ? 0.1 : 0.0))

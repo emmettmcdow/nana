@@ -4,7 +4,7 @@ const nana = @import("root.zig");
 var rt: nana.Runtime = undefined;
 var init: bool = false;
 
-const CError = enum(c_int) { Success = 0, DoubleInit = -1, NotInit = -2, DirCreationFail = -3, InitFail = -4, DeinitFail = -5, CreateFail = -6, GetFail = -7 };
+const CError = enum(c_int) { Success = 0, DoubleInit = -1, NotInit = -2, DirCreationFail = -3, InitFail = -4, DeinitFail = -5, CreateFail = -6, GetFail = -7, WriteFail = -8 };
 // const RUNTIME_DIR = "data/";
 
 // Output: CError
@@ -83,6 +83,15 @@ export fn nana_mod_time(noteID: c_int) c_int {
     };
 
     return @intCast(note.modified);
+}
+
+export fn nana_write_all(noteID: c_int, content: [*:0]const u8) c_int {
+    const zigStyle: []const u8 = std.mem.sliceTo(content, 0);
+    rt.writeAll(@intCast(noteID), zigStyle) catch |err| {
+        std.log.err("Failed to write note with id '{d}': {}\n", .{ noteID, err });
+        return @intFromEnum(CError.WriteFail);
+    };
+    return 0;
 }
 
 // TODO
