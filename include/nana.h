@@ -8,7 +8,8 @@ enum Error {
   InitFail = -4,
   DeinitFail = -5,
   CreateFail = -6,
-  GetFail = -7
+  GetFail = -7,
+  WriteFail = -8
 };
 
 int nana_init();

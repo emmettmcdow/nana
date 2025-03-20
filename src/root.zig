@@ -7,6 +7,8 @@ const sqlite = @import("sqlite");
 pub const Error = error{ NotFound, BufferTooSmall };
 const DB_LOCATION = "./db.db";
 
+const GET_LAST_ID = "SELECT id FROM notes ORDER BY id DESC LIMIT 1;";
+
 const GET_NOTE = "SELECT id,created,modified,path FROM notes WHERE id = ?;";
 
 const INSERT_NOTE =
@@ -197,6 +199,12 @@ pub fn init(b: std.fs.Dir, mem: bool) !Runtime {
     var stmt = try db.prepare(NOTE_SCHEMA);
     defer stmt.deinit();
     try stmt.exec(.{}, .{});
+
+    const row = try db.one(NoteID, GET_LAST_ID, .{}, .{});
+    if (row) |id| {
+        // std.log.err("Row: {d}\n", id);
+        return Runtime{ .basedir = b, .db = db, ._next_id = id + 1 };
+    }
     return Runtime{ .basedir = b, .db = db };
 }
 
@@ -228,6 +236,22 @@ test "init DB" {
         try expectEqlStrings(expectedSchema[i].type, row.type);
         i += 1;
     }
+}
+
+test "re-init DB" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+
+    var rt = try init(tmpD.dir, false);
+
+    _ = try rt.create();
+    const id2 = try rt.create();
+
+    rt.deinit();
+    rt = try init(tmpD.dir, false);
+
+    const id3 = try rt.create();
+    try expect(id3 == id2 + 1);
 }
 
 test "r/w DB" {
