@@ -2,3 +2,4 @@
 zig-out/
 testing/
 macos/
+*.db

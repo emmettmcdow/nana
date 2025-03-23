@@ -9,17 +9,16 @@ const DB_LOCATION = "./db.db";
 
 const GET_LAST_ID = "SELECT id FROM notes ORDER BY id DESC LIMIT 1;";
 
-const GET_NOTE = "SELECT id,created,modified,path FROM notes WHERE id = ?;";
+const GET_NOTE = "SELECT id,created,modified FROM notes WHERE id = ?;";
 
 const INSERT_NOTE =
-    \\INSERT INTO notes(id, created, modified, path ) VALUES(?, ?, ?, ?) ;
+    \\INSERT INTO notes(id, created, modified ) VALUES(?, ?, ?) ;
 ;
 const NOTE_SCHEMA =
     \\CREATE TABLE IF NOT EXISTS notes (
     \\    id INTEGER PRIMARY KEY,
     \\    created INTEGER,
-    \\    modified INTEGER,
-    \\    path TEXT UNIQUE
+    \\    modified INTEGER
     \\);
 ;
 const UPDATE_NOTE =
@@ -34,7 +33,15 @@ const Note = struct {
     id: NoteID,
     created: i64,
     modified: i64,
-    path: []const u8,
+
+    fn path(self: Note, buf: []u8) []const u8 {
+        const out = std.fmt.bufPrint(buf, "{d}", .{self.id}) catch |err| {
+            std.log.err("Failed to write path of note {d}: {}\n", .{ self.id, err });
+            @panic("Failed to write the path of a note!");
+        };
+
+        return out;
+    }
 };
 const SchemaRow = struct {
     id: u8 = 0,
@@ -52,11 +59,9 @@ pub const Runtime = struct {
 
     pub fn create(self: *Runtime) !NoteID {
         const created = std.time.microTimestamp();
-        const modified = created;
-
+        const note = Note{ .id = self._next_id, .created = created, .modified = created };
         var buf: [64]u8 = undefined;
-        const path = try std.fmt.bufPrint(&buf, "{d}", .{self._next_id});
-
+        const path = note.path(&buf);
         const file = try self.basedir.createFile(path, .{});
         file.close();
 
@@ -68,22 +73,20 @@ pub const Runtime = struct {
         };
         defer stmt.deinit();
         stmt.exec(.{}, .{
-            .id = self._next_id,
-            .created = created,
-            .modified = modified,
-            .path = path,
+            .id = note.id,
+            .created = note.created,
+            .modified = note.modified,
         }) catch |err| {
             try self.basedir.deleteFile(path);
             return err;
         };
 
-        const id = self._next_id;
         self._next_id += 1;
 
-        return id;
+        return note.id;
     }
 
-    pub fn get(self: *Runtime, id: NoteID, alloc: std.mem.Allocator) !Note {
+    pub fn get(self: *Runtime, id: NoteID) !Note {
         var diags = sqlite.Diagnostics{};
         var stmt = self.db.prepareWithDiags(GET_NOTE, .{ .diags = &diags }) catch |err| {
             std.log.err("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
@@ -92,12 +95,12 @@ pub const Runtime = struct {
 
         defer stmt.deinit();
 
-        const row = try stmt.oneAlloc(Note, alloc, .{}, .{
+        const row = try stmt.one(Note, .{}, .{
             .id = id,
         });
 
         if (row) |r| {
-            return Note{ .id = r.id, .created = r.created, .modified = r.modified, .path = r.path };
+            return Note{ .id = r.id, .created = r.created, .modified = r.modified };
         } else {
             return sqlite.Error.SQLiteNotFound;
         }
@@ -119,11 +122,12 @@ pub const Runtime = struct {
     }
 
     pub fn writeAll(self: *Runtime, id: NoteID, content: []const u8) !void {
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer arena.deinit();
-        const note = try self.get(id, arena.allocator());
+        const note = try self.get(id);
 
-        const f = try self.basedir.openFile(note.path, .{ .mode = .read_write });
+        var buf: [64]u8 = undefined;
+        const path = note.path(&buf);
+
+        const f = try self.basedir.openFile(path, .{ .mode = .read_write });
         defer f.close();
         try f.writeAll(content);
 
@@ -132,12 +136,12 @@ pub const Runtime = struct {
         return;
     }
 
-    pub fn readAll(self: *Runtime, id: NoteID, buf: []u8) ![]u8 {
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer arena.deinit();
-        const note = try self.get(id, arena.allocator());
+    pub fn readAll(self: *Runtime, id: NoteID, buf: []u8) !usize {
+        const note = try self.get(id);
 
-        const f = try self.basedir.openFile(note.path, .{});
+        var pathbuf: [64]u8 = undefined;
+        const path = note.path(&pathbuf);
+        const f = try self.basedir.openFile(path, .{});
         defer f.close();
 
         const n = try f.readAll(buf);
@@ -146,16 +150,15 @@ pub const Runtime = struct {
             return Error.BufferTooSmall;
         }
 
-        return buf[0..n];
+        return n;
     }
 
-    // Search should query the database and return max of buf.len items
-    pub fn search(self: *Runtime, query: []u8, buf: []NoteID) ![]NoteID {
+    // Search should query the database and return N written
+    // Parameter buf is really an array of NoteIDs. Need to use c_int though
+    pub fn search(self: *Runtime, query: []const u8, buf: []c_int) !usize {
         if (query.len != 0) {
             unreachable;
         }
-
-        const limit = buf.len;
 
         var diags = sqlite.Diagnostics{};
         var stmt = self.db.prepareWithDiags(SEARCH_NO_QUERY, .{ .diags = &diags }) catch |err| {
@@ -166,20 +169,19 @@ pub const Runtime = struct {
         defer stmt.deinit();
 
         var iter = try stmt.iterator(NoteID, .{
-            .limit = limit,
+            .limit = buf.len,
         });
 
         var i: usize = 0;
         while (try iter.next(.{})) |id| : (i += 1) {
-            if (i >= limit) {
+            if (i >= buf.len) {
                 // TOO MANY ITEMS
                 unreachable;
             }
-            buf[i] = id;
+            buf[i] = @intCast(id);
         }
 
-        // Shrink the output buffer to the actual # of returns
-        return buf[0..i];
+        return i;
     }
 
     pub fn deinit(self: *Runtime) void {
@@ -224,7 +226,6 @@ test "init DB" {
         .{ .name = "id", .type = "INTEGER" },
         .{ .name = "created", .type = "INTEGER" },
         .{ .name = "modified", .type = "INTEGER" },
-        .{ .name = "path", .type = "TEXT" },
     };
 
     var i: usize = 0;
@@ -259,32 +260,34 @@ test "r/w DB" {
     defer tmpD.cleanup();
     var rt = try init(tmpD.dir, true);
     defer rt.deinit();
-    var arena = std.heap.ArenaAllocator.init(testing_allocator);
-    defer arena.deinit();
 
     const fakeID = 420;
-    const badNote = rt.get(fakeID, arena.allocator());
+    const badNote = rt.get(fakeID);
     try expect(badNote == sqlite.Error.SQLiteNotFound);
 
     const now = std.time.microTimestamp();
     const noteID = try rt.create();
-    const note1 = try rt.get(noteID, arena.allocator());
+    const note1 = try rt.get(noteID);
 
     try expect(note1.id == 1);
-    try expectEqlStrings("1", note1.path);
+    var buf: [64]u8 = undefined;
+    const note1Path = note1.path(&buf);
+
+    try expectEqlStrings("1", note1Path);
     try expect(note1.created - now < 1_000); // Happened in the last millisecond(?)
     try expect(note1.modified - now < 1_000);
-    try rt.basedir.access(note1.path, .{ .mode = .read_write });
+    try rt.basedir.access(note1Path, .{ .mode = .read_write });
 
     const now2 = std.time.microTimestamp();
     const noteID2 = try rt.create();
-    const note2 = try rt.get(noteID2, arena.allocator());
+    const note2 = try rt.get(noteID2);
 
     try expect(note2.id == 2);
-    try expectEqlStrings("2", note2.path);
+    const note2Path = note2.path(&buf);
+    try expectEqlStrings("2", note2Path);
     try expect(note2.created - now2 < 1_000);
     try expect(note2.modified - now2 < 1_000);
-    try rt.basedir.access(note2.path, .{ .mode = .read_write });
+    try rt.basedir.access(note2Path, .{ .mode = .read_write });
 }
 
 const TestError = error{ DirectoryShouldBeEmpty, ExpectedError };
@@ -312,30 +315,26 @@ test "update DB" {
     defer tmpD.cleanup();
     var rt = try init(tmpD.dir, true);
     defer rt.deinit();
-    var arena = std.heap.ArenaAllocator.init(testing_allocator);
-    defer arena.deinit();
 
     const then = std.time.microTimestamp();
     const noteID = try rt.create();
-    var resNote = try rt.get(noteID, arena.allocator());
+    var resNote = try rt.get(noteID);
     try expect(resNote.id == 1);
-    try expectEqlStrings("1", resNote.path);
+    var buf: [64]u8 = undefined;
+    const resPath = resNote.path(&buf);
+
+    try expectEqlStrings("1", resPath);
     try expect(resNote.created - then < 1_000); // Happened in the last millisecond(?)
     try expect(resNote.modified - then < 1_000);
-    try rt.basedir.access(resNote.path, .{ .mode = .read_write });
+    try rt.basedir.access(resPath, .{ .mode = .read_write });
 
-    resNote.path = "newPath";
     const now = std.time.microTimestamp();
     try rt.update(resNote);
-    resNote = try rt.get(resNote.id, arena.allocator());
+    resNote = try rt.get(resNote.id);
     try expect(resNote.id == 1);
-    // Path should be same, shouldn't be able to update
-    try expectEqlStrings("1", resNote.path);
     try expect(resNote.created - then < 1_000);
     try expect(resNote.modified - now < 1_000);
     try expect(resNote.created < resNote.modified);
-    // Path should be same, shouldn't be able to update
-    // try rt.basedir.access(resNote.path, .{ .mode = .read_write });
 }
 
 test "r/w-all note" {
@@ -343,8 +342,6 @@ test "r/w-all note" {
     defer tmpD.cleanup();
     var rt = try init(tmpD.dir, true);
     defer rt.deinit();
-    var arena = std.heap.ArenaAllocator.init(testing_allocator);
-    defer arena.deinit();
 
     const noteID = try rt.create();
 
@@ -352,9 +349,9 @@ test "r/w-all note" {
     try rt.writeAll(noteID, expected[0..]);
 
     var buffer: [20]u8 = undefined;
-    const got = try rt.readAll(noteID, &buffer);
+    const n = try rt.readAll(noteID, &buffer);
 
-    try std.testing.expectEqualStrings(expected, got);
+    try std.testing.expectEqualStrings(expected, buffer[0..n]);
 }
 
 test "r/w-all updated time" {
@@ -362,16 +359,14 @@ test "r/w-all updated time" {
     defer tmpD.cleanup();
     var rt = try init(tmpD.dir, true);
     defer rt.deinit();
-    var arena = std.heap.ArenaAllocator.init(testing_allocator);
-    defer arena.deinit();
 
     const noteID = try rt.create();
-    const oldNote = try rt.get(noteID, arena.allocator());
+    const oldNote = try rt.get(noteID);
 
     var expected = "Contents of a note!";
     try rt.writeAll(noteID, expected[0..]);
 
-    const newNote = try rt.get(noteID, arena.allocator());
+    const newNote = try rt.get(noteID);
 
     try expect(newNote.modified > oldNote.modified);
 }
@@ -381,8 +376,6 @@ test "r/w-all too smol output buffer" {
     defer tmpD.cleanup();
     var rt = try init(tmpD.dir, true);
     defer rt.deinit();
-    var arena = std.heap.ArenaAllocator.init(testing_allocator);
-    defer arena.deinit();
 
     const noteID = try rt.create();
 
@@ -403,22 +396,20 @@ test "search no query" {
     defer tmpD.cleanup();
     var rt = try init(tmpD.dir, true);
     defer rt.deinit();
-    var arena = std.heap.ArenaAllocator.init(testing_allocator);
-    defer arena.deinit();
 
     var i: usize = 0;
     while (i < 9) : (i += 1) {
         _ = try rt.create();
     }
 
-    var buffer: [10]NoteID = undefined;
-    const output = try rt.search("", &buffer);
-    try expect(output.len == 9);
+    var buffer: [10]c_int = undefined;
+    const written = try rt.search("", &buffer);
+    try expect(written == 9);
 
     i = 0;
     while (i < 9) : (i += 1) {
         // std.debug.print("Want: {d}, Got: {d}\n", .{ i + 1, output[i] });
-        try expect(output[8 - i] == i + 1);
+        try expect(buffer[8 - i] == @as(c_int, @intCast(i + 1)));
     }
 }
 
@@ -427,24 +418,29 @@ test "search no query orderby modified" {
     defer tmpD.cleanup();
     var rt = try init(tmpD.dir, true);
     defer rt.deinit();
-    var arena = std.heap.ArenaAllocator.init(testing_allocator);
-    defer arena.deinit();
 
     const noteID1 = try rt.create();
     const noteID2 = try rt.create();
 
-    var buffer: [10]NoteID = undefined;
-    const output = try rt.search("", &buffer);
-    try expect(output.len == 2);
-    try expect(output[0] == noteID2);
-    try expect(output[1] == noteID1);
+    var buffer: [10]c_int = undefined;
+    const written = try rt.search("", &buffer);
+    try expect(written == 2);
+    try expect(buffer[0] == @as(c_int, @intCast(noteID2)));
+    try expect(buffer[1] == @as(c_int, @intCast(noteID1)));
 
-    const note1 = try rt.get(noteID1, arena.allocator());
+    const note1 = try rt.get(noteID1);
     try rt.update(note1);
 
-    var buffer2: [10]NoteID = undefined;
-    const output2 = try rt.search("", &buffer2);
-    try expect(output2.len == 2);
-    try expect(output2[0] == noteID1);
-    try expect(output2[1] == noteID2);
+    var buffer2: [10]c_int = undefined;
+    const written2 = try rt.search("", &buffer2);
+    try expect(written2 == 2);
+    try expect(buffer2[0] == @as(c_int, @intCast(noteID1)));
+    try expect(buffer2[1] == @as(c_int, @intCast(noteID2)));
+}
+
+test "delete empty note upon creation of new note" {
+    // TODO
+}
+test "exclude self from empty search" {
+    // TODO
 }

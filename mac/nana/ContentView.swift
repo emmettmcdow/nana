@@ -28,6 +28,7 @@ func colorC(colorScheme: ColorScheme) -> Color {
 struct ContentView: View {
     @State private var noteId: Int32
     @State private var text: String = ""
+    @State private var queriedNotes: [Note] = []
     @Environment(\.colorScheme) var colorScheme
     //@State private var colorScheme: ColorScheme = .light
     
@@ -53,7 +54,35 @@ struct ContentView: View {
                 Spacer()
                 VStack() {
                     Spacer()
-                    SearchButton(action: {print("Search Clicked")}, colorScheme: colorScheme)
+                    SearchButton(action: {
+                        print("Search Clicked")
+                        var ids = Array<Int32>(repeating: 0, count: 1000)
+                        let n = nana_search("", &ids, numericCast(ids.count))
+                        queriedNotes = []
+                        print(n)
+                        print(ids)
+                        for i in 0...Int(n-1) {
+                            let id = ids[i]
+                            print("ID \(id)")
+                            
+                            let create = nana_create_time(id)
+                            assert(create > 0, "Failed to get create_time")
+                            
+                            let mod = nana_mod_time(id)
+                            assert(create > 0, "Failed to get mod_time")
+                            
+                            var content_buf = Array<Int8>(repeating: 0, count: 1000)
+                            let sz = nana_read_all(id, &content_buf, numericCast(content_buf.count))
+                            assert(sz >= 0, "Failed to read content")
+                            let content = String(cString: content_buf, encoding: .utf8) ?? ""
+                            
+                            queriedNotes.append(Note(id:       id,
+                                                     content:  content,
+                                                     created:  Date(timeIntervalSince1970: TimeInterval(create)),
+                                                     modified: Date(timeIntervalSince1970: TimeInterval(mod))))
+                        }
+                        
+                    }, notes: queriedNotes, colorScheme: colorScheme)
                     CircularPlusButton(action: {
                         print("Add Clicked")
                         let res = nana_write_all(noteId, text)

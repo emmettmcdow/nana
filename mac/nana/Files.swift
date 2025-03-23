@@ -82,13 +82,13 @@ struct FileList: View {
 
 #Preview("Notes") {
     let notes: [Note] = [
-        Note(id: 0, created: Date(), modified: Date(), relpath: "/foo/bar", content: li1),
-        Note(id: 1, created: Date(), modified: Date(), relpath: "/foo/bar2", content: li2),
-        Note(id: 2, created: Date(), modified: Date(), relpath: "/foo/bar3", content: li3),
-        Note(id: 3, created: Date(), modified: Date(), relpath: "/foo/bar4", content: li3),
-        Note(id: 4, created: Date(), modified: Date(), relpath: "/foo/bar5", content: li3),
-        Note(id: 5, created: Date(), modified: Date(), relpath: "/foo/bar6", content: li3),
-        Note(id: 6, created: Date(), modified: Date(), relpath: "/foo/bar7", content: li3),
+        Note(id: 0, content: li1, created: Date(), modified: Date()),
+        Note(id: 1, content: li2, created: Date(), modified: Date()),
+        Note(id: 2, content: li3, created: Date(), modified: Date()),
+        Note(id: 3, content: li3, created: Date(), modified: Date()),
+        Note(id: 4, content: li3, created: Date(), modified: Date()),
+        Note(id: 5, content: li3, created: Date(), modified: Date()),
+        Note(id: 6, content: li3, created: Date(), modified: Date()),
     ]
     FileList(notes: notes)
 }

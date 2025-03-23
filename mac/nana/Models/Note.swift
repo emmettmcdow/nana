@@ -8,9 +8,8 @@
 import Foundation
 
 struct Note {
-    var id: Int
+    var id: Int32
+    var content: String
     var created: Date
     var modified: Date
-    var relpath: String // TODO: Get back to this can this be a FilePath? Not in scope?
-    var content: String
 }

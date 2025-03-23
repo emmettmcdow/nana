@@ -4,7 +4,7 @@ const nana = @import("root.zig");
 var rt: nana.Runtime = undefined;
 var init: bool = false;
 
-const CError = enum(c_int) { Success = 0, DoubleInit = -1, NotInit = -2, DirCreationFail = -3, InitFail = -4, DeinitFail = -5, CreateFail = -6, GetFail = -7, WriteFail = -8 };
+const CError = enum(c_int) { Success = 0, DoubleInit = -1, NotInit = -2, DirCreationFail = -3, InitFail = -4, DeinitFail = -5, CreateFail = -6, GetFail = -7, WriteFail = -8, SearchFail = -9, ReadFail = -10 };
 // const RUNTIME_DIR = "data/";
 
 // Output: CError
@@ -57,32 +57,33 @@ export fn nana_create() c_int {
 // Input: NoteID
 // Output: Create/Mod Time
 export fn nana_create_time(noteID: c_int) c_int {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const alloc = gpa.allocator();
-    defer {
-        const deinit_status = gpa.deinit();
-        if (deinit_status == .leak) @panic("TEST FAIL");
-    }
-    const note = rt.get(@intCast(noteID), alloc) catch |err| {
+    const note = rt.get(@intCast(noteID)) catch |err| {
         std.log.err("Failed to get note with id '{d}': {}\n", .{ noteID, err });
         return @intFromEnum(CError.GetFail);
     };
 
-    return @intCast(note.created);
+    // micro to seconds
+    return @intCast(@divTrunc(note.created, 1_000_000));
 }
 export fn nana_mod_time(noteID: c_int) c_int {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const alloc = gpa.allocator();
-    defer {
-        const deinit_status = gpa.deinit();
-        if (deinit_status == .leak) @panic("TEST FAIL");
-    }
-    const note = rt.get(@intCast(noteID), alloc) catch |err| {
+    const note = rt.get(@intCast(noteID)) catch |err| {
         std.log.err("Failed to get note with id '{d}': {}\n", .{ noteID, err });
         return @intFromEnum(CError.GetFail);
     };
 
-    return @intCast(note.modified);
+    // micro to seconds
+    return @intCast(@divTrunc(note.modified, 1_000_000));
+}
+
+export fn nana_search(query: [*:0]const u8, outbuf: [*c]c_int, sz: c_uint) c_int {
+    const convQuery: []const u8 = std.mem.sliceTo(query, 0);
+
+    const written = rt.search(convQuery, outbuf[0..sz]) catch |err| {
+        std.log.err("Failed to search with query '{s}': {}\n", .{ query, err });
+        return @intFromEnum(CError.SearchFail);
+    };
+
+    return @intCast(written);
 }
 
 export fn nana_write_all(noteID: c_int, content: [*:0]const u8) c_int {
@@ -94,14 +95,14 @@ export fn nana_write_all(noteID: c_int, content: [*:0]const u8) c_int {
     return 0;
 }
 
-// TODO
-//
-// Input: 0 terminated query
-// Output: -1 if failure, ID if success
-// export fn nana_search(query: [*:0]u8) c_int {
-//     _ = query;
-//     return 0;
-// }
+export fn nana_read_all(noteID: c_int, outbuf: [*c]u8, sz: c_uint) c_int {
+    const written = rt.readAll(@intCast(noteID), outbuf[0..sz]) catch |err| {
+        std.log.err("Failed to read all of note at id '{d}': {}\n", .{ noteID, err });
+        return @intFromEnum(CError.ReadFail);
+    };
+
+    return @intCast(written);
+}
 
 // // Input: Search ID from nana_search, buffer, buffer size
 // // Output: -1 if no more results, otherwise NoteID
