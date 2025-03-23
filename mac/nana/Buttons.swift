@@ -35,15 +35,13 @@ struct CircularPlusButton: View {
 }
 
 struct SearchButton: View {
-    var action: () -> Void
-    var notes: [Note] = []
+    var onClick: () -> Void
     var colorScheme: ColorScheme = .light
     var size: CGFloat = 50
-    @State var shouldPresentSheet = false
     @State var hover = false
     
     var body: some View {
-        Button (action: {action(); shouldPresentSheet.toggle()}){
+        Button (action: onClick){
             ZStack() {
                 Circle()
                     .fill(colorA(colorScheme: colorScheme).mix(with: .black, by: hover ? 0.1 : 0.0))
@@ -55,11 +53,8 @@ struct SearchButton: View {
                     .font(.system(size: size * 0.5))
                     .foregroundColor(colorB(colorScheme: colorScheme))
             }
+            
         }
-        .sheet(isPresented: $shouldPresentSheet) {
-            FileList(notes: notes)
-        }
-        .interactiveDismissDisabled(false)
         .buttonStyle(PlainButtonStyle())
         .onHover{ _ in
             self.hover.toggle()

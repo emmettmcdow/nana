@@ -29,6 +29,7 @@ struct ContentView: View {
     @State private var noteId: Int32
     @State private var text: String = ""
     @State private var queriedNotes: [Note] = []
+    @State var shouldPresentSheet = false
     @Environment(\.colorScheme) var colorScheme
     //@State private var colorScheme: ColorScheme = .dark
     init() {
@@ -53,32 +54,16 @@ struct ContentView: View {
                 Spacer()
                 VStack() {
                     Spacer()
-                    SearchButton(action: {
+                    SearchButton(onClick: {
                         var ids = Array<Int32>(repeating: 0, count: 100)
                         let n = nana_search("", &ids, numericCast(ids.count), noteId)
                         queriedNotes = []
-                        print(ids)
                         for i in 0...Int(n-1) {
                             let id = ids[i]
-                            
-                            let create = nana_create_time(id)
-                            assert(create > 0, "Failed to get create_time")
-                            
-                            let mod = nana_mod_time(id)
-                            assert(create > 0, "Failed to get mod_time")
-                            
-                            var content_buf = Array<Int8>(repeating: 0, count: 1000)
-                            let sz = nana_read_all(id, &content_buf, numericCast(content_buf.count))
-                            assert(sz >= 0, "Failed to read content")
-                            let content = String(cString: content_buf, encoding: .utf8) ?? ""
-                            
-                            queriedNotes.append(Note(id:       id,
-                                                     content:  content,
-                                                     created:  Date(timeIntervalSince1970: TimeInterval(create)),
-                                                     modified: Date(timeIntervalSince1970: TimeInterval(mod))))
-                        
+                            queriedNotes.append(Note(id: id))
                         }
-                    }, notes: queriedNotes, colorScheme: colorScheme)
+                        shouldPresentSheet.toggle()
+                    }, colorScheme: colorScheme)
                     CircularPlusButton(action: {
                         let res = nana_write_all(noteId, text)
                         assert(res == 0, "Failed to write all")
@@ -90,6 +75,14 @@ struct ContentView: View {
                 }
             }.padding()
         }
+        .sheet(isPresented: $shouldPresentSheet) {
+            FileList(notes: $queriedNotes, onSelect: {(note: Note) -> Void in
+                noteId = note.id
+                text = note.content
+                shouldPresentSheet.toggle()
+            })
+        }
+        .interactiveDismissDisabled(false)
         .background(colorB(colorScheme: colorScheme))
     }
 }

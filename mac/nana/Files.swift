@@ -14,7 +14,9 @@ let li2 = "Pellentesque non iaculis purus. Maecenas laoreet feugiat massa in vol
 let li3 = "Aenean at mauris est. Etiam felis velit, tempor a ipsum quis, ornare ornare orci. Phasellus vehicula fermentum justo quis dictum. Sed sollicitudin quam augue, placerat gravida libero lacinia vitae. Vivamus lobortis mollis libero quis cursus. Vestibulum erat arcu, tincidunt ac lacus vel, luctus tincidunt magna. Duis rutrum at sapien et finibus. Proin lectus lacus, laoreet vitae auctor vitae, congue at nisi. Phasellus orci nisl, imperdiet ac magna eget, ornare dignissim sapien. Nullam ultricies dui ornare ante eleifend, at faucibus quam facilisis. Nulla tempus eros tincidunt porttitor hendrerit."
 
 struct FileList: View {
-    var notes: [Note]
+    @Binding var notes: [Note]
+    var onSelect: (Note) -> Void
+
     @Environment(\.dismiss) private var dismiss // For macOS 12+
     @State private var query: String = "eve"
     @Environment(\.colorScheme) var colorScheme
@@ -68,6 +70,9 @@ struct FileList: View {
                     }
                 }
                 .listRowSeparatorTint(colorC(colorScheme: colorScheme))
+                .onTapGesture {
+                    onSelect(note)
+                }
             }
             .scrollContentBackground(.hidden)
             .listStyle(.plain)
@@ -81,7 +86,7 @@ struct FileList: View {
 
 
 #Preview("Notes") {
-    let notes: [Note] = [
+    @State var notes: [Note] = [
         Note(id: 0, content: li1, created: Date(), modified: Date()),
         Note(id: 1, content: li2, created: Date(), modified: Date()),
         Note(id: 2, content: li3, created: Date(), modified: Date()),
@@ -90,5 +95,5 @@ struct FileList: View {
         Note(id: 5, content: li3, created: Date(), modified: Date()),
         Note(id: 6, content: li3, created: Date(), modified: Date()),
     ]
-    FileList(notes: notes)
+    FileList(notes: $notes, onSelect: {(n: Note) -> Void in print(n.id)})
 }
