@@ -26,6 +26,8 @@ const UPDATE_NOTE =
 ;
 const GET_COLS = "PRAGMA table_info(notes);";
 
+const DELETE_NOTE = "DELETE FROM notes WHERE id = ?;";
+
 const SEARCH_NO_QUERY = "SELECT id FROM notes ORDER BY modified DESC LIMIT ?;";
 
 const NoteID = u64;
@@ -121,7 +123,30 @@ pub const Runtime = struct {
         });
     }
 
+    pub fn delete(self: *Runtime, id: NoteID) !void {
+        const note = try self.get(id);
+
+        var buf: [64]u8 = undefined;
+        try self.basedir.deleteFile(note.path(&buf));
+
+        var diags = sqlite.Diagnostics{};
+        var stmt = self.db.prepareWithDiags(DELETE_NOTE, .{ .diags = &diags }) catch |err| {
+            std.log.err("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
+            return err;
+        };
+        defer stmt.deinit();
+
+        try stmt.exec(.{}, .{
+            .id = note.id,
+        });
+    }
+
     pub fn writeAll(self: *Runtime, id: NoteID, content: []const u8) !void {
+        // std.debug.print("Writeall called on {d} with '{s}' (len: {d})\n", .{ id, content, content.len });
+        if (content.len == 0) {
+            return self.delete(id);
+        }
+
         const note = try self.get(id);
 
         var buf: [64]u8 = undefined;
@@ -155,7 +180,7 @@ pub const Runtime = struct {
 
     // Search should query the database and return N written
     // Parameter buf is really an array of NoteIDs. Need to use c_int though
-    pub fn search(self: *Runtime, query: []const u8, buf: []c_int) !usize {
+    pub fn search(self: *Runtime, query: []const u8, buf: []c_int, ignore: ?NoteID) !usize {
         if (query.len != 0) {
             unreachable;
         }
@@ -172,16 +197,22 @@ pub const Runtime = struct {
             .limit = buf.len,
         });
 
-        var i: usize = 0;
-        while (try iter.next(.{})) |id| : (i += 1) {
-            if (i >= buf.len) {
+        var written: usize = 0;
+        while (try iter.next(.{})) |id| {
+            if (written >= buf.len) {
                 // TOO MANY ITEMS
                 unreachable;
             }
-            buf[i] = @intCast(id);
+            if (ignore) |toIgnore| {
+                if (id == toIgnore) {
+                    continue;
+                }
+            }
+            buf[written] = @intCast(id);
+            written += 1;
         }
 
-        return i;
+        return written;
     }
 
     pub fn deinit(self: *Runtime) void {
@@ -391,6 +422,35 @@ test "r/w-all too smol output buffer" {
     try expect(false);
 }
 
+test "delete empty note on writeAll" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var rt = try init(tmpD.dir, true);
+    defer rt.deinit();
+
+    const noteID = try rt.create();
+    var expected = "Some content!";
+    try rt.writeAll(noteID, expected[0..]);
+
+    // Should not fail
+    const note = try rt.get(noteID);
+    var buffer: [20]u8 = undefined;
+    const n = try rt.readAll(noteID, &buffer);
+    try std.testing.expectEqualStrings(expected, buffer[0..n]);
+
+    // Now lets clear it out
+    const nothing = "";
+    try rt.writeAll(noteID, nothing);
+
+    const out = rt.get(noteID);
+    try std.testing.expectError(sqlite.Error.SQLiteNotFound, out);
+
+    var pathbuf: [64]u8 = undefined;
+    const path = note.path(&pathbuf);
+    const f = tmpD.dir.openFile(path, .{});
+    try std.testing.expectError(error.FileNotFound, f);
+}
+
 test "search no query" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
@@ -403,7 +463,7 @@ test "search no query" {
     }
 
     var buffer: [10]c_int = undefined;
-    const written = try rt.search("", &buffer);
+    const written = try rt.search("", &buffer, null);
     try expect(written == 9);
 
     i = 0;
@@ -423,7 +483,7 @@ test "search no query orderby modified" {
     const noteID2 = try rt.create();
 
     var buffer: [10]c_int = undefined;
-    const written = try rt.search("", &buffer);
+    const written = try rt.search("", &buffer, null);
     try expect(written == 2);
     try expect(buffer[0] == @as(c_int, @intCast(noteID2)));
     try expect(buffer[1] == @as(c_int, @intCast(noteID1)));
@@ -432,15 +492,38 @@ test "search no query orderby modified" {
     try rt.update(note1);
 
     var buffer2: [10]c_int = undefined;
-    const written2 = try rt.search("", &buffer2);
+    const written2 = try rt.search("", &buffer2, null);
     try expect(written2 == 2);
     try expect(buffer2[0] == @as(c_int, @intCast(noteID1)));
     try expect(buffer2[1] == @as(c_int, @intCast(noteID2)));
 }
 
-test "delete empty note upon creation of new note" {
-    // TODO
+test "exclude from empty search" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var rt = try init(tmpD.dir, true);
+    defer rt.deinit();
+
+    const noteID1 = try rt.create();
+    const noteID2 = try rt.create();
+
+    var buffer: [10]c_int = undefined;
+    const written = try rt.search("", &buffer, noteID1);
+    try expect(written == 1);
+    try expect(buffer[0] == @as(c_int, @intCast(noteID2)));
 }
-test "exclude self from empty search" {
-    // TODO
+
+test "exclude from empty search - latest" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var rt = try init(tmpD.dir, true);
+    defer rt.deinit();
+
+    const noteID1 = try rt.create();
+    const noteID2 = try rt.create();
+
+    var buffer: [10]c_int = undefined;
+    const written = try rt.search("", &buffer, noteID2);
+    try expect(written == 1);
+    try expect(buffer[0] == @as(c_int, @intCast(noteID1)));
 }

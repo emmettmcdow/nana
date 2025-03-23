@@ -9,15 +9,15 @@ import SwiftUI
 
 import NanaKit
 
-let lightYellow = Color(red: 0.7607843137254902, green: 0.7137254901960784, blue: 0.5843137254901961)
-let darkBrown = Color(red:0.14901960784313725, green: 0.1411764705882353, blue: 0.11372549019607843)
+let light = Color(red: 228 / 255, green: 228 / 255, blue: 228 / 255)
+let dark = Color(red: 47 / 255, green: 47 / 255, blue: 47 / 255)
 
 func colorA(colorScheme: ColorScheme) -> Color {
-    return colorScheme == .light ? darkBrown : lightYellow
+    return colorScheme == .light ? dark : light
 }
 
 func colorB(colorScheme: ColorScheme) -> Color {
-    return colorScheme == .dark ? darkBrown : lightYellow
+    return colorScheme == .dark ? dark : light
 }
 
 func colorC(colorScheme: ColorScheme) -> Color {
@@ -30,8 +30,7 @@ struct ContentView: View {
     @State private var text: String = ""
     @State private var queriedNotes: [Note] = []
     @Environment(\.colorScheme) var colorScheme
-    //@State private var colorScheme: ColorScheme = .light
-    
+    //@State private var colorScheme: ColorScheme = .dark
     init() {
         let newId = nana_create()
         assert(newId > 0, "Failed to create new note")
@@ -55,15 +54,12 @@ struct ContentView: View {
                 VStack() {
                     Spacer()
                     SearchButton(action: {
-                        print("Search Clicked")
-                        var ids = Array<Int32>(repeating: 0, count: 1000)
-                        let n = nana_search("", &ids, numericCast(ids.count))
+                        var ids = Array<Int32>(repeating: 0, count: 100)
+                        let n = nana_search("", &ids, numericCast(ids.count), noteId)
                         queriedNotes = []
-                        print(n)
                         print(ids)
                         for i in 0...Int(n-1) {
                             let id = ids[i]
-                            print("ID \(id)")
                             
                             let create = nana_create_time(id)
                             assert(create > 0, "Failed to get create_time")
@@ -80,11 +76,10 @@ struct ContentView: View {
                                                      content:  content,
                                                      created:  Date(timeIntervalSince1970: TimeInterval(create)),
                                                      modified: Date(timeIntervalSince1970: TimeInterval(mod))))
-                        }
                         
+                        }
                     }, notes: queriedNotes, colorScheme: colorScheme)
                     CircularPlusButton(action: {
-                        print("Add Clicked")
                         let res = nana_write_all(noteId, text)
                         assert(res == 0, "Failed to write all")
                         let newId = nana_create()
@@ -99,6 +94,7 @@ struct ContentView: View {
     }
 }
 
+/*
 #Preview("Editor") {
     ContentView()
-}
+}*/

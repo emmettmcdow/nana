@@ -75,10 +75,11 @@ export fn nana_mod_time(noteID: c_int) c_int {
     return @intCast(@divTrunc(note.modified, 1_000_000));
 }
 
-export fn nana_search(query: [*:0]const u8, outbuf: [*c]c_int, sz: c_uint) c_int {
+export fn nana_search(query: [*:0]const u8, outbuf: [*c]c_int, sz: c_uint, ignore: c_int) c_int {
     const convQuery: []const u8 = std.mem.sliceTo(query, 0);
 
-    const written = rt.search(convQuery, outbuf[0..sz]) catch |err| {
+    const igParam: ?u64 = if (ignore == -1) null else @intCast(ignore);
+    const written = rt.search(convQuery, outbuf[0..sz], igParam) catch |err| {
         std.log.err("Failed to search with query '{s}': {}\n", .{ query, err });
         return @intFromEnum(CError.SearchFail);
     };
