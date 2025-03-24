@@ -28,7 +28,9 @@ const GET_COLS = "PRAGMA table_info(notes);";
 
 const DELETE_NOTE = "DELETE FROM notes WHERE id = ?;";
 
-const SEARCH_NO_QUERY = "SELECT id FROM notes ORDER BY modified DESC LIMIT ?;";
+const EMPTY_NOTE = "SELECT id FROM notes WHERE created = modified LIMIT 1;";
+
+const SEARCH_NO_QUERY = "SELECT id FROM notes WHERE created != modified ORDER BY modified DESC LIMIT ?;";
 
 const NoteID = u64;
 const Note = struct {
@@ -60,8 +62,18 @@ pub const Runtime = struct {
     _next_id: NoteID = 1,
 
     pub fn create(self: *Runtime) !NoteID {
+
+        // Recycle empty notes
+        const row = try self.db.one(NoteID, EMPTY_NOTE, .{}, .{});
+        if (row) |id| {
+            const note = try self.get(id);
+            try self.update(note);
+            return id;
+        }
+
         const created = std.time.microTimestamp();
         const note = Note{ .id = self._next_id, .created = created, .modified = created };
+
         var buf: [64]u8 = undefined;
         const path = note.path(&buf);
         const file = try self.basedir.createFile(path, .{});
@@ -274,16 +286,21 @@ test "re-init DB" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
 
-    var rt = try init(tmpD.dir, false);
+    const cwd = std.fs.cwd();
+    // TODO: fix this - sqlite library can't curently use tmpD... ugh
+    _ = cwd.deleteFile("db.db") catch void; // Start fresh!
+    defer _ = cwd.deleteFile("db.db") catch void; // Leave no trace!
 
-    _ = try rt.create();
-    const id2 = try rt.create();
+    var rt = try init(tmpD.parent_dir, false);
+
+    const id1 = try rt.create();
+    _ = try rt.writeAll(id1, "norecycle");
 
     rt.deinit();
-    rt = try init(tmpD.dir, false);
+    rt = try init(tmpD.parent_dir, false);
 
-    const id3 = try rt.create();
-    try expect(id3 == id2 + 1);
+    const id2 = try rt.create();
+    try expect(id2 == id1 + 1);
 }
 
 test "r/w DB" {
@@ -307,6 +324,7 @@ test "r/w DB" {
     try expectEqlStrings("1", note1Path);
     try expect(note1.created - now < 1_000); // Happened in the last millisecond(?)
     try expect(note1.modified - now < 1_000);
+    _ = try rt.writeAll(noteID, "norecycle");
     try rt.basedir.access(note1Path, .{ .mode = .read_write });
 
     const now2 = std.time.microTimestamp();
@@ -319,6 +337,21 @@ test "r/w DB" {
     try expect(note2.created - now2 < 1_000);
     try expect(note2.modified - now2 < 1_000);
     try rt.basedir.access(note2Path, .{ .mode = .read_write });
+}
+
+test "recycle empty note" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var rt = try init(tmpD.dir, true);
+    defer rt.deinit();
+
+    const noteID1 = try rt.create();
+    const note1 = try rt.get(noteID1);
+    const noteID2 = try rt.create();
+    const note2 = try rt.get(noteID2);
+
+    try expect(noteID1 == noteID2);
+    try expect(note1.modified != note2.modified);
 }
 
 const TestError = error{ DirectoryShouldBeEmpty, ExpectedError };
@@ -458,8 +491,10 @@ test "search no query" {
     defer rt.deinit();
 
     var i: usize = 0;
+    var id: NoteID = undefined;
     while (i < 9) : (i += 1) {
-        _ = try rt.create();
+        id = try rt.create();
+        _ = try rt.writeAll(id, "norecycle");
     }
 
     var buffer: [10]c_int = undefined;
@@ -480,7 +515,9 @@ test "search no query orderby modified" {
     defer rt.deinit();
 
     const noteID1 = try rt.create();
+    _ = try rt.writeAll(noteID1, "norecycle");
     const noteID2 = try rt.create();
+    _ = try rt.writeAll(noteID2, "norecycle");
 
     var buffer: [10]c_int = undefined;
     const written = try rt.search("", &buffer, null);
@@ -498,14 +535,16 @@ test "search no query orderby modified" {
     try expect(buffer2[1] == @as(c_int, @intCast(noteID2)));
 }
 
-test "exclude from empty search" {
+test "exclude from 'empty search'" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var rt = try init(tmpD.dir, true);
     defer rt.deinit();
 
     const noteID1 = try rt.create();
+    _ = try rt.writeAll(noteID1, "norecycle");
     const noteID2 = try rt.create();
+    _ = try rt.writeAll(noteID2, "norecycle");
 
     var buffer: [10]c_int = undefined;
     const written = try rt.search("", &buffer, noteID1);
@@ -513,17 +552,35 @@ test "exclude from empty search" {
     try expect(buffer[0] == @as(c_int, @intCast(noteID2)));
 }
 
-test "exclude from empty search - latest" {
+test "exclude from 'empty search' - 2" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var rt = try init(tmpD.dir, true);
     defer rt.deinit();
 
     const noteID1 = try rt.create();
+    _ = try rt.writeAll(noteID1, "norecycle");
     const noteID2 = try rt.create();
+    _ = try rt.writeAll(noteID2, "norecycle");
 
     var buffer: [10]c_int = undefined;
     const written = try rt.search("", &buffer, noteID2);
+    try expect(written == 1);
+    try expect(buffer[0] == @as(c_int, @intCast(noteID1)));
+}
+
+test "exclude from 'empty search' - unmodifieds" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var rt = try init(tmpD.dir, true);
+    defer rt.deinit();
+
+    const noteID1 = try rt.create();
+    _ = try rt.writeAll(noteID1, "norecycle");
+    _ = try rt.create();
+
+    var buffer: [10]c_int = undefined;
+    const written = try rt.search("", &buffer, null);
     try expect(written == 1);
     try expect(buffer[0] == @as(c_int, @intCast(noteID1)));
 }

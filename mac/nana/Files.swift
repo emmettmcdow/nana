@@ -7,12 +7,6 @@
 
 import SwiftUI
 
-let li1 = "Donec interdum turpis non ipsum venenatis porttitor. Sed malesuada tempor ultricies. Morbi at elit elit. Proin id ligula consequat ipsum mollis pharetra. Praesent in tempor purus. Aenean sapien risus, maximus id elit ac, ullamcorper sollicitudin eros. Nulla blandit nec nisi et iaculis. Donec congue rutrum massa. Nulla congue augue non metus pharetra consectetur. Praesent sed tellus quis leo blandit sollicitudin. Class aptent taciti sociosqu ad litora torquent per conubia nostra, per inceptos himenaeos."
-
-let li2 = "Pellentesque non iaculis purus. Maecenas laoreet feugiat massa in volutpat. Ut non nunc eleifend, tincidunt justo non, consequat ipsum. Ut quis nunc velit. Suspendisse consectetur turpis vel lectus faucibus semper et non elit. Etiam a fringilla lacus, nec scelerisque dui. Nulla quis orci tortor. Etiam nec scelerisque diam, sit amet blandit tellus. Nunc tortor nisi, volutpat id nibh et, ultrices molestie sem. Curabitur quis sem mi. Pellentesque odio eros, finibus luctus rutrum eu, consequat ut nulla. In et ipsum euismod, gravida augue quis, mattis nulla. Phasellus tristique accumsan justo sed dapibus. Pellentesque felis erat, tempus ac aliquam sed, interdum id mauris."
-
-let li3 = "Aenean at mauris est. Etiam felis velit, tempor a ipsum quis, ornare ornare orci. Phasellus vehicula fermentum justo quis dictum. Sed sollicitudin quam augue, placerat gravida libero lacinia vitae. Vivamus lobortis mollis libero quis cursus. Vestibulum erat arcu, tincidunt ac lacus vel, luctus tincidunt magna. Duis rutrum at sapien et finibus. Proin lectus lacus, laoreet vitae auctor vitae, congue at nisi. Phasellus orci nisl, imperdiet ac magna eget, ornare dignissim sapien. Nullam ultricies dui ornare ante eleifend, at faucibus quam facilisis. Nulla tempus eros tincidunt porttitor hendrerit."
-
 struct FileList: View {
     @Binding var notes: [Note]
     var onSelect: (Note) -> Void
@@ -84,6 +78,12 @@ struct FileList: View {
     }
 }
 
+
+let li1 = "Donec interdum turpis non ipsum venenatis porttitor. Sed malesuada tempor ultricies. Morbi at elit elit. Proin id ligula consequat ipsum mollis pharetra. Praesent in tempor purus. Aenean sapien risus, maximus id elit ac, ullamcorper sollicitudin eros. Nulla blandit nec nisi et iaculis. Donec congue rutrum massa. Nulla congue augue non metus pharetra consectetur. Praesent sed tellus quis leo blandit sollicitudin. Class aptent taciti sociosqu ad litora torquent per conubia nostra, per inceptos himenaeos."
+
+let li2 = "Pellentesque non iaculis purus. Maecenas laoreet feugiat massa in volutpat. Ut non nunc eleifend, tincidunt justo non, consequat ipsum. Ut quis nunc velit. Suspendisse consectetur turpis vel lectus faucibus semper et non elit. Etiam a fringilla lacus, nec scelerisque dui. Nulla quis orci tortor. Etiam nec scelerisque diam, sit amet blandit tellus. Nunc tortor nisi, volutpat id nibh et, ultrices molestie sem. Curabitur quis sem mi. Pellentesque odio eros, finibus luctus rutrum eu, consequat ut nulla. In et ipsum euismod, gravida augue quis, mattis nulla. Phasellus tristique accumsan justo sed dapibus. Pellentesque felis erat, tempus ac aliquam sed, interdum id mauris."
+
+let li3 = "Aenean at mauris est. Etiam felis velit, tempor a ipsum quis, ornare ornare orci. Phasellus vehicula fermentum justo quis dictum. Sed sollicitudin quam augue, placerat gravida libero lacinia vitae. Vivamus lobortis mollis libero quis cursus. Vestibulum erat arcu, tincidunt ac lacus vel, luctus tincidunt magna. Duis rutrum at sapien et finibus. Proin lectus lacus, laoreet vitae auctor vitae, congue at nisi. Phasellus orci nisl, imperdiet ac magna eget, ornare dignissim sapien. Nullam ultricies dui ornare ante eleifend, at faucibus quam facilisis. Nulla tempus eros tincidunt porttitor hendrerit."
 
 #Preview("Notes") {
     @State var notes: [Note] = [
