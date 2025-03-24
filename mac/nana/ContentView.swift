@@ -77,6 +77,12 @@ struct ContentView: View {
         }
         .sheet(isPresented: $shouldPresentSheet) {
             FileList(notes: $queriedNotes, onSelect: {(note: Note) -> Void in
+                if (text.count > 0) {
+                    // Save the current buffer
+                    let res = nana_write_all(noteId, text)
+                    assert(res == 0, "Failed to write all")
+                }
+                
                 noteId = note.id
                 text = note.content
                 shouldPresentSheet.toggle()

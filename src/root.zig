@@ -61,6 +61,7 @@ pub const Runtime = struct {
     db: sqlite.Db,
     _next_id: NoteID = 1,
 
+    // FS lazy write - only create file on write
     pub fn create(self: *Runtime) !NoteID {
 
         // Recycle empty notes
@@ -74,26 +75,17 @@ pub const Runtime = struct {
         const created = std.time.microTimestamp();
         const note = Note{ .id = self._next_id, .created = created, .modified = created };
 
-        var buf: [64]u8 = undefined;
-        const path = note.path(&buf);
-        const file = try self.basedir.createFile(path, .{});
-        file.close();
-
         var diags = sqlite.Diagnostics{};
         var stmt = self.db.prepareWithDiags(INSERT_NOTE, .{ .diags = &diags }) catch |err| {
             std.log.info("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
-            try self.basedir.deleteFile(path);
             return err;
         };
         defer stmt.deinit();
-        stmt.exec(.{}, .{
+        try stmt.exec(.{}, .{
             .id = note.id,
             .created = note.created,
             .modified = note.modified,
-        }) catch |err| {
-            try self.basedir.deleteFile(path);
-            return err;
-        };
+        });
 
         self._next_id += 1;
 
@@ -164,7 +156,7 @@ pub const Runtime = struct {
         var buf: [64]u8 = undefined;
         const path = note.path(&buf);
 
-        const f = try self.basedir.openFile(path, .{ .mode = .read_write });
+        const f = try self.basedir.createFile(path, .{ .read = true, .truncate = true });
         defer f.close();
         try f.writeAll(content);
 
@@ -178,7 +170,14 @@ pub const Runtime = struct {
 
         var pathbuf: [64]u8 = undefined;
         const path = note.path(&pathbuf);
-        const f = try self.basedir.openFile(path, .{});
+        const f = self.basedir.openFile(path, .{}) catch |err| switch (err) {
+            error.FileNotFound => {
+                return 0; // Lazy creation
+            },
+            else => {
+                return err;
+            },
+        };
         defer f.close();
 
         const n = try f.readAll(buf);
@@ -303,6 +302,23 @@ test "re-init DB" {
     try expect(id2 == id1 + 1);
 }
 
+test "no create on read" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var rt = try init(tmpD.dir, true);
+    defer rt.deinit();
+
+    const nid1 = try rt.create();
+    const n1 = try rt.get(nid1);
+    var buf: [64]u8 = undefined;
+    const path = n1.path(&buf);
+    try std.testing.expectError(error.FileNotFound, rt.basedir.access(path, .{ .mode = .read_write }));
+
+    const sz = try rt.readAll(nid1, &buf);
+    try expect(sz == 0);
+    try std.testing.expectError(error.FileNotFound, rt.basedir.access(path, .{ .mode = .read_write }));
+}
+
 test "r/w DB" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
@@ -329,6 +345,7 @@ test "r/w DB" {
 
     const now2 = std.time.microTimestamp();
     const noteID2 = try rt.create();
+    _ = try rt.writeAll(noteID2, "norecycle");
     const note2 = try rt.get(noteID2);
 
     try expect(note2.id == 2);
@@ -390,7 +407,6 @@ test "update DB" {
     try expectEqlStrings("1", resPath);
     try expect(resNote.created - then < 1_000); // Happened in the last millisecond(?)
     try expect(resNote.modified - then < 1_000);
-    try rt.basedir.access(resPath, .{ .mode = .read_write });
 
     const now = std.time.microTimestamp();
     try rt.update(resNote);
@@ -535,7 +551,7 @@ test "search no query orderby modified" {
     try expect(buffer2[1] == @as(c_int, @intCast(noteID2)));
 }
 
-test "exclude from 'empty search'" {
+test "exclude param 'empty search'" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var rt = try init(tmpD.dir, true);
@@ -552,7 +568,7 @@ test "exclude from 'empty search'" {
     try expect(buffer[0] == @as(c_int, @intCast(noteID2)));
 }
 
-test "exclude from 'empty search' - 2" {
+test "exclude param 'empty search' - 2" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var rt = try init(tmpD.dir, true);
@@ -569,7 +585,7 @@ test "exclude from 'empty search' - 2" {
     try expect(buffer[0] == @as(c_int, @intCast(noteID1)));
 }
 
-test "exclude from 'empty search' - unmodifieds" {
+test "exclude from 'empty search' unmodifieds" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var rt = try init(tmpD.dir, true);
