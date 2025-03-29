@@ -31,13 +31,25 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
+        const onnx_dep = b.dependency("zig_onnxruntime", .{
+            .optimize = optimize,
+            .target = target,
+        });
         const sqliteArtifact = sqlite.artifact("sqlite");
         const mod = sqlite.module("sqlite");
         lib2.root_module.addImport("sqlite", mod);
+        lib2.root_module.addImport("onnxruntime", onnx_dep.module("zig-onnxruntime"));
         lib2.linkLibrary(sqliteArtifact);
         lib2.bundle_compiler_rt = true;
         lib2.linkLibC();
         b.default_step.dependOn(&lib2.step);
+
+        const install_onnx_libs = b.addInstallDirectory(.{
+            .source_dir = onnx_dep.module("onnxruntime_lib").root_source_file.?,
+            .install_dir = .bin,
+            .install_subdir = ".",
+        });
+        b.getInstallStep().dependOn(&install_onnx_libs.step);
 
         var libSources = [_]LazyPath{
             lib2.getEmittedBin(),
@@ -83,16 +95,22 @@ pub fn build(b: *std.Build) void {
     // Unit Tests //
     ////////////////
     const target = b.standardTargetOptions(.{});
-    const sqlite = b.dependency("sqlite", .{
-        .target = target,
-        .optimize = optimize,
-    });
     const lib_unit_tests = b.addTest(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
+    const sqlite = b.dependency("sqlite", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const onnx_dep = b.dependency("zig_onnxruntime", .{
+        .optimize = optimize,
+        .target = target,
+    });
+
     lib_unit_tests.root_module.addImport("sqlite", sqlite.module("sqlite"));
+    lib_unit_tests.root_module.addImport("onnxruntime", onnx_dep.module("zig-onnxruntime"));
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);
@@ -102,6 +120,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    embed_unit_tests.root_module.addImport("onnxruntime", onnx_dep.module("zig-onnxruntime"));
     const run_embed_unit_tests = b.addRunArtifact(embed_unit_tests);
     test_step.dependOn(&run_embed_unit_tests.step);
 

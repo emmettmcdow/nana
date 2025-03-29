@@ -12,7 +12,7 @@ assert(len(sys.argv) == 2)
 
 tokenizer = BertTokenizerFast.from_pretrained("./")
 encoded = tokenizer(sys.argv[1], 
-                    max_length=8, 
+                    max_length=16, 
                     padding="max_length", 
                     truncation=True)
 

@@ -1,8 +1,9 @@
 const std = @import("std");
 const nana = @import("root.zig");
 
-var rt: nana.Runtime = undefined;
+var rt: *nana.Runtime = undefined;
 var init: bool = false;
+var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
 const CError = enum(c_int) { Success = 0, DoubleInit = -1, NotInit = -2, DirCreationFail = -3, InitFail = -4, DeinitFail = -5, CreateFail = -6, GetFail = -7, WriteFail = -8, SearchFail = -9, ReadFail = -10 };
 // const RUNTIME_DIR = "data/";
@@ -19,9 +20,11 @@ export fn nana_init() c_int {
         std.log.err("Failed to access working directory '{s}': {}\n", .{ cwd, err });
         return @intFromEnum(CError.DirCreationFail);
     };
-    rt = nana.init(
+
+    rt = nana.Runtime.init(
         d,
         false,
+        gpa.allocator(),
     ) catch |err| {
         std.log.err("Failed to initialize nana: {}\n", .{err});
         return @intFromEnum(CError.InitFail);
