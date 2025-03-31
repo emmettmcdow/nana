@@ -3,9 +3,9 @@ const expect = std.testing.expect;
 const expectEqlStrings = std.testing.expectEqualStrings;
 const testing_allocator = std.testing.allocator;
 
-const embed = @import("embed.zig");
-
 const sqlite = @import("sqlite");
+
+const embed = @import("embed.zig");
 
 pub const Error = error{ NotFound, BufferTooSmall };
 const DB_LOCATION = "./db.db";
@@ -59,6 +59,14 @@ const SchemaRow = struct {
     unk3: u8 = 0,
 };
 
+// TODO: this is a hack...
+const SMALL_TESTING_MODEL = "zig-out/share/mnist-12-int8.onnx";
+pub const RuntimeOpts = struct {
+    b: std.fs.Dir,
+    mem: bool = false,
+    model: [:0]const u8 = SMALL_TESTING_MODEL,
+};
+
 pub const Runtime = struct {
     basedir: std.fs.Dir,
     db: sqlite.Db,
@@ -66,10 +74,11 @@ pub const Runtime = struct {
     tokenizer: embed.Tokenizer,
     arena: std.heap.ArenaAllocator,
     next_id: NoteID,
+    embed_model: [:0]const u8 = SMALL_TESTING_MODEL,
 
-    pub fn init(b: std.fs.Dir, mem: bool, allocator: std.mem.Allocator) !Runtime {
+    pub fn init(allocator: std.mem.Allocator, opts: RuntimeOpts) !Runtime {
         var db: sqlite.Db = try sqlite.Db.init(.{
-            .mode = if (mem) sqlite.Db.Mode.Memory else sqlite.Db.Mode{ .File = DB_LOCATION },
+            .mode = if (opts.mem) sqlite.Db.Mode.Memory else sqlite.Db.Mode{ .File = DB_LOCATION },
             .open_flags = .{
                 .write = true,
                 .create = true,
@@ -87,10 +96,15 @@ pub const Runtime = struct {
         }
 
         var arena = std.heap.ArenaAllocator.init(allocator);
-        const embedder = try embed.Embedder.init(arena.allocator());
+        // const one = std.time.microTimestamp();
+        const embedder = try embed.Embedder.init(arena.allocator(), opts.model);
+        // const two = std.time.microTimestamp();
         const tokenizer = try embed.Tokenizer.init(arena.allocator());
+        // const three = std.time.microTimestamp();
+        // std.debug.print("Embedder took {d} ms to init\n", .{two - one});
+        // std.debug.print("Tokenizer took {d} ms to init\n", .{three - two});
 
-        return Runtime{ .basedir = b, .db = db, .embedder = embedder, .tokenizer = tokenizer, .next_id = next_id, .arena = arena };
+        return Runtime{ .basedir = opts.b, .db = db, .embedder = embedder, .tokenizer = tokenizer, .next_id = next_id, .arena = arena };
     }
 
     pub fn deinit(self: *Runtime) void {
@@ -268,7 +282,7 @@ test "init DB" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
 
-    var rt = try Runtime.init(tmpD.dir, true, testing_allocator);
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
     defer rt.deinit();
     // Check if initialized
     var stmt = try rt.db.prepare(GET_COLS);
@@ -305,17 +319,13 @@ test "re-init DB" {
     defer _ = cwd.deleteFile("db.db") catch void; // Leave no trace!
 
     var arena1 = std.heap.ArenaAllocator.init(testing_allocator);
-    var rt = try Runtime.init(
-        tmpD.parent_dir,
-        false,
-        arena1.allocator(),
-    );
+    var rt = try Runtime.init(arena1.allocator(), .{ .b = tmpD.parent_dir });
 
     const id1 = try rt.create();
     _ = try rt.writeAll(id1, "norecycle");
 
     rt.deinit();
-    rt = try Runtime.init(tmpD.parent_dir, false, arena1.allocator());
+    rt = try Runtime.init(arena1.allocator(), .{ .b = tmpD.parent_dir });
     arena1.deinit();
 
     const id2 = try rt.create();
@@ -325,7 +335,7 @@ test "re-init DB" {
 test "no create on read" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(tmpD.dir, true, testing_allocator);
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
     defer rt.deinit();
 
     const nid1 = try rt.create();
@@ -342,7 +352,7 @@ test "no create on read" {
 test "r/w DB" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(tmpD.dir, true, testing_allocator);
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
     defer rt.deinit();
 
     const fakeID = 420;
@@ -379,7 +389,7 @@ test "r/w DB" {
 test "recycle empty note" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(tmpD.dir, true, testing_allocator);
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
     defer rt.deinit();
 
     const noteID1 = try rt.create();
@@ -395,7 +405,7 @@ const TestError = error{ DirectoryShouldBeEmpty, ExpectedError };
 test "cleanup FS on DB failure create" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(tmpD.dir, true, testing_allocator);
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
     rt.deinit();
 
     // Should throw an error - we de-init the db
@@ -414,7 +424,7 @@ test "cleanup FS on DB failure create" {
 test "update DB" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(tmpD.dir, true, testing_allocator);
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
     defer rt.deinit();
 
     const then = std.time.microTimestamp();
@@ -440,7 +450,7 @@ test "update DB" {
 test "r/w-all note" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(tmpD.dir, true, testing_allocator);
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
     defer rt.deinit();
 
     const noteID = try rt.create();
@@ -457,7 +467,7 @@ test "r/w-all note" {
 test "r/w-all updated time" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(tmpD.dir, true, testing_allocator);
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
     defer rt.deinit();
 
     const noteID = try rt.create();
@@ -474,7 +484,7 @@ test "r/w-all updated time" {
 test "r/w-all too smol output buffer" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(tmpD.dir, true, testing_allocator);
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
     defer rt.deinit();
 
     const noteID = try rt.create();
@@ -494,7 +504,7 @@ test "r/w-all too smol output buffer" {
 test "delete empty note on writeAll" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(tmpD.dir, true, testing_allocator);
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
     defer rt.deinit();
 
     const noteID = try rt.create();
@@ -523,7 +533,7 @@ test "delete empty note on writeAll" {
 test "search no query" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(tmpD.dir, true, testing_allocator);
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
     defer rt.deinit();
 
     var i: usize = 0;
@@ -547,7 +557,7 @@ test "search no query" {
 test "search no query orderby modified" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(tmpD.dir, true, testing_allocator);
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
     defer rt.deinit();
 
     const noteID1 = try rt.create();
@@ -574,7 +584,7 @@ test "search no query orderby modified" {
 test "exclude param 'empty search'" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(tmpD.dir, true, testing_allocator);
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
     defer rt.deinit();
 
     const noteID1 = try rt.create();
@@ -591,7 +601,7 @@ test "exclude param 'empty search'" {
 test "exclude param 'empty search' - 2" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(tmpD.dir, true, testing_allocator);
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
     defer rt.deinit();
 
     const noteID1 = try rt.create();
@@ -608,7 +618,7 @@ test "exclude param 'empty search' - 2" {
 test "exclude from 'empty search' unmodifieds" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(tmpD.dir, true, testing_allocator);
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
     defer rt.deinit();
 
     const noteID1 = try rt.create();

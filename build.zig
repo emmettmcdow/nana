@@ -4,83 +4,146 @@ const Step = std.Build.Step;
 const RunStep = std.Build.Step.Run;
 const LazyPath = std.Build.LazyPath;
 
-// This file is a crime against zig. But I am deferring making it unfugly until I know more about
-// the zig build system.
+const PATH_MAX = 4096;
 
-const targets: []const std.Target.Query = &.{
-    .{ .cpu_arch = .aarch64, .os_tag = .macos },
-    .{ .cpu_arch = .x86_64, .os_tag = .macos },
-};
+fn toSentinel(allocator: std.mem.Allocator, str: []const u8) ![:0]const u8 {
+    var output = try allocator.allocSentinel(u8, str.len, 0);
+    @memcpy(output[0..], str);
+    return output;
+}
 
-pub fn build(b: *std.Build) void {
+pub fn build(b: *std.Build) !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var arena = std.heap.ArenaAllocator.init(gpa.allocator());
+    defer arena.deinit();
+
     const optimize = b.standardOptimizeOption(.{});
 
-    ///////////////////
-    // Build the Lib //
-    ///////////////////
-    var ltSteps = [2]*LibtoolStep{ undefined, undefined };
-    for (targets, 0..) |t, i| {
-        const target = b.resolveTargetQuery(t);
-        const lib2 = b.addStaticLibrary(.{
-            .name = "nana2",
-            .root_source_file = b.path("src/intf.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-        const sqlite = b.dependency("sqlite", .{
-            .target = target,
-            .optimize = optimize,
-        });
-        const onnx_dep = b.dependency("zig_onnxruntime", .{
-            .optimize = optimize,
-            .target = target,
-        });
-        const sqliteArtifact = sqlite.artifact("sqlite");
-        const mod = sqlite.module("sqlite");
-        lib2.root_module.addImport("sqlite", mod);
-        lib2.root_module.addImport("onnxruntime", onnx_dep.module("zig-onnxruntime"));
-        lib2.linkLibrary(sqliteArtifact);
-        lib2.bundle_compiler_rt = true;
-        lib2.linkLibC();
-        b.default_step.dependOn(&lib2.step);
+    const install_step = b.getInstallStep();
 
-        const install_onnx_libs = b.addInstallDirectory(.{
-            .source_dir = onnx_dep.module("onnxruntime_lib").root_source_file.?,
-            .install_dir = .bin,
-            .install_subdir = ".",
-        });
-        b.getInstallStep().dependOn(&install_onnx_libs.step);
+    // Targets
+    // const targets: []const std.Target.Query = &.{
+    //     .{ .cpu_arch = .aarch64, .os_tag = .macos },
+    //     .{ .cpu_arch = .x86_64, .os_tag = .macos },
+    // };
+    const arm_target = b.resolveTargetQuery(.{ .cpu_arch = .aarch64, .os_tag = .macos });
+    const x86_target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .macos });
 
-        var libSources = [_]LazyPath{
-            lib2.getEmittedBin(),
-            sqliteArtifact.getEmittedBin(),
-        };
-        const os = target.query.os_tag.?;
-        const cpu = target.query.cpu_arch.?;
-        const outfile = b.fmt("libnana-{s}-{s}.a", .{ @tagName(os), @tagName(cpu) });
-        const libtool = createLibtoolStep(b, .{
-            .name = "nana",
-            .out_name = outfile,
-            .sources = libSources[0..],
-        });
-        libtool.step.dependOn(&lib2.step);
-        ltSteps[i] = libtool;
-        b.default_step.dependOn(libtool.step);
-        const lib_install = b.addInstallLibFile(libtool.output, outfile);
-        b.getInstallStep().dependOn(&lib_install.step);
-    }
+    // Sources
+    const root_file = b.path("src/root.zig");
+    // const embed_file = b.path("src/embed.zig");
+    const interface_file = b.path("src/intf.zig");
+
+    // TODO: make these lazy
+    // Dependencies
+    const mnist_dep = b.dependency("mnist_testing", .{});
+    const sqlite_x86_dep = b.dependency("sqlite", .{ .target = x86_target, .optimize = optimize });
+    const onnx_x86_dep = b.dependency("zig_onnxruntime", .{ .target = x86_target, .optimize = optimize });
+    const sqlite_arm_dep = b.dependency("sqlite", .{ .target = arm_target, .optimize = optimize });
+    const onnx_arm_dep = b.dependency("zig_onnxruntime", .{ .target = arm_target, .optimize = optimize });
+
+    // Artifacts
+    const sqlite_x86_art = sqlite_x86_dep.artifact("sqlite");
+    const sqlite_arm_art = sqlite_arm_dep.artifact("sqlite");
+
+    // Modules
+    const sqlite_x86_mod = sqlite_x86_dep.module("sqlite");
+    const onnx_x86_mod = onnx_x86_dep.module("zig-onnxruntime");
+
+    const sqlite_arm_mod = sqlite_arm_dep.module("sqlite");
+    const onnx_arm_mod = onnx_arm_dep.module("zig-onnxruntime");
+
+    // Options
+    const options = b.addOptions();
+
+    // Static files
+    const install_mnist = b.addInstallDirectory(.{
+        .source_dir = mnist_dep.path(""),
+        .install_dir = .{ .custom = "share" },
+        .install_subdir = ".",
+    });
+    install_step.dependOn(&install_mnist.step);
+    // const oldpath = std.fs.cwd()
+    // options.addOption([:0]const u8, "mnist_model", try toSentinel(arena.allocator(), oldpath));
+
+    // Base Library
+    const base_nana_x86_lib = b.addStaticLibrary(.{
+        .name = "nana",
+        .root_source_file = interface_file,
+        .target = x86_target,
+        .optimize = optimize,
+    });
+    base_nana_x86_lib.root_module.addImport("sqlite", sqlite_x86_mod);
+    base_nana_x86_lib.root_module.addImport("onnxruntime", onnx_x86_mod);
+    base_nana_x86_lib.root_module.addOptions("config", options);
+    base_nana_x86_lib.linkLibrary(sqlite_x86_art);
+    base_nana_x86_lib.bundle_compiler_rt = true;
+    base_nana_x86_lib.linkLibC();
+    const install_onnx_x86_libs = b.addInstallDirectory(.{
+        .source_dir = onnx_x86_dep.module("onnxruntime_lib").root_source_file.?,
+        .install_dir = .bin,
+        .install_subdir = ".",
+    });
+    install_step.dependOn(&install_onnx_x86_libs.step);
+
+    const base_nana_arm_lib = b.addStaticLibrary(.{
+        .name = "nana",
+        .root_source_file = interface_file,
+        .target = arm_target,
+        .optimize = optimize,
+    });
+    base_nana_arm_lib.root_module.addImport("sqlite", sqlite_arm_mod);
+    base_nana_arm_lib.root_module.addImport("onnxruntime", onnx_arm_mod);
+    base_nana_arm_lib.root_module.addOptions("config", options);
+    base_nana_arm_lib.linkLibrary(sqlite_arm_art);
+    base_nana_arm_lib.bundle_compiler_rt = true;
+    base_nana_arm_lib.linkLibC();
+    // b.default_step.dependOn(&base_nana_arm_lib.step);
+    // const install_onnx_arm_libs = b.addInstallDirectory(.{
+    //     .source_dir = onnx_arm_dep.module("onnxruntime_lib").root_source_file.?,
+    //     .install_dir = .bin,
+    //     .install_subdir = ".",
+    // });
+    // install_step.dependOn(&install_onnx_arm_libs.step);
+
+    // Combine Libs
+    var x86_lib_sources = [_]LazyPath{
+        base_nana_x86_lib.getEmittedBin(),
+        sqlite_x86_art.getEmittedBin(),
+    };
+    const combine_x86_lib = createLibtoolStep(b, .{
+        .name = "nana",
+        .out_name = b.fmt("libnana-{s}-{s}.a", .{
+            @tagName(x86_target.query.os_tag.?),
+            @tagName(x86_target.query.cpu_arch.?),
+        }),
+        .sources = &x86_lib_sources,
+    });
+    combine_x86_lib.step.dependOn(&base_nana_x86_lib.step);
+
+    var arm_lib_sources = [_]LazyPath{
+        base_nana_arm_lib.getEmittedBin(),
+        sqlite_arm_art.getEmittedBin(),
+    };
+    const combine_arm_lib = createLibtoolStep(b, .{
+        .name = "nana",
+        .out_name = b.fmt("libnana-{s}-{s}.a", .{
+            @tagName(arm_target.query.os_tag.?),
+            @tagName(arm_target.query.cpu_arch.?),
+        }),
+        .sources = &arm_lib_sources,
+    });
+    combine_arm_lib.step.dependOn(&base_nana_arm_lib.step);
 
     const outfile = "libnana.a";
     const static_lib_universal = createLipoStep(b, .{
         .name = "nana",
         .out_name = outfile,
-        .input_a = ltSteps[0].output,
-        .input_b = ltSteps[1].output,
+        .input_a = combine_x86_lib.output,
+        .input_b = combine_arm_lib.output,
     });
-    static_lib_universal.step.dependOn(ltSteps[0].step);
-    static_lib_universal.step.dependOn(ltSteps[1].step);
-    const lib_install = b.addInstallLibFile(static_lib_universal.output, outfile);
-    b.getInstallStep().dependOn(&lib_install.step);
+    static_lib_universal.step.dependOn(combine_x86_lib.step);
+    static_lib_universal.step.dependOn(combine_arm_lib.step);
 
     const xcframework = createXCFrameworkStep(b, .{
         .name = "NanaKit",
@@ -89,40 +152,47 @@ pub fn build(b: *std.Build) void {
         .headers = .{ .cwd_relative = "include" },
     });
     xcframework.step.dependOn(static_lib_universal.step);
-    b.getInstallStep().dependOn(xcframework.step);
+    install_step.dependOn(xcframework.step);
+
+    ///////////////////
+    // Build the Lib //
+    ///////////////////
+    // var ltSteps = [2]*LibtoolStep{ undefined, undefined };
+    // for (targets, 0..) |t, i| {
+    //     combine_lib.step.dependOn(&base_nana_lib.step);
+    //     ltSteps[i] = combine_lib;
+    //     b.default_step.dependOn(combine_lib.step);
+    //     const lib_install = b.addInstallLibFile(combine_lib.output, combine_lib.Options.out_name);
+    //     install_step.dependOn(&lib_install.step);
+    // }
 
     ////////////////
     // Unit Tests //
     ////////////////
-    const target = b.standardTargetOptions(.{});
     const lib_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
+        .root_source_file = root_file,
+        .target = x86_target,
         .optimize = optimize,
-    });
-    const sqlite = b.dependency("sqlite", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    const onnx_dep = b.dependency("zig_onnxruntime", .{
-        .optimize = optimize,
-        .target = target,
     });
 
-    lib_unit_tests.root_module.addImport("sqlite", sqlite.module("sqlite"));
-    lib_unit_tests.root_module.addImport("onnxruntime", onnx_dep.module("zig-onnxruntime"));
+    lib_unit_tests.root_module.addImport("sqlite", sqlite_x86_mod);
+    lib_unit_tests.root_module.addImport("onnxruntime", onnx_x86_mod);
+    lib_unit_tests.root_module.addOptions("config", options);
+    lib_unit_tests.each_lib_rpath = true;
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
     const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&install_onnx_x86_libs.step);
     test_step.dependOn(&run_lib_unit_tests.step);
 
-    const embed_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/embed.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    embed_unit_tests.root_module.addImport("onnxruntime", onnx_dep.module("zig-onnxruntime"));
-    const run_embed_unit_tests = b.addRunArtifact(embed_unit_tests);
-    test_step.dependOn(&run_embed_unit_tests.step);
+    // const embed_unit_tests = b.addTest(.{
+    //     .root_source_file = embed_file,
+    //     .target = x86_target,
+    //     .optimize = optimize,
+    // });
+    // embed_unit_tests.root_module.addImport("onnxruntime", onnx_x86_mod);
+    // const run_embed_unit_tests = b.addRunArtifact(embed_unit_tests);
+    // test_step.dependOn(&install_onnx_x86_libs.step);
+    // test_step.dependOn(&run_embed_unit_tests.step);
 
     ////////////////////
     // Test Debugging //

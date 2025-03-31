@@ -4,6 +4,7 @@ const parseFromSliceLeaky = std.json.parseFromSliceLeaky;
 const onnx = @import("onnxruntime");
 
 //**************************************************************************************** Embedder
+
 pub const Embedder = struct {
     const Self = @This();
 
@@ -16,15 +17,18 @@ pub const Embedder = struct {
     // Output
     last: []f32,
 
-    pub fn init(allocator: std.mem.Allocator) !Self {
+    pub fn init(allocator: std.mem.Allocator, model: [:0]const u8) !Self {
         const onnx_opts = onnx.OnnxInstanceOpts{
             .log_id = "ZIG",
             .log_level = .warning,
-            .model_path = "/Users/emcdow/mxbai-embed-large-v1/onnx/model.onnx",
+            .model_path = model,
             .input_names = &.{ "input_ids", "attention_mask", "token_type_ids" },
             .output_names = &.{"last_hidden_state"},
         };
+        // const one = std.time.microTimestamp();
         var onnx_instance = try onnx.OnnxInstance.init(allocator, onnx_opts);
+        // const two = std.time.microTimestamp();
+        // std.debug.print("Onnx took {d} ms to init\n", .{two - one});
         try onnx_instance.initMemoryInfo("Cpu", .arena, 0, .default);
 
         const batch = 8; // TODO: change me
@@ -95,7 +99,14 @@ pub const Embedder = struct {
 
         onnx_instance.setManagedInputsOutputs(ort_inputs, ort_outputs);
 
-        return Embedder{ .onnx_instance = onnx_instance, .allocator = allocator, .input_ids = &input_ids, .attention_masks = &attention_masks, .token_type_ids = &token_type_ids, .last = &last };
+        return Embedder{
+            .onnx_instance = onnx_instance,
+            .allocator = allocator,
+            .input_ids = &input_ids,
+            .attention_masks = &attention_masks,
+            .token_type_ids = &token_type_ids,
+            .last = &last,
+        };
     }
     pub fn deinit(self: *Self) void {
         // _ = self;
@@ -140,8 +151,16 @@ fn toLower(str: []const u8, buf: []u8) []u8 {
 const MAX_TOKEN_LENGTH = 64;
 const MAX_SENTENCE_TOKENS = 64;
 const MEGABYTE = 1000000;
+
+const TokenConfig = struct {
+    model: TokenConfigModel,
+};
+const TokenConfigModel = struct {
+    vocab: std.json.ArrayHashMap(u16),
+};
+
 pub const Tokenizer = struct {
-    map: std.StringHashMap(u16),
+    map: std.StringArrayHashMapUnmanaged(u16),
     allocator: std.mem.Allocator,
 
     const Self = @This();
@@ -150,19 +169,17 @@ pub const Tokenizer = struct {
         const wholeFile = comptime @embedFile("tokenizer.json")[0..];
         // const wholeFile: [1000]u8 = undefined;
         // Leaky is needed because we will be using arena
-        const rawJson = try parseFromSliceLeaky(std.json.Value, allocator, wholeFile, .{ .ignore_unknown_fields = true });
+        const parsed = try parseFromSliceLeaky(
+            TokenConfig,
+            allocator,
+            wholeFile,
+            .{ .ignore_unknown_fields = true },
+        );
 
-        const rawMap = rawJson.object.get("model").?.object.get("vocab").?.object;
-
-        var rawMapIt = rawMap.iterator();
-
-        var map = std.StringHashMap(u16).init(allocator);
-
-        while (rawMapIt.next()) |item| {
-            try map.put(item.key_ptr.*, @intCast(item.value_ptr.*.integer));
-        }
-
-        return Tokenizer{ .map = map, .allocator = allocator };
+        return Tokenizer{
+            .map = parsed.model.vocab.map,
+            .allocator = allocator,
+        };
     }
 
     pub fn tokenize(self: *Self, input: []const u8) !Tokens {

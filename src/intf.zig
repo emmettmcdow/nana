@@ -1,7 +1,7 @@
 const std = @import("std");
 const nana = @import("root.zig");
 
-var rt: *nana.Runtime = undefined;
+var rt: nana.Runtime = undefined;
 var init: bool = false;
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -21,11 +21,7 @@ export fn nana_init() c_int {
         return @intFromEnum(CError.DirCreationFail);
     };
 
-    rt = nana.Runtime.init(
-        d,
-        false,
-        gpa.allocator(),
-    ) catch |err| {
+    rt = nana.Runtime.init(gpa.allocator(), .{ .b = d }) catch |err| {
         std.log.err("Failed to initialize nana: {}\n", .{err});
         return @intFromEnum(CError.InitFail);
     };

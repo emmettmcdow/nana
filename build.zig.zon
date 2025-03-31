@@ -33,6 +33,13 @@
             // .url = "git+https://github.com/emmettmcdow/onnxruntime.zig#b3b9ad7dded8945e25bf17a943e88e2747387ad7",
             // .hash = "onnxruntime-0.2.0-dQhkke9xAACVLsaBwPYX1clKEclADL638dXjHovRFYCF",
         },
+        .mnist_testing = .{
+            .url = "https://github.com/onnx/models/raw/refs/heads/main/validated/vision/classification/mnist/model/mnist-12-int8.tar.gz",
+            .hash = "N-V-__8AAHA3AAAC4KczOLDXg5_B7avBnZL4YFlLwaDPYv08",
+        },
+        // .mxbai_embed = .{
+        //     .url = "https://huggingface.co/mixedbread-ai/mxbai-embed-large-v1/resolve/main/onnx/model_fp16.onnx?download=true",
+        // },
     },
     .paths = .{
         "build.zig",
