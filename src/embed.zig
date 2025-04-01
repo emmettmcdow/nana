@@ -6,7 +6,7 @@ const onnx = @import("onnxruntime");
 //**************************************************************************************** Embedder
 
 // TODO: this is a hack...
-const MXBAI_QUANTIZED_MODEL: *const [39:0]u8 = "zig-out/share/onnx/model_quantized.onnx";
+const MXBAI_QUANTIZED_MODEL: *const [29:0]u8 = "zig-out/share/onnx/model.onnx";
 pub const Embedder = struct {
     const Self = @This();
 
@@ -33,39 +33,40 @@ pub const Embedder = struct {
         // std.debug.print("Onnx took {d} ms to init\n", .{two - one});
         try onnx_instance.initMemoryInfo("Cpu", .arena, 0, .default);
 
-        const batch = 8; // TODO: change me
+        const batch = 1;
+        const sequence = 8; // TODO: change me
         //////////////
         //  Inputs  //
         //////////////
-        const size_input_id: usize = 1 * batch;
-        const input_id_node_dimms: []const i64 = &.{ 1, batch };
-        var input_ids: [size_input_id]i64 = undefined;
-        @memset(&input_ids, 0);
+        const size_input_id: usize = batch * sequence;
+        const input_id_node_dimms: []const i64 = &.{ batch, sequence };
+        const input_ids = try allocator.alloc(i64, size_input_id);
+        @memset(input_ids, 0);
         const input_id_ort_input = try onnx_instance.createTensorWithDataAsOrtValue(
             i64,
-            &input_ids,
+            input_ids,
             input_id_node_dimms,
             .i64,
         );
 
-        const size_attention_mask: usize = 1 * batch;
-        const attention_mask_node_dimms: []const i64 = &.{ 1, batch };
-        var attention_masks: [size_attention_mask]i64 = undefined;
-        @memset(&attention_masks, 0);
+        const size_attention_mask: usize = batch * sequence;
+        const attention_mask_node_dimms: []const i64 = &.{ batch, sequence };
+        const attention_masks = try allocator.alloc(i64, size_attention_mask);
+        @memset(attention_masks, 0);
         const attention_mask_ort_input = try onnx_instance.createTensorWithDataAsOrtValue(
             i64,
-            &attention_masks,
+            attention_masks,
             attention_mask_node_dimms,
             .i64,
         );
 
-        const size_token_type_id: usize = 1 * batch;
-        const token_type_id_node_dimms: []const i64 = &.{ 1, batch };
-        var token_type_ids: [size_token_type_id]i64 = undefined;
-        @memset(&token_type_ids, 0);
+        const size_token_type_id: usize = batch * sequence;
+        const token_type_id_node_dimms: []const i64 = &.{ batch, sequence };
+        const token_type_ids = try allocator.alloc(i64, size_token_type_id);
+        @memset(token_type_ids, 0);
         const token_type_id_ort_input = try onnx_instance.createTensorWithDataAsOrtValue(
             i64,
-            &token_type_ids,
+            token_type_ids,
             token_type_id_node_dimms,
             .i64,
         );
@@ -80,17 +81,17 @@ pub const Embedder = struct {
         //  Outputs  //
         ///////////////
         const vector_ln: usize = 1024;
-        const size_last: usize = 1 * batch * vector_ln;
+        const size_last: usize = batch * sequence * vector_ln;
         const last_node_dimms: []const i64 = &.{
-            1,
             batch,
+            sequence,
             vector_ln,
         };
-        var last: [size_last]f32 = undefined;
-        @memset(&last, 0);
+        const last = try allocator.alloc(f32, size_last);
+        @memset(last, 0);
         const last_ort_output = try onnx_instance.createTensorWithDataAsOrtValue(
             f32,
-            &last,
+            last,
             last_node_dimms,
             .f32,
         );
@@ -104,10 +105,10 @@ pub const Embedder = struct {
         return Embedder{
             .onnx_instance = onnx_instance,
             .allocator = allocator,
-            .input_ids = &input_ids,
-            .attention_masks = &attention_masks,
-            .token_type_ids = &token_type_ids,
-            .last = &last,
+            .input_ids = input_ids,
+            .attention_masks = attention_masks,
+            .token_type_ids = token_type_ids,
+            .last = last,
         };
     }
     pub fn deinit(self: *Self) void {
@@ -118,15 +119,15 @@ pub const Embedder = struct {
 
     pub fn embed(self: *Self, tokens: Tokens) ![]f32 {
         // Clear out the last result
-        @memset(&self.input_ids, 0);
-        @memset(&self.attention_masks, 0);
-        @memset(&self.token_type_ids, 0);
-        @memset(&self.last, 0);
+        @memset(self.input_ids, 0);
+        @memset(self.attention_masks, 0);
+        @memset(self.token_type_ids, 0);
+        @memset(self.last, 0);
 
         // Copy in the new input
-        @memcpy(self.input_ids, tokens.input_ids);
-        @memcpy(self.attention_mask, tokens.attention_mask);
-        @memcpy(self.token_type_ids, tokens.token_type_ids);
+        @memcpy(self.input_ids[0..tokens.input_ids.len], tokens.input_ids);
+        @memcpy(self.attention_masks[0..tokens.attention_mask.len], tokens.attention_mask);
+        @memcpy(self.token_type_ids[0..tokens.token_type_ids.len], tokens.token_type_ids);
         try self.onnx_instance.run();
         return self.last;
     }
@@ -143,32 +144,44 @@ test "embed - init" {
     );
 }
 
-// test "embed - hello" {
-//     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-//     defer arena.deinit();
-//     const allocator = arena.allocator();
+const expectEqual = std.testing.expectEqual;
+test "embed - embed" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
-//     var e = try Embedder.init(
-//         allocator,
-//         MXBAI_QUANTIZED_MODEL,
-//     );
+    var e = try Embedder.init(
+        allocator,
+        MXBAI_QUANTIZED_MODEL,
+    );
 
-//     const input: []const u8 = Tokens{
-//         .input_ids = &.{ 101, 7592, 102 },
-//         .attention_mask = &.{ 1, 1, 1 },
-//         .token_type_ids = &.{ 0, 0, 0 },
-//     };
-//     const expected: []f32 = .{ 0.0, 1.0, 0.0 };
+    var input = Tokens{
+        .input_ids = &.{ 101, 7592, 102 },
+        .attention_mask = &.{ 1, 1, 1 },
+        .token_type_ids = &.{ 0, 0, 0 },
+    };
 
-//     const output = try e.embed(input);
-//     try expectEqualSlices(f32, output, expected);
-// }
+    var output = try e.embed(input);
+    // We don't check this too hard because the work to save vectors is not worth the reward.
+    // Better to check at the interface level. i.e. we don't care what the specific embedding is
+    // as long as the output is what we desire. This test is just to verify that the embedder
+    // doesn't do anything FUBAR.
+    try expectEqual(output[0], 0.6923382);
+
+    input = Tokens{
+        .input_ids = &.{ 101, 2748, 2909, 102 },
+        .attention_mask = &.{ 1, 1, 1, 1 },
+        .token_type_ids = &.{ 0, 0, 0, 0 },
+    };
+    output = try e.embed(input);
+    try expectEqual(output[0], 1.1471152);
+}
 
 //*************************************************************************************** Tokenizer
 const Tokens = struct {
-    input_ids: []const u16,
-    attention_mask: []const u8,
-    token_type_ids: []const u8,
+    input_ids: []const i64,
+    attention_mask: []const i64,
+    token_type_ids: []const i64,
 };
 
 fn toLower(str: []const u8, buf: []u8) []u8 {
@@ -218,12 +231,12 @@ pub const Tokenizer = struct {
     }
 
     pub fn tokenize(self: *Self, input: []const u8) !Tokens {
-        var input_buf = try self.allocator.alloc(u16, MAX_SENTENCE_TOKENS);
+        var input_buf = try self.allocator.alloc(i64, MAX_SENTENCE_TOKENS);
         @memset(input_buf, 0);
-        var attention_buf = try self.allocator.alloc(u8, MAX_SENTENCE_TOKENS);
+        var attention_buf = try self.allocator.alloc(i64, MAX_SENTENCE_TOKENS);
         @memset(attention_buf, 0);
         // This will not change. Zeros only for now
-        var type_buf = try self.allocator.alloc(u8, MAX_SENTENCE_TOKENS);
+        var type_buf = try self.allocator.alloc(i64, MAX_SENTENCE_TOKENS);
         @memset(type_buf, 0);
 
         // First token will always be 101
@@ -280,9 +293,9 @@ test "tokenize - hello" {
     };
 
     const output = try t.tokenize(input);
-    try expectEqualSlices(u16, output.input_ids, expected.input_ids);
-    try expectEqualSlices(u8, output.attention_mask, expected.attention_mask);
-    try expectEqualSlices(u8, output.token_type_ids, expected.token_type_ids);
+    try expectEqualSlices(i64, output.input_ids, expected.input_ids);
+    try expectEqualSlices(i64, output.attention_mask, expected.attention_mask);
+    try expectEqualSlices(i64, output.token_type_ids, expected.token_type_ids);
 }
 
 test "tokenize - yes sir" {
@@ -300,9 +313,9 @@ test "tokenize - yes sir" {
     };
 
     const output = try t.tokenize(input);
-    try expectEqualSlices(u16, output.input_ids, expected.input_ids);
-    try expectEqualSlices(u8, output.attention_mask, expected.attention_mask);
-    try expectEqualSlices(u8, output.token_type_ids, expected.token_type_ids);
+    try expectEqualSlices(i64, output.input_ids, expected.input_ids);
+    try expectEqualSlices(i64, output.attention_mask, expected.attention_mask);
+    try expectEqualSlices(i64, output.token_type_ids, expected.token_type_ids);
 }
 
 test "tokenize - YES SIR" {
@@ -320,7 +333,7 @@ test "tokenize - YES SIR" {
     };
 
     const output = try t.tokenize(input);
-    try expectEqualSlices(u16, output.input_ids, expected.input_ids);
-    try expectEqualSlices(u8, output.attention_mask, expected.attention_mask);
-    try expectEqualSlices(u8, output.token_type_ids, expected.token_type_ids);
+    try expectEqualSlices(i64, output.input_ids, expected.input_ids);
+    try expectEqualSlices(i64, output.attention_mask, expected.attention_mask);
+    try expectEqualSlices(i64, output.token_type_ids, expected.token_type_ids);
 }

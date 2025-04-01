@@ -45,7 +45,7 @@ pub fn build(b: *std.Build) !void {
         .install_subdir = ".",
     });
     const install_mxbai_embed = b.addInstallDirectory(.{
-        .source_dir = mxbai_embed_dep.path("onnx"),
+        .source_dir = mxbai_embed_dep.path(""),
         .install_dir = .{ .custom = "share" },
         .install_subdir = ".",
     });
@@ -168,7 +168,7 @@ pub fn build(b: *std.Build) !void {
         // Uncomment this if lib_unit_tests needs lldb args or test args
         // "--",
     });
-    lldb.addArtifactArg(lib_unit_tests);
+    lldb.addArtifactArg(embed_unit_tests);
     const lldb_step = b.step("debug", "run the tests under lldb");
     lldb_step.dependOn(&lldb.step);
 }
