@@ -22,36 +22,17 @@ pub fn build(b: *std.Build) !void {
     const install_step = b.getInstallStep();
 
     // Targets
-    // const targets: []const std.Target.Query = &.{
-    //     .{ .cpu_arch = .aarch64, .os_tag = .macos },
-    //     .{ .cpu_arch = .x86_64, .os_tag = .macos },
-    // };
     const arm_target = b.resolveTargetQuery(.{ .cpu_arch = .aarch64, .os_tag = .macos });
     const x86_target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .macos });
 
     // Sources
     const root_file = b.path("src/root.zig");
-    // const embed_file = b.path("src/embed.zig");
+    const embed_file = b.path("src/embed.zig");
     const interface_file = b.path("src/intf.zig");
 
     // TODO: make these lazy
     // Dependencies
     const mnist_dep = b.dependency("mnist_testing", .{});
-    const sqlite_x86_dep = b.dependency("sqlite", .{ .target = x86_target, .optimize = optimize });
-    const onnx_x86_dep = b.dependency("zig_onnxruntime", .{ .target = x86_target, .optimize = optimize });
-    const sqlite_arm_dep = b.dependency("sqlite", .{ .target = arm_target, .optimize = optimize });
-    const onnx_arm_dep = b.dependency("zig_onnxruntime", .{ .target = arm_target, .optimize = optimize });
-
-    // Artifacts
-    const sqlite_x86_art = sqlite_x86_dep.artifact("sqlite");
-    const sqlite_arm_art = sqlite_arm_dep.artifact("sqlite");
-
-    // Modules
-    const sqlite_x86_mod = sqlite_x86_dep.module("sqlite");
-    const onnx_x86_mod = onnx_x86_dep.module("zig-onnxruntime");
-
-    const sqlite_arm_mod = sqlite_arm_dep.module("sqlite");
-    const onnx_arm_mod = onnx_arm_dep.module("zig-onnxruntime");
 
     // Options
     const options = b.addOptions();
@@ -63,9 +44,10 @@ pub fn build(b: *std.Build) !void {
         .install_subdir = ".",
     });
     install_step.dependOn(&install_mnist.step);
-    // const oldpath = std.fs.cwd()
-    // options.addOption([:0]const u8, "mnist_model", try toSentinel(arena.allocator(), oldpath));
 
+    ///////////////////
+    // Build the Lib //
+    ///////////////////
     // Base Library
     const base_nana_x86_lib = b.addStaticLibrary(.{
         .name = "nana",
@@ -73,18 +55,10 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
     });
-    base_nana_x86_lib.root_module.addImport("sqlite", sqlite_x86_mod);
-    base_nana_x86_lib.root_module.addImport("onnxruntime", onnx_x86_mod);
     base_nana_x86_lib.root_module.addOptions("config", options);
-    base_nana_x86_lib.linkLibrary(sqlite_x86_art);
-    base_nana_x86_lib.bundle_compiler_rt = true;
-    base_nana_x86_lib.linkLibC();
-    const install_onnx_x86_libs = b.addInstallDirectory(.{
-        .source_dir = onnx_x86_dep.module("onnxruntime_lib").root_source_file.?,
-        .install_dir = .bin,
-        .install_subdir = ".",
-    });
-    install_step.dependOn(&install_onnx_x86_libs.step);
+    const sqlite_x86_art = addSQLite(b, optimize, base_nana_x86_lib, x86_target);
+    const ort_install_x86_step = addORT(b, optimize, base_nana_x86_lib, x86_target);
+    install_step.dependOn(ort_install_x86_step);
 
     const base_nana_arm_lib = b.addStaticLibrary(.{
         .name = "nana",
@@ -92,19 +66,10 @@ pub fn build(b: *std.Build) !void {
         .target = arm_target,
         .optimize = optimize,
     });
-    base_nana_arm_lib.root_module.addImport("sqlite", sqlite_arm_mod);
-    base_nana_arm_lib.root_module.addImport("onnxruntime", onnx_arm_mod);
     base_nana_arm_lib.root_module.addOptions("config", options);
-    base_nana_arm_lib.linkLibrary(sqlite_arm_art);
-    base_nana_arm_lib.bundle_compiler_rt = true;
-    base_nana_arm_lib.linkLibC();
-    // b.default_step.dependOn(&base_nana_arm_lib.step);
-    // const install_onnx_arm_libs = b.addInstallDirectory(.{
-    //     .source_dir = onnx_arm_dep.module("onnxruntime_lib").root_source_file.?,
-    //     .install_dir = .bin,
-    //     .install_subdir = ".",
-    // });
-    // install_step.dependOn(&install_onnx_arm_libs.step);
+    const sqlite_arm_art = addSQLite(b, optimize, base_nana_arm_lib, arm_target);
+    const ort_install_arm_step = addORT(b, optimize, base_nana_arm_lib, arm_target);
+    install_step.dependOn(ort_install_arm_step);
 
     // Combine Libs
     var x86_lib_sources = [_]LazyPath{
@@ -154,45 +119,38 @@ pub fn build(b: *std.Build) !void {
     xcframework.step.dependOn(static_lib_universal.step);
     install_step.dependOn(xcframework.step);
 
-    ///////////////////
-    // Build the Lib //
-    ///////////////////
-    // var ltSteps = [2]*LibtoolStep{ undefined, undefined };
-    // for (targets, 0..) |t, i| {
-    //     combine_lib.step.dependOn(&base_nana_lib.step);
-    //     ltSteps[i] = combine_lib;
-    //     b.default_step.dependOn(combine_lib.step);
-    //     const lib_install = b.addInstallLibFile(combine_lib.output, combine_lib.Options.out_name);
-    //     install_step.dependOn(&lib_install.step);
-    // }
-
     ////////////////
     // Unit Tests //
     ////////////////
+    // Root
     const lib_unit_tests = b.addTest(.{
         .root_source_file = root_file,
         .target = x86_target,
         .optimize = optimize,
     });
+    _ = addSQLite(b, optimize, lib_unit_tests, x86_target);
+    // const ort_install_root_test_step = addORT(b, optimize, lib_unit_tests, x86_target);
+    const run_root_unit_tests = b.addRunArtifact(lib_unit_tests);
+    const test_root = b.step("test-root", "run the tests for src/root.zig");
+    // test_root.dependOn(ort_install_root_test_step);
+    test_root.dependOn(&run_root_unit_tests.step);
 
-    lib_unit_tests.root_module.addImport("sqlite", sqlite_x86_mod);
-    lib_unit_tests.root_module.addImport("onnxruntime", onnx_x86_mod);
-    lib_unit_tests.root_module.addOptions("config", options);
-    lib_unit_tests.each_lib_rpath = true;
-    const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
+    // Embed
+    const embed_unit_tests = b.addTest(.{
+        .root_source_file = embed_file,
+        .target = x86_target,
+        .optimize = optimize,
+    });
+    // const ort_install_embed_test_step = addORT(b, optimize, embed_unit_tests, x86_target);
+    const run_embed_unit_tests = b.addRunArtifact(embed_unit_tests);
+    const test_embed = b.step("test-embed", "run the tests for src/embed.zig");
+    // test_embed.dependOn(ort_install_embed_test_step);
+    test_embed.dependOn(&run_embed_unit_tests.step);
+
+    // All
     const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&install_onnx_x86_libs.step);
-    test_step.dependOn(&run_lib_unit_tests.step);
-
-    // const embed_unit_tests = b.addTest(.{
-    //     .root_source_file = embed_file,
-    //     .target = x86_target,
-    //     .optimize = optimize,
-    // });
-    // embed_unit_tests.root_module.addImport("onnxruntime", onnx_x86_mod);
-    // const run_embed_unit_tests = b.addRunArtifact(embed_unit_tests);
-    // test_step.dependOn(&install_onnx_x86_libs.step);
-    // test_step.dependOn(&run_embed_unit_tests.step);
+    test_step.dependOn(test_root);
+    test_step.dependOn(test_embed);
 
     ////////////////////
     // Test Debugging //
@@ -206,6 +164,35 @@ pub fn build(b: *std.Build) !void {
     lldb.addArtifactArg(lib_unit_tests);
     const lldb_step = b.step("debug", "run the tests under lldb");
     lldb_step.dependOn(&lldb.step);
+}
+
+fn addSQLite(b: *std.Build, optimize: std.builtin.OptimizeMode, dest: *Step.Compile, target: std.Build.ResolvedTarget) *Step.Compile {
+    const sqlite_dep = b.dependency("sqlite", .{ .target = target, .optimize = optimize });
+    const sqlite_art = sqlite_dep.artifact("sqlite");
+    const sqlite_mod = sqlite_dep.module("sqlite");
+
+    dest.root_module.addImport("sqlite", sqlite_mod);
+    dest.linkLibrary(sqlite_art);
+    dest.bundle_compiler_rt = true;
+    dest.linkLibC();
+
+    return sqlite_art;
+}
+
+fn addORT(b: *std.Build, optimize: std.builtin.OptimizeMode, dest: *Step.Compile, target: std.Build.ResolvedTarget) *Step {
+    const onnx_dep = b.dependency("zig_onnxruntime", .{ .target = target, .optimize = optimize });
+    const onnx_mod = onnx_dep.module("zig-onnxruntime");
+
+    dest.root_module.addImport("onnxruntime", onnx_mod);
+    // dest.each_lib_rpath = false;
+
+    const install_onnx_libs = b.addInstallDirectory(.{
+        .source_dir = onnx_dep.module("onnxruntime_lib").root_source_file.?,
+        .install_dir = .bin,
+        .install_subdir = ".",
+    });
+
+    return &install_onnx_libs.step;
 }
 
 // TY mitchellh
