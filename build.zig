@@ -33,6 +33,7 @@ pub fn build(b: *std.Build) !void {
     // TODO: make these lazy
     // Dependencies
     const mnist_dep = b.dependency("mnist_testing", .{});
+    const mxbai_embed_dep = b.dependency("mxbai_embed", .{});
 
     // Options
     const options = b.addOptions();
@@ -43,7 +44,13 @@ pub fn build(b: *std.Build) !void {
         .install_dir = .{ .custom = "share" },
         .install_subdir = ".",
     });
+    const install_mxbai_embed = b.addInstallDirectory(.{
+        .source_dir = mxbai_embed_dep.path("onnx"),
+        .install_dir = .{ .custom = "share" },
+        .install_subdir = ".",
+    });
     install_step.dependOn(&install_mnist.step);
+    install_step.dependOn(&install_mxbai_embed.step);
 
     ///////////////////
     // Build the Lib //
@@ -141,10 +148,10 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
     });
-    // const ort_install_embed_test_step = addORT(b, optimize, embed_unit_tests, x86_target);
+    const ort_install_embed_test_step = addORT(b, optimize, embed_unit_tests, x86_target);
     const run_embed_unit_tests = b.addRunArtifact(embed_unit_tests);
     const test_embed = b.step("test-embed", "run the tests for src/embed.zig");
-    // test_embed.dependOn(ort_install_embed_test_step);
+    test_embed.dependOn(ort_install_embed_test_step);
     test_embed.dependOn(&run_embed_unit_tests.step);
 
     // All
@@ -184,11 +191,14 @@ fn addORT(b: *std.Build, optimize: std.builtin.OptimizeMode, dest: *Step.Compile
     const onnx_mod = onnx_dep.module("zig-onnxruntime");
 
     dest.root_module.addImport("onnxruntime", onnx_mod);
-    // dest.each_lib_rpath = false;
+    // TODO: this is only really for testing environment. Maybe remove in prod?
+    // TODO: also how do we set up RPATH in prod
+    dest.root_module.addRPathSpecial(b.getInstallPath(.lib, "."));
+    dest.each_lib_rpath = false;
 
     const install_onnx_libs = b.addInstallDirectory(.{
         .source_dir = onnx_dep.module("onnxruntime_lib").root_source_file.?,
-        .install_dir = .bin,
+        .install_dir = .lib,
         .install_subdir = ".",
     });
 

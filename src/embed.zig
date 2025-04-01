@@ -5,6 +5,8 @@ const onnx = @import("onnxruntime");
 
 //**************************************************************************************** Embedder
 
+// TODO: this is a hack...
+const MXBAI_QUANTIZED_MODEL: *const [39:0]u8 = "zig-out/share/onnx/model_quantized.onnx";
 pub const Embedder = struct {
     const Self = @This();
 
@@ -130,6 +132,38 @@ pub const Embedder = struct {
     }
 };
 
+test "embed - init" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    _ = try Embedder.init(
+        allocator,
+        MXBAI_QUANTIZED_MODEL,
+    );
+}
+
+// test "embed - hello" {
+//     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+//     defer arena.deinit();
+//     const allocator = arena.allocator();
+
+//     var e = try Embedder.init(
+//         allocator,
+//         MXBAI_QUANTIZED_MODEL,
+//     );
+
+//     const input: []const u8 = Tokens{
+//         .input_ids = &.{ 101, 7592, 102 },
+//         .attention_mask = &.{ 1, 1, 1 },
+//         .token_type_ids = &.{ 0, 0, 0 },
+//     };
+//     const expected: []f32 = .{ 0.0, 1.0, 0.0 };
+
+//     const output = try e.embed(input);
+//     try expectEqualSlices(f32, output, expected);
+// }
+
 //*************************************************************************************** Tokenizer
 const Tokens = struct {
     input_ids: []const u16,
@@ -166,6 +200,7 @@ pub const Tokenizer = struct {
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator) !Self {
+        // TODO: move this out of the source and into the buildsystem
         const wholeFile = comptime @embedFile("tokenizer.json")[0..];
         // const wholeFile: [1000]u8 = undefined;
         // Leaky is needed because we will be using arena
@@ -230,7 +265,7 @@ const expect = std.testing.expect;
 const expectEqualSlices = std.testing.expectEqualSlices;
 // FYI for tests - cwd() is relative to the dir that the `zig build test` command was called
 // from. NOT the source file directory OR the binary directory
-test "hello" {
+test "tokenize - hello" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -250,14 +285,14 @@ test "hello" {
     try expectEqualSlices(u8, output.token_type_ids, expected.token_type_ids);
 }
 
-test "YES SIR" {
+test "tokenize - yes sir" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
     var t = try Tokenizer.init(allocator);
 
-    const input: []const u8 = "YES SIR";
+    const input: []const u8 = "yes sir";
     const expected = Tokens{
         .input_ids = &.{ 101, 2748, 2909, 102 },
         .attention_mask = &.{ 1, 1, 1, 1 },
@@ -270,14 +305,14 @@ test "YES SIR" {
     try expectEqualSlices(u8, output.token_type_ids, expected.token_type_ids);
 }
 
-test "yes sir" {
+test "tokenize - YES SIR" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
     var t = try Tokenizer.init(allocator);
 
-    const input: []const u8 = "yes sir";
+    const input: []const u8 = "YES SIR";
     const expected = Tokens{
         .input_ids = &.{ 101, 2748, 2909, 102 },
         .attention_mask = &.{ 1, 1, 1, 1 },

@@ -28,6 +28,7 @@
             .url = "git+https://github.com/vrischmann/zig-sqlite#59c06617d5b86546c0c739e73ae01d3965dbe8ce",
             .hash = "sqlite-3.48.0-F2R_a_uGDgCfOH5UEJYjuOCe-HixnLjToxOdEGAEM3xk",
         },
+        // TODO: push up my fork
         .zig_onnxruntime = .{
             .path = "../onnxruntime.zig/",
             // .url = "git+https://github.com/emmettmcdow/onnxruntime.zig#b3b9ad7dded8945e25bf17a943e88e2747387ad7",
@@ -37,9 +38,10 @@
             .url = "https://github.com/onnx/models/raw/refs/heads/main/validated/vision/classification/mnist/model/mnist-12-int8.tar.gz",
             .hash = "N-V-__8AAHA3AAAC4KczOLDXg5_B7avBnZL4YFlLwaDPYv08",
         },
-        // .mxbai_embed = .{
-        //     .url = "https://huggingface.co/mixedbread-ai/mxbai-embed-large-v1/resolve/main/onnx/model_fp16.onnx?download=true",
-        // },
+        // TODO: find way to store this - there is no tgz available
+        .mxbai_embed = .{
+            .path = "../mxbai-embed-large-v1/",
+        },
     },
     .paths = .{
         "build.zig",
