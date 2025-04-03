@@ -136,10 +136,10 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
     _ = addSQLite(b, optimize, lib_unit_tests, x86_target);
-    // const ort_install_root_test_step = addORT(b, optimize, lib_unit_tests, x86_target);
+    const ort_install_root_test_step = addORT(b, optimize, lib_unit_tests, x86_target);
     const run_root_unit_tests = b.addRunArtifact(lib_unit_tests);
     const test_root = b.step("test-root", "run the tests for src/root.zig");
-    // test_root.dependOn(ort_install_root_test_step);
+    test_root.dependOn(ort_install_root_test_step);
     test_root.dependOn(&run_root_unit_tests.step);
 
     // Embed
@@ -173,7 +173,12 @@ pub fn build(b: *std.Build) !void {
     lldb_step.dependOn(&lldb.step);
 }
 
-fn addSQLite(b: *std.Build, optimize: std.builtin.OptimizeMode, dest: *Step.Compile, target: std.Build.ResolvedTarget) *Step.Compile {
+fn addSQLite(
+    b: *std.Build,
+    optimize: std.builtin.OptimizeMode,
+    dest: *Step.Compile,
+    target: std.Build.ResolvedTarget,
+) *Step.Compile {
     const sqlite_dep = b.dependency("sqlite", .{ .target = target, .optimize = optimize });
     const sqlite_art = sqlite_dep.artifact("sqlite");
     const sqlite_mod = sqlite_dep.module("sqlite");
@@ -186,7 +191,12 @@ fn addSQLite(b: *std.Build, optimize: std.builtin.OptimizeMode, dest: *Step.Comp
     return sqlite_art;
 }
 
-fn addORT(b: *std.Build, optimize: std.builtin.OptimizeMode, dest: *Step.Compile, target: std.Build.ResolvedTarget) *Step {
+fn addORT(
+    b: *std.Build,
+    optimize: std.builtin.OptimizeMode,
+    dest: *Step.Compile,
+    target: std.Build.ResolvedTarget,
+) *Step {
     const onnx_dep = b.dependency("zig_onnxruntime", .{ .target = target, .optimize = optimize });
     const onnx_mod = onnx_dep.module("zig-onnxruntime");
 
