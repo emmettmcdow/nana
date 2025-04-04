@@ -28,6 +28,7 @@ pub fn build(b: *std.Build) !void {
     // Sources
     const root_file = b.path("src/root.zig");
     const embed_file = b.path("src/embed.zig");
+    const vector_file = b.path("src/vector.zig");
     const interface_file = b.path("src/intf.zig");
 
     // TODO: make these lazy
@@ -153,6 +154,20 @@ pub fn build(b: *std.Build) !void {
     const test_embed = b.step("test-embed", "run the tests for src/embed.zig");
     test_embed.dependOn(ort_install_embed_test_step);
     test_embed.dependOn(&run_embed_unit_tests.step);
+
+    // Vector
+    const vector_options = b.addOptions();
+    // vector_options.addOption(type, "vec_type", f32);
+    vector_options.addOption(usize, "vec_sz", 3);
+    const vector_unit_tests = b.addTest(.{
+        .root_source_file = vector_file,
+        .target = x86_target,
+        .optimize = optimize,
+    });
+    vector_unit_tests.root_module.addOptions("config", vector_options);
+    const run_vector_unit_tests = b.addRunArtifact(vector_unit_tests);
+    const test_vector = b.step("test-vector", "run the tests for src/vector.zig");
+    test_vector.dependOn(&run_vector_unit_tests.step);
 
     // All
     const test_step = b.step("test", "Run unit tests");
