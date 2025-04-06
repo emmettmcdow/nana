@@ -199,20 +199,21 @@ test "save and load v1" {
     defer arena.deinit();
 
     var inst = try DB.init(arena.allocator(), tmpD.dir);
-    const in_vecs: [3]Vector = .{
+    const in_vecs: [4]Vector = .{
         .{ 1, 1, 1 },
         .{ 1, 2, 3 },
         .{ 0.5, 0.5, 0.5 },
+        .{ -1, -1, -1 },
     };
-    var ids: [3]vector_id = undefined;
+    var ids: [4]vector_id = undefined;
     for (in_vecs, 0..) |vec, i| {
         ids[i] = try inst.put(vec);
     }
-    try expect(inst.meta.vec_n == 3);
+    try expect(inst.meta.vec_n == 4);
 
     try inst.save("temp.db");
     const loaded_inst = try inst.load("temp.db");
-    var out_vecs: [3]Vector = undefined;
+    var out_vecs: [4]Vector = undefined;
     for (ids, 0..) |id, i| {
         out_vecs[i] = loaded_inst.get(id);
     }

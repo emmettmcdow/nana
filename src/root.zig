@@ -3,99 +3,36 @@ const expect = std.testing.expect;
 const expectEqlStrings = std.testing.expectEqualStrings;
 const testing_allocator = std.testing.allocator;
 
-const sqlite = @import("sqlite");
-
 const embed = @import("embed.zig");
+const model = @import("model.zig");
+const NoteID = model.NoteID;
+const Note = model.Note;
 
 pub const Error = error{ NotFound, BufferTooSmall };
-const DB_LOCATION = "./db.db";
-
-const GET_LAST_ID = "SELECT id FROM notes ORDER BY id DESC LIMIT 1;";
-
-const GET_NOTE = "SELECT id,created,modified FROM notes WHERE id = ?;";
-
-const INSERT_NOTE =
-    \\INSERT INTO notes(id, created, modified ) VALUES(?, ?, ?) ;
-;
-const NOTE_SCHEMA =
-    \\CREATE TABLE IF NOT EXISTS notes (
-    \\    id INTEGER PRIMARY KEY,
-    \\    created INTEGER,
-    \\    modified INTEGER
-    \\);
-;
-const UPDATE_NOTE =
-    \\UPDATE notes SET modified = ? WHERE id = ?;
-;
-const GET_COLS = "PRAGMA table_info(notes);";
-
-const DELETE_NOTE = "DELETE FROM notes WHERE id = ?;";
-
-const EMPTY_NOTE = "SELECT id FROM notes WHERE created = modified LIMIT 1;";
-
-const SEARCH_NO_QUERY = "SELECT id FROM notes WHERE created != modified ORDER BY modified DESC LIMIT ?;";
-
-const NoteID = u64;
-const Note = struct {
-    id: NoteID,
-    created: i64,
-    modified: i64,
-
-    fn path(self: Note, buf: []u8) []const u8 {
-        const out = std.fmt.bufPrint(buf, "{d}", .{self.id}) catch |err| {
-            std.log.err("Failed to write path of note {d}: {}\n", .{ self.id, err });
-            @panic("Failed to write the path of a note!");
-        };
-
-        return out;
-    }
-};
-const SchemaRow = struct {
-    id: u8 = 0,
-    name: []const u8,
-    type: []const u8,
-    unk1: u8 = 0,
-    unk2: []const u8 = "",
-    unk3: u8 = 0,
-};
 
 // TODO: this is a hack...
 const SMALL_TESTING_MODEL = "zig-out/share/mnist-12-int8.onnx";
 pub const RuntimeOpts = struct {
-    b: std.fs.Dir,
+    basedir: std.fs.Dir,
     mem: bool = false,
     model: [:0]const u8 = SMALL_TESTING_MODEL,
 };
 
 pub const Runtime = struct {
     basedir: std.fs.Dir,
-    db: sqlite.Db,
+    db: model.DB,
     embedder: embed.Embedder,
     tokenizer: embed.Tokenizer,
     arena: std.heap.ArenaAllocator,
-    next_id: NoteID,
     embed_model: [:0]const u8 = SMALL_TESTING_MODEL,
 
     pub fn init(allocator: std.mem.Allocator, opts: RuntimeOpts) !Runtime {
-        var db: sqlite.Db = try sqlite.Db.init(.{
-            .mode = if (opts.mem) sqlite.Db.Mode.Memory else sqlite.Db.Mode{ .File = DB_LOCATION },
-            .open_flags = .{
-                .write = true,
-                .create = true,
-            },
-            .threading_mode = .MultiThread,
-        });
-        var stmt = try db.prepare(NOTE_SCHEMA);
-        defer stmt.deinit();
-        try stmt.exec(.{}, .{});
-
-        var next_id: usize = 1;
-        const row = try db.one(NoteID, GET_LAST_ID, .{}, .{});
-        if (row) |id| {
-            next_id = id + 1;
-        }
-
         var arena = std.heap.ArenaAllocator.init(allocator);
+
+        const database = try model.DB.init(arena.allocator(), .{
+            .basedir = opts.basedir,
+            .mem = opts.mem,
+        });
         // const one = std.time.microTimestamp();
         const embedder = try embed.Embedder.init(arena.allocator(), opts.model);
         // const two = std.time.microTimestamp();
@@ -104,7 +41,13 @@ pub const Runtime = struct {
         // std.debug.print("Embedder took {d} ms to init\n", .{two - one});
         // std.debug.print("Tokenizer took {d} ms to init\n", .{three - two});
 
-        return Runtime{ .basedir = opts.b, .db = db, .embedder = embedder, .tokenizer = tokenizer, .next_id = next_id, .arena = arena };
+        return Runtime{
+            .basedir = opts.basedir,
+            .db = database,
+            .embedder = embedder,
+            .tokenizer = tokenizer,
+            .arena = arena,
+        };
     }
 
     pub fn deinit(self: *Runtime) void {
@@ -114,68 +57,15 @@ pub const Runtime = struct {
     }
     // FS lazy write - only create file on write
     pub fn create(self: *Runtime) !NoteID {
-
-        // Recycle empty notes
-        const row = try self.db.one(NoteID, EMPTY_NOTE, .{}, .{});
-        if (row) |id| {
-            const note = try self.get(id);
-            try self.update(note);
-            return id;
-        }
-
-        const created = std.time.microTimestamp();
-        const note = Note{ .id = self.next_id, .created = created, .modified = created };
-
-        var diags = sqlite.Diagnostics{};
-        var stmt = self.db.prepareWithDiags(INSERT_NOTE, .{ .diags = &diags }) catch |err| {
-            std.log.info("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
-            return err;
-        };
-        defer stmt.deinit();
-        try stmt.exec(.{}, .{
-            .id = note.id,
-            .created = note.created,
-            .modified = note.modified,
-        });
-
-        self.next_id += 1;
-
-        return note.id;
+        return self.db.create();
     }
 
     pub fn get(self: *Runtime, id: NoteID) !Note {
-        var diags = sqlite.Diagnostics{};
-        var stmt = self.db.prepareWithDiags(GET_NOTE, .{ .diags = &diags }) catch |err| {
-            std.log.err("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
-            return err;
-        };
-
-        defer stmt.deinit();
-
-        const row = try stmt.one(Note, .{}, .{
-            .id = id,
-        });
-
-        if (row) |r| {
-            return Note{ .id = r.id, .created = r.created, .modified = r.modified };
-        } else {
-            return sqlite.Error.SQLiteNotFound;
-        }
+        return self.db.get(id);
     }
 
     pub fn update(self: *Runtime, note: Note) !void {
-        var diags = sqlite.Diagnostics{};
-        var stmt = self.db.prepareWithDiags(UPDATE_NOTE, .{ .diags = &diags }) catch |err| {
-            std.log.err("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
-            return err;
-        };
-        defer stmt.deinit();
-
-        const modified = std.time.microTimestamp();
-        try stmt.exec(.{}, .{
-            .modified = modified,
-            .id = note.id,
-        });
+        return self.db.update(note);
     }
 
     pub fn delete(self: *Runtime, id: NoteID) !void {
@@ -184,20 +74,10 @@ pub const Runtime = struct {
         var buf: [64]u8 = undefined;
         try self.basedir.deleteFile(note.path(&buf));
 
-        var diags = sqlite.Diagnostics{};
-        var stmt = self.db.prepareWithDiags(DELETE_NOTE, .{ .diags = &diags }) catch |err| {
-            std.log.err("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
-            return err;
-        };
-        defer stmt.deinit();
-
-        try stmt.exec(.{}, .{
-            .id = note.id,
-        });
+        return self.db.delete(note);
     }
 
     pub fn writeAll(self: *Runtime, id: NoteID, content: []const u8) !void {
-        // std.debug.print("Writeall called on {d} with '{s}' (len: {d})\n", .{ id, content, content.len });
         if (content.len == 0) {
             return self.delete(id);
         }
@@ -243,214 +123,107 @@ pub const Runtime = struct {
     // Search should query the database and return N written
     // Parameter buf is really an array of NoteIDs. Need to use c_int though
     pub fn search(self: *Runtime, query: []const u8, buf: []c_int, ignore: ?NoteID) !usize {
-        if (query.len != 0) {
-            unreachable;
+        if (query.len == 0) {
+            return self.db.search_no_query(buf, ignore);
         }
-
-        var diags = sqlite.Diagnostics{};
-        var stmt = self.db.prepareWithDiags(SEARCH_NO_QUERY, .{ .diags = &diags }) catch |err| {
-            std.log.err("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
-            return err;
-        };
-
-        defer stmt.deinit();
-
-        var iter = try stmt.iterator(NoteID, .{
-            .limit = buf.len,
-        });
-
-        var written: usize = 0;
-        while (try iter.next(.{})) |id| {
-            if (written >= buf.len) {
-                // TOO MANY ITEMS
-                unreachable;
-            }
-            if (ignore) |toIgnore| {
-                if (id == toIgnore) {
-                    continue;
-                }
-            }
-            buf[written] = @intCast(id);
-            written += 1;
-        }
-
-        return written;
+        unreachable;
     }
 };
 
-test "init DB" {
-    var tmpD = std.testing.tmpDir(.{ .iterate = true });
-    defer tmpD.cleanup();
-
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
-    defer rt.deinit();
-    // Check if initialized
-    var stmt = try rt.db.prepare(GET_COLS);
-    defer stmt.deinit();
-
-    var iter = try stmt.iterator(SchemaRow, .{});
-
-    const expectedSchema = [_]SchemaRow{
-        .{ .name = "id", .type = "INTEGER" },
-        .{ .name = "created", .type = "INTEGER" },
-        .{ .name = "modified", .type = "INTEGER" },
-    };
-
-    var buffer: [1000]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buffer);
-    const allocator = fba.allocator();
-
-    var i: usize = 0;
-    while (true) {
-        const row = (try iter.nextAlloc(allocator, .{})) orelse break;
-        try expectEqlStrings(expectedSchema[i].name, row.name);
-        try expectEqlStrings(expectedSchema[i].type, row.type);
-        i += 1;
-    }
-}
-
-test "re-init DB" {
-    var tmpD = std.testing.tmpDir(.{ .iterate = true });
-    defer tmpD.cleanup();
-
-    const cwd = std.fs.cwd();
-    // TODO: fix this - sqlite library can't curently use tmpD... ugh
-    _ = cwd.deleteFile("db.db") catch void; // Start fresh!
-    defer _ = cwd.deleteFile("db.db") catch void; // Leave no trace!
-
-    var arena1 = std.heap.ArenaAllocator.init(testing_allocator);
-    var rt = try Runtime.init(arena1.allocator(), .{ .b = tmpD.parent_dir });
-
-    const id1 = try rt.create();
-    _ = try rt.writeAll(id1, "norecycle");
-
-    rt.deinit();
-    rt = try Runtime.init(arena1.allocator(), .{ .b = tmpD.parent_dir });
-    arena1.deinit();
-
-    const id2 = try rt.create();
-    try expect(id2 == id1 + 1);
-}
-
+const expectError = std.testing.expectError;
 test "no create on read" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
     defer rt.deinit();
 
     const nid1 = try rt.create();
     const n1 = try rt.get(nid1);
     var buf: [64]u8 = undefined;
     const path = n1.path(&buf);
-    try std.testing.expectError(error.FileNotFound, rt.basedir.access(path, .{ .mode = .read_write }));
+    try expectError(error.FileNotFound, rt.basedir.access(path, .{ .mode = .read_write }));
 
     const sz = try rt.readAll(nid1, &buf);
     try expect(sz == 0);
-    try std.testing.expectError(error.FileNotFound, rt.basedir.access(path, .{ .mode = .read_write }));
+    try expectError(error.FileNotFound, rt.basedir.access(path, .{ .mode = .read_write }));
 }
 
-test "r/w DB" {
-    var tmpD = std.testing.tmpDir(.{ .iterate = true });
-    defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
-    defer rt.deinit();
-
-    const fakeID = 420;
-    const badNote = rt.get(fakeID);
-    try expect(badNote == sqlite.Error.SQLiteNotFound);
-
-    const now = std.time.microTimestamp();
-    const noteID = try rt.create();
-    const note1 = try rt.get(noteID);
-
-    try expect(note1.id == 1);
-    var buf: [64]u8 = undefined;
-    const note1Path = note1.path(&buf);
-
-    try expectEqlStrings("1", note1Path);
-    try expect(note1.created - now < 1_000); // Happened in the last millisecond(?)
-    try expect(note1.modified - now < 1_000);
-    _ = try rt.writeAll(noteID, "norecycle");
-    try rt.basedir.access(note1Path, .{ .mode = .read_write });
-
-    const now2 = std.time.microTimestamp();
-    const noteID2 = try rt.create();
-    _ = try rt.writeAll(noteID2, "norecycle");
-    const note2 = try rt.get(noteID2);
-
-    try expect(note2.id == 2);
-    const note2Path = note2.path(&buf);
-    try expectEqlStrings("2", note2Path);
-    try expect(note2.created - now2 < 1_000);
-    try expect(note2.modified - now2 < 1_000);
-    try rt.basedir.access(note2Path, .{ .mode = .read_write });
-}
-
-test "recycle empty note" {
-    var tmpD = std.testing.tmpDir(.{ .iterate = true });
-    defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
-    defer rt.deinit();
-
-    const noteID1 = try rt.create();
-    const note1 = try rt.get(noteID1);
-    const noteID2 = try rt.create();
-    const note2 = try rt.get(noteID2);
-
-    try expect(noteID1 == noteID2);
-    try expect(note1.modified != note2.modified);
-}
-
-const TestError = error{ DirectoryShouldBeEmpty, ExpectedError };
-test "cleanup FS on DB failure create" {
-    var tmpD = std.testing.tmpDir(.{ .iterate = true });
-    defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
-    rt.deinit();
-
-    // Should throw an error - we de-init the db
-    _ = rt.create() catch |err| {
-        try expect(err == sqlite.Error.SQLiteMisuse);
-        var dirIterator = rt.basedir.iterate();
-        while (try dirIterator.next()) |_| {
-            // Directory should be empty
-            return TestError.DirectoryShouldBeEmpty;
+fn _test_empty_dir_exclude_db(dir: std.fs.Dir) !bool {
+    var dirIterator = dir.iterate();
+    const dbname = "db.db";
+    while (try dirIterator.next()) |dirent| {
+        for (dirent.name, 0..) |c, i| {
+            if (c != dbname[i]) return false;
         }
-        return;
-    };
-    return TestError.ExpectedError;
+    }
+    return true;
 }
 
-test "update DB" {
+test "lazily create files" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
     defer rt.deinit();
 
-    const then = std.time.microTimestamp();
     const noteID = try rt.create();
-    var resNote = try rt.get(noteID);
-    try expect(resNote.id == 1);
-    var buf: [64]u8 = undefined;
-    const resPath = resNote.path(&buf);
+    try expect(try _test_empty_dir_exclude_db(rt.basedir));
 
-    try expectEqlStrings("1", resPath);
-    try expect(resNote.created - then < 1_000); // Happened in the last millisecond(?)
-    try expect(resNote.modified - then < 1_000);
+    _ = try rt.writeAll(noteID, "norecycle");
+    try expect(!try _test_empty_dir_exclude_db(rt.basedir));
+}
 
-    const now = std.time.microTimestamp();
-    try rt.update(resNote);
-    resNote = try rt.get(resNote.id);
-    try expect(resNote.id == 1);
-    try expect(resNote.created - then < 1_000);
-    try expect(resNote.modified - now < 1_000);
-    try expect(resNote.created < resNote.modified);
+test "modify on write" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
+    defer rt.deinit();
+
+    const noteID = try rt.create();
+    var note = try rt.get(noteID);
+    try expect(note.created == note.modified);
+
+    var expected = "Contents of a note!";
+    try rt.writeAll(noteID, expected[0..]);
+    note = try rt.get(noteID);
+    try expect(note.created != note.modified);
+}
+
+test "no modify on read" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
+    defer rt.deinit();
+
+    const noteID = try rt.create();
+    var note = try rt.get(noteID);
+    try expect(note.created == note.modified);
+
+    var buf: [20]u8 = undefined;
+    _ = try rt.readAll(noteID, &buf);
+    note = try rt.get(noteID);
+    try expect(note.created == note.modified);
+}
+
+test "no modify on search" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
+    defer rt.deinit();
+
+    const noteID = try rt.create();
+    var note = try rt.get(noteID);
+    try expect(note.created == note.modified);
+
+    var buf2: [20]c_int = undefined;
+    _ = try rt.search("", &buf2, 420);
+    note = try rt.get(noteID);
+    try expect(note.created == note.modified);
 }
 
 test "r/w-all note" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
     defer rt.deinit();
 
     const noteID = try rt.create();
@@ -467,7 +240,7 @@ test "r/w-all note" {
 test "r/w-all updated time" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
     defer rt.deinit();
 
     const noteID = try rt.create();
@@ -484,7 +257,7 @@ test "r/w-all updated time" {
 test "r/w-all too smol output buffer" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
     defer rt.deinit();
 
     const noteID = try rt.create();
@@ -501,10 +274,11 @@ test "r/w-all too smol output buffer" {
     try expect(false);
 }
 
-test "delete empty note on writeAll" {
+// TODO: is this unnecessary automatic behavior?
+test "delete empty note on empty writeAll" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
     defer rt.deinit();
 
     const noteID = try rt.create();
@@ -522,7 +296,7 @@ test "delete empty note on writeAll" {
     try rt.writeAll(noteID, nothing);
 
     const out = rt.get(noteID);
-    try std.testing.expectError(sqlite.Error.SQLiteNotFound, out);
+    try std.testing.expectError(model.Error.NotFound, out);
 
     var pathbuf: [64]u8 = undefined;
     const path = note.path(&pathbuf);
@@ -533,7 +307,7 @@ test "delete empty note on writeAll" {
 test "search no query" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
     defer rt.deinit();
 
     var i: usize = 0;
@@ -554,10 +328,11 @@ test "search no query" {
     }
 }
 
+// TODO: do we want to move no-query searching testing to the model file? It's really just a DB op.
 test "search no query orderby modified" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
     defer rt.deinit();
 
     const noteID1 = try rt.create();
@@ -584,7 +359,7 @@ test "search no query orderby modified" {
 test "exclude param 'empty search'" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
     defer rt.deinit();
 
     const noteID1 = try rt.create();
@@ -601,7 +376,7 @@ test "exclude param 'empty search'" {
 test "exclude param 'empty search' - 2" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
     defer rt.deinit();
 
     const noteID1 = try rt.create();
@@ -618,7 +393,7 @@ test "exclude param 'empty search' - 2" {
 test "exclude from 'empty search' unmodifieds" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .b = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
     defer rt.deinit();
 
     const noteID1 = try rt.create();

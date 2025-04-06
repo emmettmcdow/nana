@@ -27,6 +27,7 @@ pub fn build(b: *std.Build) !void {
 
     // Sources
     const root_file = b.path("src/root.zig");
+    const model_file = b.path("src/model.zig");
     const embed_file = b.path("src/embed.zig");
     const vector_file = b.path("src/vector.zig");
     const interface_file = b.path("src/intf.zig");
@@ -131,17 +132,28 @@ pub fn build(b: *std.Build) !void {
     // Unit Tests //
     ////////////////
     // Root
-    const lib_unit_tests = b.addTest(.{
+    const root_unit_tests = b.addTest(.{
         .root_source_file = root_file,
         .target = x86_target,
         .optimize = optimize,
     });
-    _ = addSQLite(b, optimize, lib_unit_tests, x86_target);
-    const ort_install_root_test_step = addORT(b, optimize, lib_unit_tests, x86_target);
-    const run_root_unit_tests = b.addRunArtifact(lib_unit_tests);
+    _ = addSQLite(b, optimize, root_unit_tests, x86_target);
+    const ort_install_root_test_step = addORT(b, optimize, root_unit_tests, x86_target);
+    const run_root_unit_tests = b.addRunArtifact(root_unit_tests);
     const test_root = b.step("test-root", "run the tests for src/root.zig");
     test_root.dependOn(ort_install_root_test_step);
     test_root.dependOn(&run_root_unit_tests.step);
+
+    // Model
+    const model_unit_tests = b.addTest(.{
+        .root_source_file = model_file,
+        .target = x86_target,
+        .optimize = optimize,
+    });
+    _ = addSQLite(b, optimize, model_unit_tests, x86_target);
+    const run_model_unit_tests = b.addRunArtifact(model_unit_tests);
+    const test_model = b.step("test-model", "run the tests for src/model.zig");
+    test_model.dependOn(&run_model_unit_tests.step);
 
     // Embed
     const embed_unit_tests = b.addTest(.{
@@ -173,6 +185,7 @@ pub fn build(b: *std.Build) !void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(test_root);
     test_step.dependOn(test_embed);
+    test_step.dependOn(test_vector);
 
     ////////////////////
     // Test Debugging //
