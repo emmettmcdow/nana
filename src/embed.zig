@@ -6,7 +6,7 @@ const onnx = @import("onnxruntime");
 //**************************************************************************************** Embedder
 
 // TODO: this is a hack...
-const MXBAI_QUANTIZED_MODEL: *const [29:0]u8 = "zig-out/share/onnx/model.onnx";
+pub const MXBAI_QUANTIZED_MODEL: *const [29:0]u8 = "zig-out/share/onnx/model.onnx";
 pub const Embedder = struct {
     const Self = @This();
 
@@ -209,6 +209,11 @@ const TokenConfigModel = struct {
 pub const Tokenizer = struct {
     map: std.StringArrayHashMapUnmanaged(u16),
     allocator: std.mem.Allocator,
+    // Right now we only have one set of tokens at a time. So instead of allocating, we will just
+    // ref this heap memory.
+    _input_buf: [MAX_SENTENCE_TOKENS]i64 = undefined,
+    _attention_buf: [MAX_SENTENCE_TOKENS]i64 = undefined,
+    _token_type_id_buf: [MAX_SENTENCE_TOKENS]i64 = undefined,
 
     const Self = @This();
 
@@ -231,18 +236,14 @@ pub const Tokenizer = struct {
     }
 
     pub fn tokenize(self: *Self, input: []const u8) !Tokens {
-        var input_buf = try self.allocator.alloc(i64, MAX_SENTENCE_TOKENS);
-        @memset(input_buf, 0);
-        var attention_buf = try self.allocator.alloc(i64, MAX_SENTENCE_TOKENS);
-        @memset(attention_buf, 0);
-        // This will not change. Zeros only for now
-        var type_buf = try self.allocator.alloc(i64, MAX_SENTENCE_TOKENS);
-        @memset(type_buf, 0);
+        @memset(&self._input_buf, 0);
+        @memset(&self._attention_buf, 0);
+        @memset(&self._token_type_id_buf, 0); // This will not change. Zeros only for now
 
         // First token will always be 101
         // TODO: update this to read from the Config
-        input_buf[0] = 101;
-        attention_buf[0] = 1;
+        self._input_buf[0] = 101;
+        self._attention_buf[0] = 1;
 
         var it = std.mem.splitSequence(u8, input, " ");
         var tok: u16 = undefined;
@@ -251,25 +252,26 @@ pub const Tokenizer = struct {
             var wordbuf: [MAX_TOKEN_LENGTH]u8 = undefined;
             const lowerWord = toLower(word, &wordbuf);
             tok = self.map.get(lowerWord) orelse {
-                std.debug.print("we are bailing here!\n", .{});
-                unreachable;
+                break;
+                // std.debug.print("we are bailing on token -> '{s}'!\n", .{lowerWord});
+                // unreachable;
             };
-            input_buf[i] = tok;
-            attention_buf[i] = 1;
+            self._input_buf[i] = tok;
+            self._attention_buf[i] = 1;
             i += 1;
             if (i >= MAX_SENTENCE_TOKENS) unreachable;
         }
 
         // Last token will always be 102
         // TODO: update this to read from the Config
-        input_buf[i] = 102;
-        attention_buf[i] = 1;
+        self._input_buf[i] = 102;
+        self._attention_buf[i] = 1;
         i += 1;
 
         return Tokens{
-            .input_ids = input_buf[0..i],
-            .attention_mask = attention_buf[0..i],
-            .token_type_ids = type_buf[0..i],
+            .input_ids = self._input_buf[0..i],
+            .attention_mask = self._attention_buf[0..i],
+            .token_type_ids = self._token_type_id_buf[0..i],
         };
     }
 };
@@ -336,4 +338,11 @@ test "tokenize - YES SIR" {
     try expectEqualSlices(i64, output.input_ids, expected.input_ids);
     try expectEqualSlices(i64, output.attention_mask, expected.attention_mask);
     try expectEqualSlices(i64, output.token_type_ids, expected.token_type_ids);
+}
+
+test "tokenize nonsense - 'norecycle'" {
+    // TODO
+    // 101,4496,8586,2100,14321,102,0,0,0,0,0,0,0,0,0,0
+    // 1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0
+    // 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 }

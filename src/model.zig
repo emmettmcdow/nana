@@ -1,6 +1,9 @@
 const std = @import("std");
 const sqlite = @import("sqlite");
 
+const types = @import("types.zig");
+const VectorID = types.VectorID;
+
 const DB_LOCATION = "./db.db";
 
 const GET_LAST_ID = "SELECT id FROM notes ORDER BY id DESC LIMIT 1;";
@@ -189,7 +192,7 @@ pub const DB = struct {
         });
     }
 
-    pub fn search_no_query(self: *Self, buf: []c_int, ignore: ?NoteID) !usize {
+    pub fn searchNoQuery(self: *Self, buf: []c_int, ignore: ?NoteID) !usize {
         var diags = sqlite.Diagnostics{};
         var stmt = self.db.prepareWithDiags(SEARCH_NO_QUERY, .{ .diags = &diags }) catch |err| {
             std.log.err("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
@@ -218,6 +221,19 @@ pub const DB = struct {
         }
 
         return written;
+    }
+
+    pub fn appendVector(self: *Self, nodeID: NoteID, vectorID: VectorID) !void {
+        _ = self;
+        _ = nodeID;
+        _ = vectorID;
+    }
+
+    pub fn vecToNote(self: *Self, vectorID: VectorID) !?NoteID {
+        _ = self;
+        _ = vectorID;
+
+        return null;
     }
 };
 

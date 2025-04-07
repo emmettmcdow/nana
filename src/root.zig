@@ -1,10 +1,19 @@
 const std = @import("std");
 const expect = std.testing.expect;
 const expectEqlStrings = std.testing.expectEqualStrings;
+const assert = std.debug.assert;
 const testing_allocator = std.testing.allocator;
 
 const embed = @import("embed.zig");
 const model = @import("model.zig");
+const vector = @import("vector.zig");
+
+const types = @import("types.zig");
+const vec_sz = types.vec_sz;
+const vec_type = types.vec_type;
+const Vector = types.Vector;
+const VectorID = types.VectorID;
+
 const NoteID = model.NoteID;
 const Note = model.Note;
 
@@ -16,15 +25,18 @@ pub const RuntimeOpts = struct {
     basedir: std.fs.Dir,
     mem: bool = false,
     model: [:0]const u8 = SMALL_TESTING_MODEL,
+    skipEmbed: bool = false,
 };
 
 pub const Runtime = struct {
     basedir: std.fs.Dir,
     db: model.DB,
+    vectors: vector.DB,
     embedder: embed.Embedder,
     tokenizer: embed.Tokenizer,
     arena: std.heap.ArenaAllocator,
     embed_model: [:0]const u8 = SMALL_TESTING_MODEL,
+    skipEmbed: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, opts: RuntimeOpts) !Runtime {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -33,20 +45,19 @@ pub const Runtime = struct {
             .basedir = opts.basedir,
             .mem = opts.mem,
         });
-        // const one = std.time.microTimestamp();
+
         const embedder = try embed.Embedder.init(arena.allocator(), opts.model);
-        // const two = std.time.microTimestamp();
         const tokenizer = try embed.Tokenizer.init(arena.allocator());
-        // const three = std.time.microTimestamp();
-        // std.debug.print("Embedder took {d} ms to init\n", .{two - one});
-        // std.debug.print("Tokenizer took {d} ms to init\n", .{three - two});
+        const vectors = try vector.DB.init(arena.allocator(), opts.basedir);
 
         return Runtime{
             .basedir = opts.basedir,
             .db = database,
+            .vectors = vectors,
             .embedder = embedder,
             .tokenizer = tokenizer,
             .arena = arena,
+            .skipEmbed = opts.skipEmbed,
         };
     }
 
@@ -91,8 +102,32 @@ pub const Runtime = struct {
         defer f.close();
         try f.writeAll(content);
 
-        try self.update(note);
+        // TODO: can we flag this to be removed in prod?
+        if (self.skipEmbed) {
+            try self.update(note);
+            return;
+        }
 
+        var it = std.mem.splitAny(u8, content, ",.!?;-()/'\"");
+        while (it.next()) |sentence| {
+            const tokens = try self.tokenizer.tokenize(sentence);
+            // Skip anything not tokenizable - <2 means there's only the start and end tokens.
+            if (tokens.input_ids.len < 3) continue;
+            const embeddings = try self.embedder.embed(tokens);
+            // TODO: remove this copy - it's only necessary at the moment because I haven't made
+            //       the embedder quite as strict as the vector DB. So the embedder outputs slices
+            //       but we need fixed length arrays. Hence the copy.
+            // std.debug.print("Embeddings: {d}, vec_sz: {d}\n", .{ embeddings.len, vec_sz });
+            assert(embeddings.len == vec_sz);
+            var tmp_embeddings: [vec_sz]vec_type = undefined;
+            std.mem.copyForwards(vec_type, &tmp_embeddings, embeddings);
+            const vec: Vector = tmp_embeddings;
+
+            const vector_id = try self.vectors.put(vec);
+            try self.db.appendVector(id, vector_id);
+        }
+
+        try self.update(note);
         return;
     }
 
@@ -122,11 +157,33 @@ pub const Runtime = struct {
 
     // Search should query the database and return N written
     // Parameter buf is really an array of NoteIDs. Need to use c_int though
+    // TODO: make the ignore field more complex?
     pub fn search(self: *Runtime, query: []const u8, buf: []c_int, ignore: ?NoteID) !usize {
         if (query.len == 0) {
-            return self.db.search_no_query(buf, ignore);
+            return self.db.searchNoQuery(buf, ignore);
         }
-        unreachable;
+
+        const tokens = try self.tokenizer.tokenize(query);
+        // Skip anything not tokenizable - <2 means there's only the start and end tokens.
+        if (tokens.input_ids.len < 3) return 0;
+        const embeddings = try self.embedder.embed(tokens);
+        // TODO: remove this copy - it's only necessary at the moment because I haven't made
+        //       the embedder quite as strict as the vector DB. So the embedder outputs slices
+        //       but we need fixed length arrays. Hence the copy.
+        // std.debug.print("Embeddings: {d}, vec_sz: {d}\n", .{ embeddings.len, vec_sz });
+        assert(embeddings.len == vec_sz);
+        var tmp_embeddings: [vec_sz]vec_type = undefined;
+        std.mem.copyForwards(vec_type, &tmp_embeddings, embeddings);
+        const query_vec: Vector = tmp_embeddings;
+
+        var vec_ids: [1000]VectorID = undefined;
+        const found_n = try self.vectors.search(query_vec, &vec_ids);
+
+        for (0..found_n) |i| {
+            // TODO: CRITICAL unsafe af casting
+            buf[i] = @as(c_int, @intCast(try self.db.vecToNote(vec_ids[i]) orelse undefined));
+        }
+        return found_n;
     }
 };
 
@@ -134,7 +191,7 @@ const expectError = std.testing.expectError;
 test "no create on read" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
     defer rt.deinit();
 
     const nid1 = try rt.create();
@@ -162,7 +219,7 @@ fn _test_empty_dir_exclude_db(dir: std.fs.Dir) !bool {
 test "lazily create files" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
     defer rt.deinit();
 
     const noteID = try rt.create();
@@ -175,7 +232,7 @@ test "lazily create files" {
 test "modify on write" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
     defer rt.deinit();
 
     const noteID = try rt.create();
@@ -191,7 +248,7 @@ test "modify on write" {
 test "no modify on read" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
     defer rt.deinit();
 
     const noteID = try rt.create();
@@ -207,7 +264,7 @@ test "no modify on read" {
 test "no modify on search" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
     defer rt.deinit();
 
     const noteID = try rt.create();
@@ -223,7 +280,7 @@ test "no modify on search" {
 test "r/w-all note" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
     defer rt.deinit();
 
     const noteID = try rt.create();
@@ -240,7 +297,7 @@ test "r/w-all note" {
 test "r/w-all updated time" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
     defer rt.deinit();
 
     const noteID = try rt.create();
@@ -257,7 +314,7 @@ test "r/w-all updated time" {
 test "r/w-all too smol output buffer" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
     defer rt.deinit();
 
     const noteID = try rt.create();
@@ -278,7 +335,7 @@ test "r/w-all too smol output buffer" {
 test "delete empty note on empty writeAll" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
     defer rt.deinit();
 
     const noteID = try rt.create();
@@ -307,7 +364,7 @@ test "delete empty note on empty writeAll" {
 test "search no query" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
     defer rt.deinit();
 
     var i: usize = 0;
@@ -332,7 +389,7 @@ test "search no query" {
 test "search no query orderby modified" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
     defer rt.deinit();
 
     const noteID1 = try rt.create();
@@ -359,7 +416,7 @@ test "search no query orderby modified" {
 test "exclude param 'empty search'" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
     defer rt.deinit();
 
     const noteID1 = try rt.create();
@@ -376,7 +433,7 @@ test "exclude param 'empty search'" {
 test "exclude param 'empty search' - 2" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
     defer rt.deinit();
 
     const noteID1 = try rt.create();
@@ -393,7 +450,7 @@ test "exclude param 'empty search' - 2" {
 test "exclude from 'empty search' unmodifieds" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
     defer rt.deinit();
 
     const noteID1 = try rt.create();

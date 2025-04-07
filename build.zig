@@ -30,6 +30,7 @@ pub fn build(b: *std.Build) !void {
     const model_file = b.path("src/model.zig");
     const embed_file = b.path("src/embed.zig");
     const vector_file = b.path("src/vector.zig");
+    const benchmark_file = b.path("src/benchmark.zig");
     const interface_file = b.path("src/intf.zig");
 
     // TODO: make these lazy
@@ -137,6 +138,9 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
     });
+    const root_options = b.addOptions();
+    root_options.addOption(usize, "vec_sz", 3);
+    root_unit_tests.root_module.addOptions("config", root_options);
     _ = addSQLite(b, optimize, root_unit_tests, x86_target);
     const ort_install_root_test_step = addORT(b, optimize, root_unit_tests, x86_target);
     const run_root_unit_tests = b.addRunArtifact(root_unit_tests);
@@ -181,11 +185,31 @@ pub fn build(b: *std.Build) !void {
     const test_vector = b.step("test-vector", "run the tests for src/vector.zig");
     test_vector.dependOn(&run_vector_unit_tests.step);
 
+    // Benchmark
+    const benchmark_options = b.addOptions();
+    // benchmark_options.addOption(type, "vec_type", f32);
+    benchmark_options.addOption(usize, "vec_sz", 8192);
+    const benchmark_unit_tests = b.addTest(.{
+        .root_source_file = benchmark_file,
+        .target = x86_target,
+        .optimize = optimize,
+        .filters = &.{"benchmark"},
+    });
+    _ = addSQLite(b, optimize, benchmark_unit_tests, x86_target);
+    const ort_install_benchmark_test_step = addORT(b, optimize, benchmark_unit_tests, x86_target);
+    benchmark_unit_tests.root_module.addOptions("config", benchmark_options);
+    const run_benchmark_unit_tests = b.addRunArtifact(benchmark_unit_tests);
+    const test_benchmark = b.step("test-benchmark", "run the tests for src/benchmark.zig");
+    test_root.dependOn(ort_install_benchmark_test_step);
+    test_benchmark.dependOn(&run_benchmark_unit_tests.step);
+
     // All
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(test_root);
+    test_step.dependOn(test_model);
     test_step.dependOn(test_embed);
     test_step.dependOn(test_vector);
+    test_step.dependOn(test_benchmark);
 
     ////////////////////
     // Test Debugging //
@@ -196,7 +220,7 @@ pub fn build(b: *std.Build) !void {
         // Uncomment this if lib_unit_tests needs lldb args or test args
         // "--",
     });
-    lldb.addArtifactArg(embed_unit_tests);
+    lldb.addArtifactArg(root_unit_tests);
     const lldb_step = b.step("debug", "run the tests under lldb");
     lldb_step.dependOn(&lldb.step);
 }

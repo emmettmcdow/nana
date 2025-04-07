@@ -1,10 +1,11 @@
 const std = @import("std");
-const config = @import("config");
 
-const vec_sz = config.vec_sz;
-// const vec_type = config.vec_type;
-const vec_type = f32;
-const Vector = @Vector(vec_sz, vec_type);
+const types = @import("types.zig");
+const Vector = types.Vector;
+const VectorID = types.VectorID;
+const vec_sz = types.vec_sz;
+const vec_type = types.vec_type;
+
 const latest_format_version = 1;
 const v1_meta: StorageMetadata = .{
     .fmt_v = latest_format_version,
@@ -12,8 +13,6 @@ const v1_meta: StorageMetadata = .{
     .vec_type = BinaryTypeRepresentation.to_binary(vec_type),
     .vec_n = 0,
 };
-
-const vector_id = usize;
 
 // ********************************************************************************************* DB
 pub const BinaryTypeRepresentation = enum(u8) {
@@ -81,11 +80,11 @@ pub const DB = struct {
         };
     }
 
-    pub fn get(self: *Self, id: vector_id) Vector {
+    pub fn get(self: *Self, id: VectorID) Vector {
         return self.vectors[id - 1];
     }
 
-    pub fn put(self: *Self, v: Vector) !vector_id {
+    pub fn put(self: *Self, v: Vector) !VectorID {
         if (self.meta.vec_n + 1 == self.capacity) {
             self.vectors = try self.allocator.realloc(self.vectors, self.capacity * 2);
             self.capacity *= 2;
@@ -93,6 +92,40 @@ pub const DB = struct {
         self.vectors[self.meta.vec_n] = v;
         self.meta.vec_n += 1;
         return self.meta.vec_n;
+    }
+
+    pub fn search(self: Self, query: Vector, buf: []VectorID) !usize {
+        const THRESHOLD = 0.8;
+
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+
+        const entry = struct {
+            id: VectorID,
+            sim: vec_type,
+
+            const InnerSelf = @This();
+
+            pub fn order(_: void, a: InnerSelf, b: InnerSelf) std.math.Order {
+                return std.math.order(b.sim, a.sim);
+            }
+        };
+
+        var pq = std.PriorityQueue(entry, void, entry.order).init(arena.allocator(), undefined);
+
+        for (self.vectors, 1..) |vec, id| {
+            const similar = cosine_similarity(vec, query);
+            if (similar > THRESHOLD) {
+                try pq.add(.{ .id = id, .sim = similar });
+            }
+        }
+
+        var i: usize = 0;
+        while (pq.removeOrNull()) |pair| : (i += 1) {
+            buf[i] = pair.id;
+        }
+
+        return i;
     }
 
     pub fn save(self: Self, path: []const u8) !void {
@@ -205,7 +238,7 @@ test "save and load v1" {
         .{ 0.5, 0.5, 0.5 },
         .{ -1, -1, -1 },
     };
-    var ids: [4]vector_id = undefined;
+    var ids: [4]VectorID = undefined;
     for (in_vecs, 0..) |vec, i| {
         ids[i] = try inst.put(vec);
     }
