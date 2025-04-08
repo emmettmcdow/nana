@@ -1,0 +1,24 @@
+@import "tailwindcss";
+
+@theme {
+  --color-light: #E4E4E4;
+  --color-dark: #2F2F2F;
+}
+
+.blinking-cursor {
+  position: relative;
+  display: inline;
+}
+
+.blinking-cursor::after {
+  content: '|';
+  margin-left: 0px;
+  animation: blink 1s step-end infinite;
+  vertical-align: baseline;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}

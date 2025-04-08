@@ -3,3 +3,5 @@ zig-out/
 testing/
 macos/
 *.db
+
+node_modules/
