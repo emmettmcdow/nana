@@ -33,9 +33,31 @@ test "binary single words" {
     const id2 = try rt.create();
     _ = try rt.writeAll(id2, "day");
 
-    const n_out = try rt.search("moon", &searchBuf, null);
+    var n_out = try rt.search("moon", &searchBuf, null);
     if (n_out > 0) {
         if (searchBuf[0] == id1) score += 50;
+        if (n_out == 1) score += 50;
+    }
+    max_score += 100;
+
+    const id3 = try rt.create();
+    _ = try rt.writeAll(id3, "mouse");
+    const id4 = try rt.create();
+    _ = try rt.writeAll(id4, "dog");
+    n_out = try rt.search("computer", &searchBuf, null);
+    if (n_out > 0) {
+        if (searchBuf[0] == id3) score += 50;
+        if (n_out == 1) score += 50;
+    }
+    max_score += 100;
+
+    const id5 = try rt.create();
+    _ = try rt.writeAll(id5, "soccer");
+    const id6 = try rt.create();
+    _ = try rt.writeAll(id6, "sushi");
+    n_out = try rt.search("sport", &searchBuf, null);
+    if (n_out > 0) {
+        if (searchBuf[0] == id5) score += 50;
         if (n_out == 1) score += 50;
     }
     max_score += 100;

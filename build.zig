@@ -137,6 +137,7 @@ pub fn build(b: *std.Build) !void {
         .root_source_file = root_file,
         .target = x86_target,
         .optimize = optimize,
+        .filters = &.{"root"},
     });
     const root_options = b.addOptions();
     root_options.addOption(usize, "vec_sz", 3);
@@ -153,6 +154,7 @@ pub fn build(b: *std.Build) !void {
         .root_source_file = model_file,
         .target = x86_target,
         .optimize = optimize,
+        .filters = &.{"model"},
     });
     _ = addSQLite(b, optimize, model_unit_tests, x86_target);
     const run_model_unit_tests = b.addRunArtifact(model_unit_tests);
@@ -164,6 +166,7 @@ pub fn build(b: *std.Build) !void {
         .root_source_file = embed_file,
         .target = x86_target,
         .optimize = optimize,
+        .filters = &.{"embed"},
     });
     const ort_install_embed_test_step = addORT(b, optimize, embed_unit_tests, x86_target);
     const run_embed_unit_tests = b.addRunArtifact(embed_unit_tests);
@@ -179,6 +182,7 @@ pub fn build(b: *std.Build) !void {
         .root_source_file = vector_file,
         .target = x86_target,
         .optimize = optimize,
+        .filters = &.{"vector"},
     });
     vector_unit_tests.root_module.addOptions("config", vector_options);
     const run_vector_unit_tests = b.addRunArtifact(vector_unit_tests);
@@ -220,7 +224,7 @@ pub fn build(b: *std.Build) !void {
         // Uncomment this if lib_unit_tests needs lldb args or test args
         // "--",
     });
-    lldb.addArtifactArg(root_unit_tests);
+    lldb.addArtifactArg(benchmark_unit_tests);
     const lldb_step = b.step("debug", "run the tests under lldb");
     lldb_step.dependOn(&lldb.step);
 }

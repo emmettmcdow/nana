@@ -26,17 +26,30 @@ const NOTE_SCHEMA =
     \\);
 ;
 
+// Making (next|last)_vec_id not a fk because it makes the logic easier - sue me
 const VECTOR_SCHEMA =
     \\CREATE TABLE IF NOT EXISTS vectors (
+    \\    vector_id INTEGER PRIMARY KEY,
     \\    note_id INTEGER,
-    \\    vector_id INTEGER,
     \\    next_vec_id INTEGER,
     \\    last_vec_id INTEGER,
     \\    FOREIGN KEY(note_id) REFERENCES notes(id)
-    \\    FOREIGN KEY(next_vec_id) REFERENCES vectors(rowid),
-    \\    FOREIGN KEY(last_vec_id) REFERENCES vectors(rowid)
     \\);
 ;
+
+const GET_LAST_VECTOR =
+    \\SELECT vector_id,note_id,next_vec_id,last_vec_id FROM vectors WHERE next_vec_id IS NULL;
+;
+
+const UPDATE_VECTOR =
+    \\UPDATE vectors SET next_vec_id = ? WHERE vector_id = ?;
+;
+
+const APPEND_VECTOR =
+    \\INSERT INTO vectors(vector_id, note_id, next_vec_id, last_vec_id ) VALUES(?, ?, ?, ?) ;
+;
+
+const GET_NOTEID_FROM_VECID = "SELECT note_id FROM vectors WHERE vector_id = ?;";
 
 const UPDATE_NOTE =
     \\UPDATE notes SET modified = ? WHERE id = ?;
@@ -67,6 +80,13 @@ pub const Note = struct {
 
         return out;
     }
+};
+
+const VectorRow = struct {
+    note_id: NoteID,
+    vector_id: VectorID,
+    next_vec_id: ?VectorID,
+    last_vec_id: ?VectorID,
 };
 
 pub const DBOpts = struct {
@@ -223,17 +243,57 @@ pub const DB = struct {
         return written;
     }
 
-    pub fn appendVector(self: *Self, nodeID: NoteID, vectorID: VectorID) !void {
-        _ = self;
-        _ = nodeID;
-        _ = vectorID;
+    pub fn appendVector(self: *Self, noteID: NoteID, vectorID: VectorID) !void {
+
+        // Get head of list
+        const row = try self.db.one(VectorRow, GET_LAST_VECTOR, .{}, .{});
+        var prev_head_id: ?VectorID = null;
+        if (row) |prev_head| {
+            prev_head_id = prev_head.vector_id;
+            // Update head
+            var diags = sqlite.Diagnostics{};
+            var stmt = self.db.prepareWithDiags(UPDATE_VECTOR, .{ .diags = &diags }) catch |err| {
+                std.log.err("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
+                return err;
+            };
+            defer stmt.deinit();
+            try stmt.exec(.{}, .{
+                .next = vectorID,
+                .target = prev_head.vector_id,
+            });
+        }
+        // Add new head
+        var diags = sqlite.Diagnostics{};
+        var stmt = self.db.prepareWithDiags(APPEND_VECTOR, .{ .diags = &diags }) catch |err| {
+            std.log.err("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
+            return err;
+        };
+        defer stmt.deinit();
+        try stmt.exec(.{}, .{
+            .vecid = vectorID,
+            .noteid = noteID,
+            .nextid = null,
+            .lastid = prev_head_id,
+        });
     }
 
-    pub fn vecToNote(self: *Self, vectorID: VectorID) !?NoteID {
-        _ = self;
-        _ = vectorID;
+    pub fn vecToNote(self: *Self, vectorID: VectorID) !NoteID {
+        var diags = sqlite.Diagnostics{};
+        var stmt = self.db.prepareWithDiags(GET_NOTEID_FROM_VECID, .{ .diags = &diags }) catch |err| {
+            std.log.err("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
+            return err;
+        };
 
-        return null;
+        defer stmt.deinit();
+
+        const row = try stmt.one(NoteID, .{}, .{
+            .id = vectorID,
+        });
+
+        if (row) |id| {
+            return id;
+        }
+        return Error.NotFound;
     }
 };
 
@@ -294,8 +354,8 @@ test "init DB - vector" {
     var iter = try stmt.iterator(SchemaRow, .{});
 
     const expectedSchema = [_]SchemaRow{
-        .{ .name = "note_id", .type = "INTEGER" },
         .{ .name = "vector_id", .type = "INTEGER" },
+        .{ .name = "note_id", .type = "INTEGER" },
         .{ .name = "next_vec_id", .type = "INTEGER" },
         .{ .name = "last_vec_id", .type = "INTEGER" },
     };
@@ -385,4 +445,22 @@ test "update modified timestamp" {
     try expect(resNote.created - then < 1_000);
     try expect(resNote.modified - now < 1_000);
     try expect(resNote.created < resNote.modified);
+}
+
+test "appendVector + vec2note simple" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var db = try DB.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
+    defer db.deinit();
+
+    const noteID = try db.create();
+    try db.appendVector(noteID, 420);
+    try db.appendVector(noteID, 69);
+    try db.appendVector(noteID, 42);
+
+    try expect(noteID == try db.vecToNote(420));
+    try expect(noteID == try db.vecToNote(69));
+    try expect(noteID == try db.vecToNote(42));
+    // not found case
+    try expect(9000 == db.vecToNote(1234) catch 9000);
 }

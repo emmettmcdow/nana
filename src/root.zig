@@ -48,7 +48,7 @@ pub const Runtime = struct {
 
         const embedder = try embed.Embedder.init(arena.allocator(), opts.model);
         const tokenizer = try embed.Tokenizer.init(arena.allocator());
-        const vectors = try vector.DB.init(arena.allocator(), opts.basedir);
+        const vectors = try vector.DB.init(allocator, opts.basedir);
 
         return Runtime{
             .basedir = opts.basedir,
@@ -63,6 +63,7 @@ pub const Runtime = struct {
 
     pub fn deinit(self: *Runtime) void {
         self.db.deinit();
+        self.vectors.deinit();
         self.embedder.deinit();
         self.arena.deinit();
     }
@@ -177,11 +178,13 @@ pub const Runtime = struct {
         const query_vec: Vector = tmp_embeddings;
 
         var vec_ids: [1000]VectorID = undefined;
+
+        // std.debug.print("Searching for {s}\n", .{query});
         const found_n = try self.vectors.search(query_vec, &vec_ids);
 
         for (0..found_n) |i| {
             // TODO: CRITICAL unsafe af casting
-            buf[i] = @as(c_int, @intCast(try self.db.vecToNote(vec_ids[i]) orelse undefined));
+            buf[i] = @as(c_int, @intCast(try self.db.vecToNote(vec_ids[i])));
         }
         return found_n;
     }

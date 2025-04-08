@@ -79,8 +79,11 @@ pub const DB = struct {
             .dir = dir,
         };
     }
+    pub fn deinit(self: *Self) void {
+        self.allocator.free(self.vectors);
+    }
 
-    pub fn get(self: *Self, id: VectorID) Vector {
+    pub fn get(self: Self, id: VectorID) Vector {
         return self.vectors[id - 1];
     }
 
@@ -95,7 +98,7 @@ pub const DB = struct {
     }
 
     pub fn search(self: Self, query: Vector, buf: []VectorID) !usize {
-        const THRESHOLD = 0.8;
+        const THRESHOLD = 0.7;
 
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
@@ -113,8 +116,9 @@ pub const DB = struct {
 
         var pq = std.PriorityQueue(entry, void, entry.order).init(arena.allocator(), undefined);
 
-        for (self.vectors, 1..) |vec, id| {
-            const similar = cosine_similarity(vec, query);
+        for (1..self.meta.vec_n + 1) |id| {
+            const similar = cosine_similarity(self.get(id), query);
+            // std.debug.print("Similarity: {d}\n", .{similar});
             if (similar > THRESHOLD) {
                 try pq.add(.{ .id = id, .sim = similar });
             }
