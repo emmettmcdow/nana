@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const Step = std.Build.Step;
-const RunStep = std.Build.Step.Run;
+const RunStep = Step.Run;
 const LazyPath = std.Build.LazyPath;
 
 const PATH_MAX = 4096;
@@ -40,6 +40,7 @@ pub fn build(b: *std.Build) !void {
 
     // Options
     const options = b.addOptions();
+    options.addOption(usize, "vec_sz", 8192);
 
     // Static files
     const install_mnist = b.addInstallDirectory(.{
@@ -66,9 +67,19 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
     base_nana_x86_lib.root_module.addOptions("config", options);
-    const sqlite_x86_art = addSQLite(b, optimize, base_nana_x86_lib, x86_target);
-    const ort_install_x86_step = addORT(b, optimize, base_nana_x86_lib, x86_target);
-    install_step.dependOn(ort_install_x86_step);
+    const sqlite_x86_step = SQLiteStep.create(.{
+        .b = b,
+        .dest = base_nana_x86_lib,
+        .target = x86_target,
+        .optimize = optimize,
+    });
+    // const onnx_x86_lib = ORTStep.create(.{
+    _ = ORTStep.create(.{
+        .b = b,
+        .dest = base_nana_x86_lib,
+        .target = x86_target,
+        .optimize = optimize,
+    });
 
     const base_nana_arm_lib = b.addStaticLibrary(.{
         .name = "nana",
@@ -77,14 +88,25 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
     base_nana_arm_lib.root_module.addOptions("config", options);
-    const sqlite_arm_art = addSQLite(b, optimize, base_nana_arm_lib, arm_target);
-    const ort_install_arm_step = addORT(b, optimize, base_nana_arm_lib, arm_target);
-    install_step.dependOn(ort_install_arm_step);
+    const sqlite_arm_step = SQLiteStep.create(.{
+        .b = b,
+        .dest = base_nana_arm_lib,
+        .target = arm_target,
+        .optimize = optimize,
+    });
+    // const onnx_arm_lib = ORTStep.create(.{
+    _ = ORTStep.create(.{
+        .b = b,
+        .dest = base_nana_arm_lib,
+        .target = arm_target,
+        .optimize = optimize,
+    });
 
     // Combine Libs
     var x86_lib_sources = [_]LazyPath{
         base_nana_x86_lib.getEmittedBin(),
-        sqlite_x86_art.getEmittedBin(),
+        sqlite_x86_step.output,
+            // onnx_x86_lib.output,
     };
     const combine_x86_lib = createLibtoolStep(b, .{
         .name = "nana",
@@ -98,7 +120,8 @@ pub fn build(b: *std.Build) !void {
 
     var arm_lib_sources = [_]LazyPath{
         base_nana_arm_lib.getEmittedBin(),
-        sqlite_arm_art.getEmittedBin(),
+        sqlite_arm_step.output,
+            // onnx_arm_lib.output,
     };
     const combine_arm_lib = createLibtoolStep(b, .{
         .name = "nana",
@@ -114,8 +137,10 @@ pub fn build(b: *std.Build) !void {
     const static_lib_universal = createLipoStep(b, .{
         .name = "nana",
         .out_name = outfile,
-        .input_a = combine_x86_lib.output,
-        .input_b = combine_arm_lib.output,
+        .inputs = &.{
+            combine_x86_lib.output,
+            combine_arm_lib.output,
+        },
     });
     static_lib_universal.step.dependOn(combine_x86_lib.step);
     static_lib_universal.step.dependOn(combine_arm_lib.step);
@@ -123,8 +148,14 @@ pub fn build(b: *std.Build) !void {
     const xcframework = createXCFrameworkStep(b, .{
         .name = "NanaKit",
         .out_path = "macos/NanaKit.xcframework",
-        .library = static_lib_universal.output,
-        .headers = .{ .cwd_relative = "include" },
+        .libraries = &.{
+            static_lib_universal.output,
+                // ort_mac_prebuilt_universal_step.output,
+        },
+        .headers = &.{
+            .{ .cwd_relative = "include" },
+            // ort_mac_prebuilt_universal_step.headers,
+        },
     });
     xcframework.step.dependOn(static_lib_universal.step);
     install_step.dependOn(xcframework.step);
@@ -142,11 +173,20 @@ pub fn build(b: *std.Build) !void {
     const root_options = b.addOptions();
     root_options.addOption(usize, "vec_sz", 3);
     root_unit_tests.root_module.addOptions("config", root_options);
-    _ = addSQLite(b, optimize, root_unit_tests, x86_target);
-    const ort_install_root_test_step = addORT(b, optimize, root_unit_tests, x86_target);
+    _ = SQLiteStep.create(.{
+        .b = b,
+        .dest = root_unit_tests,
+        .target = x86_target,
+        .optimize = optimize,
+    });
+    _ = ORTStep.create(.{
+        .b = b,
+        .dest = root_unit_tests,
+        .target = x86_target,
+        .optimize = optimize,
+    });
     const run_root_unit_tests = b.addRunArtifact(root_unit_tests);
     const test_root = b.step("test-root", "run the tests for src/root.zig");
-    test_root.dependOn(ort_install_root_test_step);
     test_root.dependOn(&run_root_unit_tests.step);
 
     // Model
@@ -156,7 +196,12 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .filters = &.{"model"},
     });
-    _ = addSQLite(b, optimize, model_unit_tests, x86_target);
+    _ = SQLiteStep.create(.{
+        .b = b,
+        .dest = model_unit_tests,
+        .target = x86_target,
+        .optimize = optimize,
+    });
     const run_model_unit_tests = b.addRunArtifact(model_unit_tests);
     const test_model = b.step("test-model", "run the tests for src/model.zig");
     test_model.dependOn(&run_model_unit_tests.step);
@@ -168,10 +213,14 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .filters = &.{"embed"},
     });
-    const ort_install_embed_test_step = addORT(b, optimize, embed_unit_tests, x86_target);
+    _ = ORTStep.create(.{
+        .b = b,
+        .dest = embed_unit_tests,
+        .target = x86_target,
+        .optimize = optimize,
+    });
     const run_embed_unit_tests = b.addRunArtifact(embed_unit_tests);
     const test_embed = b.step("test-embed", "run the tests for src/embed.zig");
-    test_embed.dependOn(ort_install_embed_test_step);
     test_embed.dependOn(&run_embed_unit_tests.step);
 
     // Vector
@@ -199,12 +248,21 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .filters = &.{"benchmark"},
     });
-    _ = addSQLite(b, optimize, benchmark_unit_tests, x86_target);
-    const ort_install_benchmark_test_step = addORT(b, optimize, benchmark_unit_tests, x86_target);
+    _ = SQLiteStep.create(.{
+        .b = b,
+        .dest = benchmark_unit_tests,
+        .target = x86_target,
+        .optimize = optimize,
+    });
+    _ = ORTStep.create(.{
+        .b = b,
+        .dest = benchmark_unit_tests,
+        .target = x86_target,
+        .optimize = optimize,
+    });
     benchmark_unit_tests.root_module.addOptions("config", benchmark_options);
     const run_benchmark_unit_tests = b.addRunArtifact(benchmark_unit_tests);
     const test_benchmark = b.step("test-benchmark", "run the tests for src/benchmark.zig");
-    test_root.dependOn(ort_install_benchmark_test_step);
     test_benchmark.dependOn(&run_benchmark_unit_tests.step);
 
     // All
@@ -229,47 +287,65 @@ pub fn build(b: *std.Build) !void {
     lldb_step.dependOn(&lldb.step);
 }
 
-fn addSQLite(
-    b: *std.Build,
-    optimize: std.builtin.OptimizeMode,
-    dest: *Step.Compile,
-    target: std.Build.ResolvedTarget,
-) *Step.Compile {
-    const sqlite_dep = b.dependency("sqlite", .{ .target = target, .optimize = optimize });
-    const sqlite_art = sqlite_dep.artifact("sqlite");
-    const sqlite_mod = sqlite_dep.module("sqlite");
+const SQLiteStep = struct {
+    // step: *Step,
+    output: LazyPath,
 
-    dest.root_module.addImport("sqlite", sqlite_mod);
-    dest.linkLibrary(sqlite_art);
-    dest.bundle_compiler_rt = true;
-    dest.linkLibC();
+    const SQLiteOptions = struct {
+        // The build
+        b: *std.Build,
+        // That which we want to link with
+        dest: *Step.Compile,
+        // Platform options
+        target: std.Build.ResolvedTarget,
+        optimize: std.builtin.OptimizeMode,
+    };
 
-    return sqlite_art;
-}
+    pub fn create(opts: SQLiteOptions) SQLiteStep {
+        const sqlite_dep = opts.b.dependency("sqlite", .{ .target = opts.target, .optimize = opts.optimize });
+        const sqlite_art = sqlite_dep.artifact("sqlite");
+        const sqlite_mod = sqlite_dep.module("sqlite");
 
-fn addORT(
-    b: *std.Build,
-    optimize: std.builtin.OptimizeMode,
-    dest: *Step.Compile,
-    target: std.Build.ResolvedTarget,
-) *Step {
-    const onnx_dep = b.dependency("zig_onnxruntime", .{ .target = target, .optimize = optimize });
-    const onnx_mod = onnx_dep.module("zig-onnxruntime");
+        opts.dest.root_module.addImport("sqlite", sqlite_mod);
+        opts.dest.linkLibrary(sqlite_art);
+        opts.dest.bundle_compiler_rt = true;
+        opts.dest.linkLibC();
 
-    dest.root_module.addImport("onnxruntime", onnx_mod);
-    // TODO: this is only really for testing environment. Maybe remove in prod?
-    // TODO: also how do we set up RPATH in prod
-    dest.root_module.addRPathSpecial(b.getInstallPath(.lib, "."));
-    dest.each_lib_rpath = false;
+        return .{
+            // .step = null,
+            .output = sqlite_art.getEmittedBin(),
+        };
+    }
+};
+const ORTStep = struct {
+    // step: *Step,
+    // output: LazyPath,
 
-    const install_onnx_libs = b.addInstallDirectory(.{
-        .source_dir = onnx_dep.module("onnxruntime_lib").root_source_file.?,
-        .install_dir = .lib,
-        .install_subdir = ".",
-    });
+    const ORTOptions = struct {
+        // The build
+        b: *std.Build,
+        // That which we want to link with
+        dest: *Step.Compile,
+        // Platform options
+        target: std.Build.ResolvedTarget,
+        optimize: std.builtin.OptimizeMode,
+    };
 
-    return &install_onnx_libs.step;
-}
+    pub fn create(opts: ORTOptions) ORTStep {
+        const onnx_dep = opts.b.dependency("zig_onnxruntime", .{ .target = opts.target, .optimize = opts.optimize });
+        // const onnx_art = onnx_dep.artifact("zig-onnxruntime");
+        const onnx_mod = onnx_dep.module("zig-onnxruntime");
+
+        opts.dest.root_module.addImport("onnxruntime", onnx_mod);
+        opts.dest.linkLibCpp();
+        // opts.dest.linkLibrary(onnx_art);
+
+        return .{
+            // .step = &install_onnx_libs.step,
+            // .output = onnx_art.getEmittedBin(),
+        };
+    }
+};
 
 // TY mitchellh
 // https://gist.github.com/mitchellh/0ee168fb34915e96159b558b89c9a74b#file-libtoolstep-zig
@@ -320,8 +396,7 @@ const LipoStep = struct {
         out_name: []const u8,
 
         /// Library file (dylib, a) to package.
-        input_a: LazyPath,
-        input_b: LazyPath,
+        inputs: []const LazyPath,
     };
 
     step: *Step,
@@ -336,8 +411,9 @@ pub fn createLipoStep(b: *std.Build, opts: LipoStep.Options) *LipoStep {
     const run_step = RunStep.create(b, b.fmt("lipo {s}", .{opts.name}));
     run_step.addArgs(&.{ "lipo", "-create", "-output" });
     const output = run_step.addOutputFileArg(opts.out_name);
-    run_step.addFileArg(opts.input_a);
-    run_step.addFileArg(opts.input_b);
+    for (opts.inputs) |input| {
+        run_step.addFileArg(input);
+    }
 
     self.* = .{
         .step = &run_step.step,
@@ -356,10 +432,10 @@ const XCFrameworkStep = struct {
         out_path: []const u8,
 
         /// Library file (dylib, a) to package.
-        library: LazyPath,
+        libraries: []const LazyPath,
 
         /// Path to a directory with the headers.
-        headers: LazyPath,
+        headers: []const LazyPath,
     };
 
     step: *Step,
@@ -382,10 +458,12 @@ pub fn createXCFrameworkStep(b: *std.Build, opts: XCFrameworkStep.Options) *XCFr
         const run = RunStep.create(b, b.fmt("xcframework {s}", .{opts.name}));
         run.has_side_effects = true;
         run.addArgs(&.{ "xcodebuild", "-create-xcframework" });
-        run.addArg("-library");
-        run.addFileArg(opts.library);
-        run.addArg("-headers");
-        run.addFileArg(opts.headers);
+        for (opts.libraries, 0..) |library, i| {
+            run.addArg("-library");
+            run.addFileArg(library);
+            run.addArg("-headers");
+            run.addFileArg(opts.headers[i]);
+        }
         run.addArg("-output");
         run.addArg(opts.out_path);
         break :run run;
