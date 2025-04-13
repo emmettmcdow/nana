@@ -2,6 +2,7 @@
 zig-out/
 testing/
 macos/
+mac/nana/Resources
 *.db
 
 node_modules/

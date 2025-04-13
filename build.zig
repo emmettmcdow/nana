@@ -11,6 +11,7 @@ fn toSentinel(allocator: std.mem.Allocator, str: []const u8) ![:0]const u8 {
     @memcpy(output[0..], str);
     return output;
 }
+const xc_fw_path = "macos/NanaKit.xcframework";
 
 pub fn build(b: *std.Build) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -49,7 +50,7 @@ pub fn build(b: *std.Build) !void {
         .install_subdir = ".",
     });
     const install_mxbai_embed = b.addInstallDirectory(.{
-        .source_dir = mxbai_embed_dep.path(""),
+        .source_dir = mxbai_embed_dep.path("onnx"),
         .install_dir = .{ .custom = "share" },
         .install_subdir = ".",
     });
@@ -147,7 +148,7 @@ pub fn build(b: *std.Build) !void {
 
     const xcframework = createXCFrameworkStep(b, .{
         .name = "NanaKit",
-        .out_path = "macos/NanaKit.xcframework",
+        .out_path = xc_fw_path,
         .libraries = &.{
             static_lib_universal.output,
                 // ort_mac_prebuilt_universal_step.output,
@@ -158,7 +159,8 @@ pub fn build(b: *std.Build) !void {
         },
     });
     xcframework.step.dependOn(static_lib_universal.step);
-    install_step.dependOn(xcframework.step);
+    install_mxbai_embed.step.dependOn(xcframework.step);
+    install_step.dependOn(&install_mxbai_embed.step);
 
     ////////////////
     // Unit Tests //

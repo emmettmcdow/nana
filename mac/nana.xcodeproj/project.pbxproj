@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		C040F8852D890EFD0032E53D /* NanaKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C040F8842D890EFD0032E53D /* NanaKit.xcframework */; };
+		C06E67972DAC5114000B073C /* NanaKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C06E67962DAC5114000B073C /* NanaKit.xcframework */; };
 		C0E6788C2DAB2D84006CC735 /* libc++.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = C0E6788B2DAB2D84006CC735 /* libc++.tbd */; };
 /* End PBXBuildFile section */
 
@@ -28,8 +28,21 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		C06E672E2DAC3FE4000B073C /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
-		C040F8842D890EFD0032E53D /* NanaKit.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = NanaKit.xcframework; path = ../macos/NanaKit.xcframework; sourceTree = SOURCE_ROOT; };
+		C06E67962DAC5114000B073C /* NanaKit.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = NanaKit.xcframework; path = ../macos/NanaKit.xcframework; sourceTree = SOURCE_ROOT; };
 		C0D13D852D6ED5B200D0032D /* nana.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = nana.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C0D13D962D6ED5B500D0032D /* nanaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = nanaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C0D13DA02D6ED5B500D0032D /* nanaUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = nanaUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -59,8 +72,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C06E67972DAC5114000B073C /* NanaKit.xcframework in Frameworks */,
 				C0E6788C2DAB2D84006CC735 /* libc++.tbd in Frameworks */,
-				C040F8852D890EFD0032E53D /* NanaKit.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -88,7 +101,6 @@
 				C0D13D992D6ED5B500D0032D /* nanaTests */,
 				C0D13DA32D6ED5B500D0032D /* nanaUITests */,
 				C0D13D862D6ED5B200D0032D /* Products */,
-				C040F8842D890EFD0032E53D /* NanaKit.xcframework */,
 				C0E6788A2DAB2D83006CC735 /* Frameworks */,
 			);
 			sourceTree = "<group>";
@@ -107,6 +119,7 @@
 			isa = PBXGroup;
 			children = (
 				C0E6788B2DAB2D84006CC735 /* libc++.tbd */,
+				C06E67962DAC5114000B073C /* NanaKit.xcframework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -121,6 +134,7 @@
 				C0D13D812D6ED5B200D0032D /* Sources */,
 				C0D13D822D6ED5B200D0032D /* Frameworks */,
 				C0D13D832D6ED5B200D0032D /* Resources */,
+				C06E672E2DAC3FE4000B073C /* Embed Frameworks */,
 			);
 			buildRules = (
 			);

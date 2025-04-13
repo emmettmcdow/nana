@@ -10,9 +10,10 @@ import SwiftUI
 struct FileList: View {
     @Binding var notes: [Note]
     var onSelect: (Note) -> Void
+    var onChange: (String) -> Void
 
     @Environment(\.dismiss) private var dismiss // For macOS 12+
-    @State private var query: String = "eve"
+    @State private var query: String = ""
     @Environment(\.colorScheme) var colorScheme
     //@State private var colorScheme: ColorScheme = .dark
     @State var hoverClose = false
@@ -30,6 +31,9 @@ struct FileList: View {
                 .font(.system(size: 20))
                 .foregroundStyle(colorA(colorScheme: colorScheme))
                 .textFieldStyle(.plain)
+                .onChange(of: query, initial: true) { _, newtext in
+                    onChange(newtext)
+                }
                 Spacer()
                 Button(action: {dismiss()}){
                     ZStack {
@@ -95,5 +99,5 @@ let li3 = "Aenean at mauris est. Etiam felis velit, tempor a ipsum quis, ornare 
         Note(id: 5, content: li3, created: Date(), modified: Date()),
         Note(id: 6, content: li3, created: Date(), modified: Date()),
     ]
-    FileList(notes: $notes, onSelect: {(n: Note) -> Void in print(n.id)})
+    FileList(notes: $notes, onSelect: {(n: Note) -> Void in print(n.id)}, onChange: {(q: String) -> Void in print(q)})
 }

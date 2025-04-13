@@ -76,7 +76,8 @@ struct ContentView: View {
             }.padding()
         }
         .sheet(isPresented: $shouldPresentSheet) {
-            FileList(notes: $queriedNotes, onSelect: {(note: Note) -> Void in
+            FileList(notes: $queriedNotes,
+                     onSelect: {(note: Note) -> Void in
                 if (text.count > 0) {
                     // Save the current buffer
                     let res = nana_write_all(noteId, text)
@@ -86,6 +87,16 @@ struct ContentView: View {
                 noteId = note.id
                 text = note.content
                 shouldPresentSheet.toggle()
+            }, onChange: {(q: String) -> Void in
+                var ids = Array<Int32>(repeating: 0, count: 100)
+                let n = nana_search(q, &ids, numericCast(ids.count), noteId)
+                queriedNotes = []
+                if (n > 0) {
+                    for i in 0...Int(n-1) {
+                        let id = ids[i]
+                        queriedNotes.append(Note(id: id))
+                    }
+                }
             })
         }
         .interactiveDismissDisabled(false)

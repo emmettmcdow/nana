@@ -8,10 +8,8 @@ var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const CError = enum(c_int) { Success = 0, DoubleInit = -1, NotInit = -2, DirCreationFail = -3, InitFail = -4, DeinitFail = -5, CreateFail = -6, GetFail = -7, WriteFail = -8, SearchFail = -9, ReadFail = -10 };
 // const RUNTIME_DIR = "data/";
 
-pub const MXBAI_QUANTIZED_MODEL: *const [29:0]u8 = "zig-out/share/onnx/model.onnx";
-
 // Output: CError
-export fn nana_init() c_int {
+export fn nana_init(model: [*:0]const u8, sz: c_uint) c_int {
     if (init) {
         return @intFromEnum(CError.DoubleInit);
     }
@@ -23,7 +21,7 @@ export fn nana_init() c_int {
         return @intFromEnum(CError.DirCreationFail);
     };
 
-    rt = nana.Runtime.init(gpa.allocator(), .{ .basedir = d, .model = MXBAI_QUANTIZED_MODEL }) catch |err| {
+    rt = nana.Runtime.init(gpa.allocator(), .{ .basedir = d, .model = model[0..sz :0] }) catch |err| {
         std.log.err("Failed to initialize nana: {}\n", .{err});
         return @intFromEnum(CError.InitFail);
     };

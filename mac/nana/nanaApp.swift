@@ -12,7 +12,12 @@ import NanaKit
 @main
 struct nanaApp: App {
     init() {
-        let err = nana_init()
+        let frameworkBundle = Bundle.main
+        guard let filePath = frameworkBundle.path(forResource: "model", ofType: "onnx") else {
+            print("File not found")
+            return
+        }
+        let err = nana_init(filePath, UInt32(filePath.count))
         if (err != 0) {
             fatalError("Failed to init libnana! With error:\(err)")
         }
