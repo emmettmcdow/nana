@@ -21,6 +21,7 @@ pub const Error = error{ NotFound, BufferTooSmall };
 
 // TODO: this is a hack...
 const SMALL_TESTING_MODEL = "zig-out/share/mnist-12-int8.onnx";
+const VECTOR_DB_PATH = "vecs.db";
 pub const RuntimeOpts = struct {
     basedir: std.fs.Dir,
     mem: bool = false,
@@ -48,12 +49,12 @@ pub const Runtime = struct {
 
         const embedder = try embed.Embedder.init(arena.allocator(), opts.model);
         const tokenizer = try embed.Tokenizer.init(arena.allocator());
-        const vectors = try vector.DB.init(allocator, opts.basedir);
+        var vectors = try vector.DB.init(allocator, opts.basedir);
 
         return Runtime{
             .basedir = opts.basedir,
             .db = database,
-            .vectors = vectors,
+            .vectors = try vectors.load(VECTOR_DB_PATH),
             .embedder = embedder,
             .tokenizer = tokenizer,
             .arena = arena,
@@ -127,6 +128,9 @@ pub const Runtime = struct {
             const vector_id = try self.vectors.put(vec);
             try self.db.appendVector(id, vector_id);
         }
+
+        // TODO: be more efficient - don't save all of the vectors on every write
+        try self.vectors.save(VECTOR_DB_PATH);
 
         try self.update(note);
         return;

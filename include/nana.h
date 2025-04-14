@@ -12,9 +12,10 @@ enum Error {
   WriteFail = -8,
   SearchFail = -9,
   ReadFail = -10,
+  PathTooLong= -11,
 };
 
-int nana_init(const char *, unsigned int);
+int nana_init(const char *, unsigned int, const char *, unsigned int);
 int nana_deinit();
 int nana_create(void);
 int nana_create_time(int);

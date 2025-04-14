@@ -140,7 +140,8 @@ pub const DB = struct {
         defer f.close();
         var writer = f.writer();
         try writer.writeStructEndian(self.meta, self.meta.endianness());
-        for (self.vectors) |vec| {
+        for (self.vectors, 0..) |vec, i| {
+            if (i >= self.meta.vec_n) break;
             const array: [vec_sz]vec_type = vec;
             for (array) |elem| {
                 try writer.writeInt(
@@ -154,13 +155,17 @@ pub const DB = struct {
         return;
     }
 
-    pub fn load(self: *Self, path: []const u8) !*Self {
+    pub fn load(self: *Self, path: []const u8) !Self {
         // We take the naiive approach to reading for now. We only have one version of the file,
         // but we have future proofed ourselves to be able to use multiple. We don't yet need
         // multiple so we can just read the file in a "dumb" way.
         //
         // Dumb = not reading metadata before reading the whole file.
-        var f = try self.dir.openFile(path, .{ .mode = .read_only });
+        var f = self.dir.openFile(path, .{ .mode = .read_only }) catch |err| switch (err) {
+            // Don't do anything if there is no file to load: file is created on save
+            std.fs.File.OpenError.FileNotFound => return self.*,
+            else => return err,
+        };
         defer f.close();
         var reader = f.reader();
 
@@ -174,17 +179,21 @@ pub const DB = struct {
         assert(self.meta.vec_sz == v1_meta.vec_sz);
         assert(self.meta.vec_type == v1_meta.vec_type);
 
-        // Improvement - we know the size of the vectors. Alloc once instead of realloc with put.
-        for (0..self.meta.vec_n) |_| {
+        // Reset the number of vectors - put increments the size
+        const vec_n = self.meta.vec_n;
+        self.meta.vec_n = 0;
+        for (0..vec_n) |_| {
             var v: Vector = undefined;
             for (0..v1_meta.vec_sz) |j| {
                 const elem = try reader.readInt(v1_meta.vec_type.stored_as(), endian);
-                v[j] = @as(v1_meta.vec_type.to_type(), @floatFromInt(elem));
+                const converted = @as(v1_meta.vec_type.to_type(), @bitCast(elem));
+                v[j] = converted;
             }
+            // Improvement: we know the sz of the vectors. Alloc once instead of realloc with put.
             _ = try self.put(v);
         }
 
-        return self;
+        return self.*;
     }
 };
 
@@ -208,6 +217,60 @@ test "test put / get" {
     try expect(@reduce(.And, vec1 == vec2));
 }
 
+test "re-init DB" {
+    var tmpD = tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    var inst = try DB.init(arena.allocator(), tmpD.dir);
+    try expect(inst.meta.vec_n == 0);
+    const vec1 = Vector{ 1, 1, 1 };
+    const id = try inst.put(vec1);
+    try expect(inst.meta.vec_n == 1);
+    try inst.save("temp.db");
+    inst.deinit();
+
+    var inst2 = try DB.init(arena.allocator(), tmpD.dir);
+    inst2 = try inst2.load("temp.db");
+    try expect(inst2.meta.vec_n == 1);
+    const vec2 = inst2.get(id);
+    try expect(@reduce(.And, vec1 == vec2));
+    inst2.deinit();
+}
+
+test "re-init DB multiple" {
+    var tmpD = tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    const vecs: [4]Vector = .{
+        .{ 1, 1, 1 },
+        .{ 1, 2, 3 },
+        .{ 0.5, 0.5, 0.5 },
+        .{ -0.5, -0.5, -0.5 },
+    };
+
+    var inst = try DB.init(arena.allocator(), tmpD.dir);
+    try expect(inst.meta.vec_n == 0);
+    for (vecs) |vec| {
+        _ = try inst.put(vec);
+    }
+    try expect(inst.meta.vec_n == vecs.len);
+    try inst.save("temp.db");
+    inst.deinit();
+
+    var inst2 = try DB.init(arena.allocator(), tmpD.dir);
+    inst2 = try inst2.load("temp.db");
+    try expect(inst2.meta.vec_n == vecs.len);
+    for (1..vecs.len) |i| {
+        const vec2 = inst2.get(i);
+        try expect(@reduce(.And, vecs[i - 1] == vec2));
+    }
+    inst2.deinit();
+}
+
 test "test put resize" {
     var tmpD = tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
@@ -229,34 +292,15 @@ test "test put resize" {
     try expect(inst.capacity == 64);
 }
 
-test "save and load v1" {
+test "no failure on loading non-existent db" {
     var tmpD = tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
     var inst = try DB.init(arena.allocator(), tmpD.dir);
-    const in_vecs: [4]Vector = .{
-        .{ 1, 1, 1 },
-        .{ 1, 2, 3 },
-        .{ 0.5, 0.5, 0.5 },
-        .{ -1, -1, -1 },
-    };
-    var ids: [4]VectorID = undefined;
-    for (in_vecs, 0..) |vec, i| {
-        ids[i] = try inst.put(vec);
-    }
-    try expect(inst.meta.vec_n == 4);
-
-    try inst.save("temp.db");
-    const loaded_inst = try inst.load("temp.db");
-    var out_vecs: [4]Vector = undefined;
-    for (ids, 0..) |id, i| {
-        out_vecs[i] = loaded_inst.get(id);
-    }
-    for (0..out_vecs.len) |i| {
-        try expect(@reduce(.And, in_vecs[i] == out_vecs[i]));
-    }
+    _ = try inst.load("vecs.db");
+    inst.deinit();
 }
 
 // **************************************************************************************** Vectors

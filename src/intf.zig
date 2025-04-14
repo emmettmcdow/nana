@@ -5,23 +5,54 @@ var rt: nana.Runtime = undefined;
 var init: bool = false;
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
-const CError = enum(c_int) { Success = 0, DoubleInit = -1, NotInit = -2, DirCreationFail = -3, InitFail = -4, DeinitFail = -5, CreateFail = -6, GetFail = -7, WriteFail = -8, SearchFail = -9, ReadFail = -10 };
-// const RUNTIME_DIR = "data/";
+const CError = enum(c_int) {
+    Success = 0,
+    DoubleInit = -1,
+    NotInit = -2,
+    DirCreationFail = -3,
+    InitFail = -4,
+    DeinitFail = -5,
+    CreateFail = -6,
+    GetFail = -7,
+    WriteFail = -8,
+    SearchFail = -9,
+    ReadFail = -10,
+    PathTooLong = -11,
+};
+
+const PATH_MAX = 1000;
 
 // Output: CError
-export fn nana_init(model: [*:0]const u8, sz: c_uint) c_int {
+export fn nana_init(
+    basedir: [*:0]const u8,
+    basedir_sz: c_uint,
+    model: [*:0]const u8,
+    model_sz: c_uint,
+) c_int {
     if (init) {
         return @intFromEnum(CError.DoubleInit);
     }
-    var buf: [1000]u8 = undefined;
-    const cwd = std.process.getCwd(&buf) catch unreachable;
+    if (basedir_sz > PATH_MAX or model_sz > PATH_MAX) {
+        return @intFromEnum(CError.DoubleInit);
+    }
 
-    const d = std.fs.openDirAbsolute(cwd, .{ .iterate = true }) catch |err| {
-        std.log.err("Failed to access working directory '{s}': {}\n", .{ cwd, err });
+    const model_str = model[0..model_sz :0];
+    const basedir_str = basedir[0..basedir_sz :0];
+
+    var buf: [PATH_MAX]u8 = undefined;
+    var path: []const u8 = undefined;
+    if (std.mem.eql(u8, basedir_str, "./")) {
+        path = std.process.getCwd(&buf) catch unreachable;
+    } else {
+        path = basedir_str;
+    }
+
+    const d = std.fs.openDirAbsolute(path, .{ .iterate = true }) catch |err| {
+        std.log.err("Failed to access working directory '{s}': {}\n", .{ path, err });
         return @intFromEnum(CError.DirCreationFail);
     };
 
-    rt = nana.Runtime.init(gpa.allocator(), .{ .basedir = d, .model = model[0..sz :0] }) catch |err| {
+    rt = nana.Runtime.init(gpa.allocator(), .{ .basedir = d, .model = model_str }) catch |err| {
         std.log.err("Failed to initialize nana: {}\n", .{err});
         return @intFromEnum(CError.InitFail);
     };
