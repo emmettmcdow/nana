@@ -9,7 +9,7 @@ import Foundation
 
 import NanaKit
 
-struct Note {
+struct Note: Identifiable {
     var id: Int32
     var content: String
     var created: Date

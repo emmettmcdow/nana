@@ -26,16 +26,19 @@ func colorC(colorScheme: ColorScheme) -> Color {
 
 
 struct ContentView: View {
+    
     @State private var noteId: Int32
     @State private var text: String = ""
     @State private var queriedNotes: [Note] = []
-    @State var shouldPresentSheet = false
+    @State var searchVisible = false
     @Environment(\.colorScheme) var colorScheme
+
     //@State private var colorScheme: ColorScheme = .dark
     init() {
         let newId = nana_create()
         assert(newId > 0, "Failed to create new note")
         noteId = newId
+        noteId = 1
     }
     
     var body: some View {
@@ -62,7 +65,7 @@ struct ContentView: View {
                             let id = ids[i]
                             queriedNotes.append(Note(id: id))
                         }
-                        shouldPresentSheet.toggle()
+                        searchVisible.toggle()
                     }, colorScheme: colorScheme)
                     CircularPlusButton(action: {
                         let res = nana_write_all(noteId, text)
@@ -74,37 +77,38 @@ struct ContentView: View {
                     }, colorScheme: colorScheme)
                 }
             }.padding()
-        }
-        .sheet(isPresented: $shouldPresentSheet) {
-            FileList(notes: $queriedNotes,
-                     onSelect: {(note: Note) -> Void in
-                if (text.count > 0) {
-                    // Save the current buffer
-                    let res = nana_write_all(noteId, text)
-                    assert(res == 0, "Failed to write all")
-                }
-                
-                noteId = note.id
-                text = note.content
-                shouldPresentSheet.toggle()
-            }, onChange: {(q: String) -> Void in
-                var ids = Array<Int32>(repeating: 0, count: 100)
-                let n = nana_search(q, &ids, numericCast(ids.count), noteId)
-                queriedNotes = []
-                if (n > 0) {
-                    for i in 0...Int(n-1) {
-                        let id = ids[i]
-                        queriedNotes.append(Note(id: id))
+            if searchVisible {
+                FileList(notes: $queriedNotes,
+                         onSelect: {(note: Note) -> Void in
+                    if (text.count > 0) {
+                        // Save the current buffer
+                        let res = nana_write_all(noteId, text)
+                        assert(res == 0, "Failed to write all")
                     }
-                }
-            })
+                    
+                    noteId = note.id
+                    text = note.content
+                    searchVisible.toggle()
+                }, onChange: {(q: String) -> Void in
+                    var ids = Array<Int32>(repeating: 0, count: 100)
+                    let n = nana_search(q, &ids, numericCast(ids.count), noteId)
+                    queriedNotes = []
+                    if (n > 0) {
+                        for i in 0...Int(n-1) {
+                            let id = ids[i]
+                            queriedNotes.append(Note(id: id))
+                        }
+                    }
+                }, closeList: {() -> Void in
+                    searchVisible.toggle()
+                })
+            }
         }
-        .interactiveDismissDisabled(false)
         .background(colorB(colorScheme: colorScheme))
     }
 }
 
-/*
+
 #Preview("Editor") {
     ContentView()
-}*/
+}

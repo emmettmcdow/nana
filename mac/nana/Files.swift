@@ -11,74 +11,86 @@ struct FileList: View {
     @Binding var notes: [Note]
     var onSelect: (Note) -> Void
     var onChange: (String) -> Void
+    var closeList: () -> Void
 
-    @Environment(\.dismiss) private var dismiss // For macOS 12+
     @State private var query: String = ""
     @Environment(\.colorScheme) var colorScheme
     //@State private var colorScheme: ColorScheme = .dark
     @State var hoverClose = false
     
     var body: some View {
-        VStack(spacing: 0) {
-            HStack() {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 20))
-                    .foregroundColor(colorC(colorScheme: colorScheme))
-                TextField(
-                    "Query",
-                    text: $query
-                )
-                .font(.system(size: 20))
-                .foregroundStyle(colorA(colorScheme: colorScheme))
-                .textFieldStyle(.plain)
-                .onChange(of: query, initial: true) { _, newtext in
-                    onChange(newtext)
-                }
+        GeometryReader { geometry in
+            HStack () {
                 Spacer()
-                Button(action: {dismiss()}){
-                    ZStack {
-                        Circle()
-                            .fill(colorB(colorScheme: colorScheme))
-                            .frame(width:25, height:25)
-                        Image(systemName: "xmark")
-                            .font(.system(size: 20))
-                            .foregroundColor(colorC(colorScheme: colorScheme).mix(with: .black, by: hoverClose ? 0.2 : 0.0))
-                    }
-                }.buttonStyle(PlainButtonStyle())
-                    .onHover{ _ in
-                        self.hoverClose.toggle()
-                    }
-            }
-            .padding()
-            //.border(.white)
-            
-            Divider()
-                .background(colorC(colorScheme: colorScheme))
-            List(notes, id: \.id) { note in
-                HStack(){
-                    Text(note.content)
-                        .lineLimit(3)
-                        .foregroundStyle(colorA(colorScheme: colorScheme))
+                VStack (){
                     Spacer()
-                    VStack(){
-                        Text(Date.now.formatted(date: .long, time: .omitted))
-                            .foregroundStyle(colorC(colorScheme: colorScheme))
-                            .italic()
-                        Spacer()
+                    VStack(spacing: 0) {
+                        HStack(spacing: 0) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 20))
+                                .foregroundColor(colorC(colorScheme: colorScheme))
+                            TextField(
+                                "Query",
+                                text: $query
+                            )
+                            .font(.system(size: 20))
+                            .foregroundStyle(colorA(colorScheme: colorScheme))
+                            .textFieldStyle(.plain)
+                            .onChange(of: query, initial: true) { _, newtext in
+                                onChange(newtext)
+                            }
+                            Spacer()
+                            Button(action: {closeList()}){
+                                ZStack {
+                                    Circle()
+                                        .fill(colorB(colorScheme: colorScheme))
+                                        .frame(width:25, height:25)
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 20))
+                                        .foregroundColor(colorC(colorScheme: colorScheme).mix(with: .black, by: hoverClose ? 0.2 : 0.0))
+                                }
+                            }.buttonStyle(PlainButtonStyle())
+                                .onHover{ _ in
+                                    self.hoverClose.toggle()
+                                }
+                        }
+                        .padding()
+                        
+                        
+                        LazyVStack(alignment: .leading) {
+                            ForEach(notes) { note in
+                                HStack(){
+                                    Text(note.content)
+                                        .lineLimit(3)
+                                        .foregroundStyle(colorA(colorScheme: colorScheme))
+                                    Spacer()
+                                    VStack(){
+                                        Text(Date.now.formatted(date: .long, time: .omitted))
+                                            .foregroundStyle(colorC(colorScheme: colorScheme))
+                                            .italic()
+                                        Spacer()
+                                    }
+                                }
+                                .listRowSeparatorTint(colorC(colorScheme: colorScheme))
+                                .onTapGesture {
+                                    onSelect(note)
+                                }
+                                .padding([.leading, .trailing])
+                            }
+                        }
+                        .scrollContentBackground(.hidden)
+                        .listStyle(.plain)
+                        .scrollIndicators(.never)
                     }
+                    .frame(idealWidth: 300, maxWidth: min(geometry.size.width * 0.6, 500))
+                    .background(colorB(colorScheme: colorScheme))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    Spacer()
                 }
-                .listRowSeparatorTint(colorC(colorScheme: colorScheme))
-                .onTapGesture {
-                    onSelect(note)
-                }
-            }
-            .scrollContentBackground(.hidden)
-            .listStyle(.plain)
-            .scrollIndicators(.never)
-            //.border(.white)
+
+                Spacer()
+            }.background(Color.black.opacity(0.5))
         }
-        .background(colorB(colorScheme: colorScheme))
-        .frame(minHeight: 200)
     }
 }
 
@@ -90,7 +102,7 @@ let li2 = "Pellentesque non iaculis purus. Maecenas laoreet feugiat massa in vol
 let li3 = "Aenean at mauris est. Etiam felis velit, tempor a ipsum quis, ornare ornare orci. Phasellus vehicula fermentum justo quis dictum. Sed sollicitudin quam augue, placerat gravida libero lacinia vitae. Vivamus lobortis mollis libero quis cursus. Vestibulum erat arcu, tincidunt ac lacus vel, luctus tincidunt magna. Duis rutrum at sapien et finibus. Proin lectus lacus, laoreet vitae auctor vitae, congue at nisi. Phasellus orci nisl, imperdiet ac magna eget, ornare dignissim sapien. Nullam ultricies dui ornare ante eleifend, at faucibus quam facilisis. Nulla tempus eros tincidunt porttitor hendrerit."
 
 #Preview("Notes") {
-    @State var notes: [Note] = [
+    @Previewable @State var notes: [Note] = [
         Note(id: 0, content: li1, created: Date(), modified: Date()),
         Note(id: 1, content: li2, created: Date(), modified: Date()),
         Note(id: 2, content: li3, created: Date(), modified: Date()),
@@ -99,5 +111,5 @@ let li3 = "Aenean at mauris est. Etiam felis velit, tempor a ipsum quis, ornare 
         Note(id: 5, content: li3, created: Date(), modified: Date()),
         Note(id: 6, content: li3, created: Date(), modified: Date()),
     ]
-    FileList(notes: $notes, onSelect: {(n: Note) -> Void in print(n.id)}, onChange: {(q: String) -> Void in print(q)})
+    FileList(notes: $notes, onSelect: {(n: Note) -> Void in print(n.id)}, onChange: {(q: String) -> Void in print(q)}, closeList: {() -> Void in print("closed")})
 }
