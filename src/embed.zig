@@ -6,7 +6,7 @@ const onnx = @import("onnxruntime");
 //**************************************************************************************** Embedder
 
 // TODO: this is a hack...
-pub const MXBAI_QUANTIZED_MODEL: *const [29:0]u8 = "zig-out/share/onnx/model.onnx";
+pub const MXBAI_QUANTIZED_MODEL: *const [24:0]u8 = "zig-out/share/model.onnx";
 pub const Embedder = struct {
     const Self = @This();
 

@@ -74,7 +74,6 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
     });
-    // const onnx_x86_lib = ORTStep.create(.{
     _ = ORTStep.create(.{
         .b = b,
         .dest = base_nana_x86_lib,
@@ -95,7 +94,6 @@ pub fn build(b: *std.Build) !void {
         .target = arm_target,
         .optimize = optimize,
     });
-    // const onnx_arm_lib = ORTStep.create(.{
     _ = ORTStep.create(.{
         .b = b,
         .dest = base_nana_arm_lib,
@@ -151,11 +149,9 @@ pub fn build(b: *std.Build) !void {
         .out_path = xc_fw_path,
         .libraries = &.{
             static_lib_universal.output,
-                // ort_mac_prebuilt_universal_step.output,
         },
         .headers = &.{
             .{ .cwd_relative = "include" },
-            // ort_mac_prebuilt_universal_step.headers,
         },
     });
     xcframework.step.dependOn(static_lib_universal.step);
@@ -335,12 +331,19 @@ const ORTStep = struct {
 
     pub fn create(opts: ORTOptions) ORTStep {
         const onnx_dep = opts.b.dependency("zig_onnxruntime", .{ .target = opts.target, .optimize = opts.optimize });
-        // const onnx_art = onnx_dep.artifact("zig-onnxruntime");
         const onnx_mod = onnx_dep.module("zig-onnxruntime");
 
         opts.dest.root_module.addImport("onnxruntime", onnx_mod);
         opts.dest.linkLibCpp();
-        // opts.dest.linkLibrary(onnx_art);
+
+        // TODO: this is SO brittle. Fix this.
+        const sdk_path: LazyPath = .{
+            .cwd_relative = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.2.sdk",
+        };
+        opts.dest.root_module.addSystemFrameworkPath(sdk_path.path(opts.b, "System/Library/Frameworks"));
+        opts.dest.root_module.addSystemIncludePath(sdk_path.path(opts.b, "usr/include"));
+        opts.dest.root_module.addLibraryPath(sdk_path.path(opts.b, "usr/lib"));
+        opts.dest.linkFramework("Foundation");
 
         return .{
             // .step = &install_onnx_libs.step,

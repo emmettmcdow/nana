@@ -85,8 +85,11 @@ pub const Runtime = struct {
         const note = try self.get(id);
 
         var buf: [64]u8 = undefined;
-        try self.basedir.deleteFile(note.path(&buf));
-
+        const path = note.path(&buf);
+        self.basedir.access(path, .{}) catch {
+            return self.db.delete(note);
+        };
+        try self.basedir.deleteFile(path);
         return self.db.delete(note);
     }
 
@@ -366,6 +369,16 @@ test "delete empty note on empty writeAll" {
     const path = note.path(&pathbuf);
     const f = tmpD.dir.openFile(path, .{});
     try std.testing.expectError(error.FileNotFound, f);
+}
+
+test "delete only if exists" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
+    defer rt.deinit();
+
+    const noteID = try rt.create();
+    try rt.delete(noteID);
 }
 
 test "search no query" {

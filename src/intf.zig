@@ -18,6 +18,7 @@ const CError = enum(c_int) {
     SearchFail = -9,
     ReadFail = -10,
     PathTooLong = -11,
+    FileNotFound = -12,
 };
 
 const PATH_MAX = 1000;
@@ -119,9 +120,15 @@ export fn nana_search(query: [*:0]const u8, outbuf: [*c]c_int, sz: c_uint, ignor
 
 export fn nana_write_all(noteID: c_int, content: [*:0]const u8) c_int {
     const zigStyle: []const u8 = std.mem.sliceTo(content, 0);
-    rt.writeAll(@intCast(noteID), zigStyle) catch |err| {
-        std.log.err("Failed to write note with id '{d}': {}\n", .{ noteID, err });
-        return @intFromEnum(CError.WriteFail);
+    rt.writeAll(@intCast(noteID), zigStyle) catch |err| switch (err) {
+        error.FileNotFound => {
+            std.log.err("Failed to write note with id '{d}': {}\n", .{ noteID, err });
+            return @intFromEnum(CError.FileNotFound);
+        },
+        else => {
+            std.log.err("Failed to write note with id '{d}': {}\n", .{ noteID, err });
+            return @intFromEnum(CError.WriteFail);
+        },
     };
     return 0;
 }
