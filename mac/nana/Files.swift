@@ -12,88 +12,119 @@ struct FileList: View {
     var onSelect: (Note) -> Void
     var onChange: (String) -> Void
     var closeList: () -> Void
-
+    
     @State private var query: String = ""
-    @Environment(\.colorScheme) var colorScheme
-    //@State private var colorScheme: ColorScheme = .dark
-    @State var hoverClose = false
+    //@Environment(\.colorScheme) var colorScheme
+    @State private var colorScheme: ColorScheme = .light
+    @State private var hoverClose = false
+    @FocusState private var queryFocused: Bool
+    
+
     
     var body: some View {
         GeometryReader { geometry in
-            HStack () {
-                Spacer()
-                VStack (){
-                    Spacer()
-                    VStack(spacing: 0) {
-                        HStack(spacing: 0) {
-                            Image(systemName: "magnifyingglass")
-                                .font(.system(size: 20))
-                                .foregroundColor(colorC(colorScheme: colorScheme))
-                            TextField(
-                                "Query",
-                                text: $query
-                            )
-                            .font(.system(size: 20))
-                            .foregroundStyle(colorA(colorScheme: colorScheme))
-                            .textFieldStyle(.plain)
-                            .onChange(of: query, initial: true) { _, newtext in
-                                onChange(newtext)
-                            }
-                            Spacer()
-                            Button(action: {closeList()}){
-                                ZStack {
-                                    Circle()
-                                        .fill(colorB(colorScheme: colorScheme))
-                                        .frame(width:25, height:25)
-                                    Image(systemName: "xmark")
-                                        .font(.system(size: 20))
-                                        .foregroundColor(colorC(colorScheme: colorScheme).mix(with: .black, by: hoverClose ? 0.2 : 0.0))
-                                }
-                            }.buttonStyle(PlainButtonStyle())
-                                .onHover{ _ in
-                                    self.hoverClose.toggle()
-                                }
-                        }
-                        .padding()
-                        
-                        
-                        LazyVStack(alignment: .leading) {
-                            ForEach(notes) { note in
-                                HStack(){
-                                    Text(note.content)
-                                        .lineLimit(3)
-                                        .foregroundStyle(colorA(colorScheme: colorScheme))
-                                    Spacer()
-                                    VStack(){
-                                        Text(Date.now.formatted(date: .long, time: .omitted))
-                                            .foregroundStyle(colorC(colorScheme: colorScheme))
-                                            .italic()
-                                        Spacer()
-                                    }
-                                }
-                                .listRowSeparatorTint(colorC(colorScheme: colorScheme))
-                                .onTapGesture {
-                                    onSelect(note)
-                                }
-                                .padding([.leading, .trailing])
-                            }
-                        }
-                        .scrollContentBackground(.hidden)
-                        .listStyle(.plain)
-                        .scrollIndicators(.never)
+            ZStack() {
+                Color.black.opacity(0.3)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        onChange("")
+                        closeList()
                     }
-                    .frame(idealWidth: 300, maxWidth: min(geometry.size.width * 0.6, 500))
-                    .background(colorB(colorScheme: colorScheme))
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    Spacer()
+                VStack(spacing: 0) {
+                    HStack(spacing: 0) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 20))
+                            .foregroundColor(colorC(colorScheme: colorScheme))
+                        TextField(
+                            "Query",
+                            text: $query
+                        )
+                        .focused($queryFocused)
+                        .font(.system(size: 20))
+                        .foregroundStyle(colorA(colorScheme: colorScheme))
+                        .textFieldStyle(.plain)
+                        .onChange(of: query, initial: true) { _, newtext in
+                            onChange(newtext)
+                        }
+                        Spacer()
+                        Button(action: {onChange("");closeList();}){
+                            ZStack {
+                                Circle()
+                                    .fill(colorB(colorScheme: colorScheme))
+                                    .frame(width:25, height:25)
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 20))
+                                    .foregroundColor(colorC(colorScheme: colorScheme).mix(with: .black, by: hoverClose ? 0.2 : 0.0))
+                            }
+                        }.buttonStyle(PlainButtonStyle())
+                        .onHover{ _ in
+                            self.hoverClose.toggle()
+                        }
+                    }
+                    .padding()
+                    
+                    Results(notes: notes, colorScheme: colorScheme, onSelect: onSelect)
                 }
-
-                Spacer()
-            }.background(Color.black.opacity(0.5))
+                .frame(idealWidth: 300, maxWidth: min(geometry.size.width * 0.6, 500), maxHeight: geometry.size.height * 0.6)
+                .background(colorB(colorScheme: colorScheme))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+        }
+        .onAppear {
+            // Set the focus to the TextField when the view appears
+            queryFocused = true
         }
     }
 }
 
+struct Results: View {
+    var notes: [Note]
+    var colorScheme: ColorScheme
+    var onSelect: (Note) -> Void
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: true) {
+            LazyVStack(alignment: .leading) {
+                ForEach(notes) { note in
+                    ResultRow(note: note, colorScheme: colorScheme, onSelect: onSelect)
+                }
+            }
+            .listStyle(.plain)
+        }
+    }
+}
+
+struct ResultRow: View{
+    var note: Note
+    var colorScheme: ColorScheme
+    var onSelect: (Note) -> Void
+    @State private var isHovered = false
+    
+    var body: some View {
+        HStack(){
+            Text(self.note.content)
+                .lineLimit(3)
+                .foregroundStyle(colorA(colorScheme: self.colorScheme))
+            Spacer()
+            Text(Date.now.formatted(date: .long, time: .omitted))
+                .foregroundStyle(colorC(colorScheme: colorScheme))
+                .italic()
+        }
+        .background(backgroundColor)
+        .onHover { hovering in
+            isHovered.toggle()
+        }
+        .onTapGesture {
+            onSelect(self.note)
+        }
+        .padding([.leading, .trailing])
+    }
+    
+    private var backgroundColor: Color {
+        let baseColor = colorB(colorScheme: self.colorScheme)
+        return (isHovered ? baseColor.mix(with: .black, by: 0.1) : baseColor)
+    }
+}
 
 let li1 = "Donec interdum turpis non ipsum venenatis porttitor. Sed malesuada tempor ultricies. Morbi at elit elit. Proin id ligula consequat ipsum mollis pharetra. Praesent in tempor purus. Aenean sapien risus, maximus id elit ac, ullamcorper sollicitudin eros. Nulla blandit nec nisi et iaculis. Donec congue rutrum massa. Nulla congue augue non metus pharetra consectetur. Praesent sed tellus quis leo blandit sollicitudin. Class aptent taciti sociosqu ad litora torquent per conubia nostra, per inceptos himenaeos."
 

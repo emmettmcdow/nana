@@ -31,9 +31,9 @@ struct ContentView: View {
     @State private var text: String = ""
     @State private var queriedNotes: [Note] = []
     @State var searchVisible = false
-    @Environment(\.colorScheme) var colorScheme
+    //@Environment(\.colorScheme) var colorScheme
 
-    //@State private var colorScheme: ColorScheme = .dark
+    @State private var colorScheme: ColorScheme = .light
     init() {
         let newId = nana_create()
         assert(newId > 0, "Failed to create new note")
