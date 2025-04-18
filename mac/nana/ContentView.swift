@@ -9,31 +9,17 @@ import SwiftUI
 
 import NanaKit
 
-let light = Color(red: 228 / 255, green: 228 / 255, blue: 228 / 255)
-let dark = Color(red: 47 / 255, green: 47 / 255, blue: 47 / 255)
-
-func colorA(colorScheme: ColorScheme) -> Color {
-    return colorScheme == .light ? dark : light
-}
-
-func colorB(colorScheme: ColorScheme) -> Color {
-    return colorScheme == .dark ? dark : light
-}
-
-func colorC(colorScheme: ColorScheme) -> Color {
-    return .gray
-}
-
 
 struct ContentView: View {
-    
     @State private var noteId: Int32
     @State private var text: String = ""
     @State private var queriedNotes: [Note] = []
     @State var searchVisible = false
-    //@Environment(\.colorScheme) var colorScheme
+    
+    @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
+    @Environment(\.colorScheme) private var colorScheme
 
-    @State private var colorScheme: ColorScheme = .light
+
     init() {
         let newId = nana_create()
         assert(newId > 0, "Failed to create new note")
@@ -42,15 +28,17 @@ struct ContentView: View {
     }
     
     var body: some View {
+        let palette = Palette.forPreference(preference, colorScheme: colorScheme)
+        
         ZStack() {
             TextEditor(text: $text)
                 .font(.system(size: 14))
-                .foregroundColor(colorA(colorScheme: colorScheme))
-                .accentColor(colorA(colorScheme: colorScheme))
+                .foregroundColor(palette.foreground)
+                .accentColor(palette.foreground)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .scrollContentBackground(.hidden)
                 .padding(EdgeInsets(top: 20, leading: 20, bottom: 0, trailing: 0))
-                .background(colorB(colorScheme: colorScheme))
+                .background(palette.background)
                 .scrollIndicators(.never)
 
             HStack() {
@@ -66,7 +54,7 @@ struct ContentView: View {
                             queriedNotes.append(Note(id: id))
                         }
                         searchVisible.toggle()
-                    }, colorScheme: colorScheme)
+                    })
                     CircularPlusButton(action: {
                         let res = nana_write_all(noteId, text)
                         assert(res == 0, "Failed to write all")
@@ -74,7 +62,7 @@ struct ContentView: View {
                         assert(newId > 0, "Failed to create new note")
                         noteId = newId
                         text = ""
-                    }, colorScheme: colorScheme)
+                    })
                 }
             }.padding()
             if searchVisible {
@@ -104,7 +92,14 @@ struct ContentView: View {
                 })
             }
         }
-        .background(colorB(colorScheme: colorScheme))
+        .background(palette.background)
+        .preferredColorScheme({
+            switch preference {
+            case .light: .light
+            case .dark: .dark
+            case .system: nil
+            }
+        }())
     }
 }
 

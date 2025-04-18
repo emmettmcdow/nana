@@ -44,5 +44,11 @@ struct nanaApp: App {
         WindowGroup {
             ContentView()
         }.windowStyle(HiddenTitleBarWindowStyle())
+        
+        #if os(macOS)
+        Settings {
+            GeneralSettingsView()
+        }
+        #endif
     }
 }

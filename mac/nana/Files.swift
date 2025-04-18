@@ -14,14 +14,17 @@ struct FileList: View {
     var closeList: () -> Void
     
     @State private var query: String = ""
-    //@Environment(\.colorScheme) var colorScheme
-    @State private var colorScheme: ColorScheme = .light
     @State private var hoverClose = false
     @FocusState private var queryFocused: Bool
+    
+    @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
+    @Environment(\.colorScheme) private var colorScheme
     
 
     
     var body: some View {
+        let palette = Palette.forPreference(preference, colorScheme: colorScheme)
+        
         GeometryReader { geometry in
             ZStack() {
                 Color.black.opacity(0.3)
@@ -34,14 +37,15 @@ struct FileList: View {
                     HStack(spacing: 0) {
                         Image(systemName: "magnifyingglass")
                             .font(.system(size: 20))
-                            .foregroundColor(colorC(colorScheme: colorScheme))
+                            .foregroundColor(palette.tertiary)
                         TextField(
                             "Query",
                             text: $query
                         )
                         .focused($queryFocused)
                         .font(.system(size: 20))
-                        .foregroundStyle(colorA(colorScheme: colorScheme))
+                        .foregroundStyle(palette.foreground)
+                        .accentColor(palette.foreground)
                         .textFieldStyle(.plain)
                         .onChange(of: query, initial: true) { _, newtext in
                             onChange(newtext)
@@ -50,11 +54,11 @@ struct FileList: View {
                         Button(action: {onChange("");closeList();}){
                             ZStack {
                                 Circle()
-                                    .fill(colorB(colorScheme: colorScheme))
+                                    .fill(palette.background)
                                     .frame(width:25, height:25)
                                 Image(systemName: "xmark")
                                     .font(.system(size: 20))
-                                    .foregroundColor(colorC(colorScheme: colorScheme).mix(with: .black, by: hoverClose ? 0.2 : 0.0))
+                                    .foregroundColor(palette.tertiary.mix(with: .black, by: hoverClose ? 0.2 : 0.0))
                             }
                         }.buttonStyle(PlainButtonStyle())
                         .onHover{ _ in
@@ -63,10 +67,10 @@ struct FileList: View {
                     }
                     .padding()
                     
-                    Results(notes: notes, colorScheme: colorScheme, onSelect: onSelect)
+                    Results(notes: notes, onSelect: onSelect)
                 }
                 .frame(idealWidth: 300, maxWidth: min(geometry.size.width * 0.6, 500), maxHeight: geometry.size.height * 0.6)
-                .background(colorB(colorScheme: colorScheme))
+                .background(palette.background)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
         }
@@ -74,19 +78,25 @@ struct FileList: View {
             // Set the focus to the TextField when the view appears
             queryFocused = true
         }
+        .preferredColorScheme({
+            switch preference {
+            case .light: .light
+            case .dark: .dark
+            case .system: nil
+            }
+        }())
     }
 }
 
 struct Results: View {
     var notes: [Note]
-    var colorScheme: ColorScheme
     var onSelect: (Note) -> Void
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
             LazyVStack(alignment: .leading) {
                 ForEach(notes) { note in
-                    ResultRow(note: note, colorScheme: colorScheme, onSelect: onSelect)
+                    ResultRow(note: note, onSelect: onSelect)
                 }
             }
             .listStyle(.plain)
@@ -96,21 +106,25 @@ struct Results: View {
 
 struct ResultRow: View{
     var note: Note
-    var colorScheme: ColorScheme
     var onSelect: (Note) -> Void
     @State private var isHovered = false
     
+    @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
+    @Environment(\.colorScheme) private var colorScheme
+    
     var body: some View {
+        let palette = Palette.forPreference(preference, colorScheme: colorScheme)
+        
         HStack(){
             Text(self.note.content)
                 .lineLimit(3)
-                .foregroundStyle(colorA(colorScheme: self.colorScheme))
+                .foregroundStyle(palette.foreground)
             Spacer()
             Text(Date.now.formatted(date: .long, time: .omitted))
-                .foregroundStyle(colorC(colorScheme: colorScheme))
+                .foregroundStyle(palette.tertiary)
                 .italic()
         }
-        .background(backgroundColor)
+        .background(palette.background.mix(with: palette.foreground, by: isHovered ? 0.1 : 0.0))
         .onHover { hovering in
             isHovered.toggle()
         }
@@ -118,11 +132,13 @@ struct ResultRow: View{
             onSelect(self.note)
         }
         .padding([.leading, .trailing])
-    }
-    
-    private var backgroundColor: Color {
-        let baseColor = colorB(colorScheme: self.colorScheme)
-        return (isHovered ? baseColor.mix(with: .black, by: 0.1) : baseColor)
+        .preferredColorScheme({
+            switch preference {
+            case .light: .light
+            case .dark: .dark
+            case .system: nil
+            }
+        }())
     }
 }
 
