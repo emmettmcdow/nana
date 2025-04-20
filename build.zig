@@ -25,6 +25,19 @@ pub fn build(b: *std.Build) !void {
     // Targets
     const arm_target = b.resolveTargetQuery(.{ .cpu_arch = .aarch64, .os_tag = .macos });
     const x86_target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .macos });
+    // const ios_target = b.resolveTargetQuery(.{
+    //     .cpu_arch = .x86_64,
+    //     .os_tag = .ios,
+    //     .abi = .simulator,
+    //     .os_version_min = .{ .semver = .{ .major = 18, .minor = 2, .patch = 0 } },
+    // });
+
+    const targets: [2]std.Build.ResolvedTarget = .{
+        x86_target,
+        arm_target,
+        // TODO: This one has proven much harder than expected to build for. Get back to it later.
+        // ios_target,
+    };
 
     // Sources
     const root_file = b.path("src/root.zig");
@@ -32,16 +45,11 @@ pub fn build(b: *std.Build) !void {
     const embed_file = b.path("src/embed.zig");
     const vector_file = b.path("src/vector.zig");
     const benchmark_file = b.path("src/benchmark.zig");
-    const interface_file = b.path("src/intf.zig");
 
     // TODO: make these lazy
     // Dependencies
     const mnist_dep = b.dependency("mnist_testing", .{});
     const mxbai_embed_dep = b.dependency("mxbai_embed", .{});
-
-    // Options
-    const options = b.addOptions();
-    options.addOption(usize, "vec_sz", 8192);
 
     // Static files
     const install_mnist = b.addInstallDirectory(.{
@@ -61,90 +69,24 @@ pub fn build(b: *std.Build) !void {
     // Build the Lib //
     ///////////////////
     // Base Library
-    const base_nana_x86_lib = b.addStaticLibrary(.{
-        .name = "nana",
-        .root_source_file = interface_file,
-        .target = x86_target,
-        .optimize = optimize,
-    });
-    base_nana_x86_lib.root_module.addOptions("config", options);
-    const sqlite_x86_step = SQLiteStep.create(.{
-        .b = b,
-        .dest = base_nana_x86_lib,
-        .target = x86_target,
-        .optimize = optimize,
-    });
-    _ = ORTStep.create(.{
-        .b = b,
-        .dest = base_nana_x86_lib,
-        .target = x86_target,
-        .optimize = optimize,
-    });
-
-    const base_nana_arm_lib = b.addStaticLibrary(.{
-        .name = "nana",
-        .root_source_file = interface_file,
-        .target = arm_target,
-        .optimize = optimize,
-    });
-    base_nana_arm_lib.root_module.addOptions("config", options);
-    const sqlite_arm_step = SQLiteStep.create(.{
-        .b = b,
-        .dest = base_nana_arm_lib,
-        .target = arm_target,
-        .optimize = optimize,
-    });
-    _ = ORTStep.create(.{
-        .b = b,
-        .dest = base_nana_arm_lib,
-        .target = arm_target,
-        .optimize = optimize,
-    });
-
-    // Combine Libs
-    var x86_lib_sources = [_]LazyPath{
-        base_nana_x86_lib.getEmittedBin(),
-        sqlite_x86_step.output,
-            // onnx_x86_lib.output,
-    };
-    const combine_x86_lib = createLibtoolStep(b, .{
-        .name = "nana",
-        .out_name = b.fmt("libnana-{s}-{s}.a", .{
-            @tagName(x86_target.query.os_tag.?),
-            @tagName(x86_target.query.cpu_arch.?),
-        }),
-        .sources = &x86_lib_sources,
-    });
-    combine_x86_lib.step.dependOn(&base_nana_x86_lib.step);
-
-    var arm_lib_sources = [_]LazyPath{
-        base_nana_arm_lib.getEmittedBin(),
-        sqlite_arm_step.output,
-            // onnx_arm_lib.output,
-    };
-    const combine_arm_lib = createLibtoolStep(b, .{
-        .name = "nana",
-        .out_name = b.fmt("libnana-{s}-{s}.a", .{
-            @tagName(arm_target.query.os_tag.?),
-            @tagName(arm_target.query.cpu_arch.?),
-        }),
-        .sources = &arm_lib_sources,
-    });
-    combine_arm_lib.step.dependOn(&base_nana_arm_lib.step);
+    var baselib_platform_list = std.ArrayList(Baselib).init(b.allocator);
+    defer baselib_platform_list.deinit();
+    for (targets) |target| {
+        try baselib_platform_list.append(Baselib.create(.{
+            .b = b,
+            .target = target,
+            .optimize = optimize,
+        }));
+    }
 
     const outfile = "libnana.a";
-    const static_lib_universal = createLipoStep(b, .{
+    const static_lib_universal = Lipo.create(b, .{
         .name = "nana",
         .out_name = outfile,
-        .inputs = &.{
-            combine_x86_lib.output,
-            combine_arm_lib.output,
-        },
+        .inputs = baselib_platform_list.items,
     });
-    static_lib_universal.step.dependOn(combine_x86_lib.step);
-    static_lib_universal.step.dependOn(combine_arm_lib.step);
 
-    const xcframework = createXCFrameworkStep(b, .{
+    const xcframework = XCFramework.create(b, .{
         .name = "NanaKit",
         .out_path = xc_fw_path,
         .libraries = &.{
@@ -157,6 +99,10 @@ pub fn build(b: *std.Build) !void {
     xcframework.step.dependOn(static_lib_universal.step);
     install_mxbai_embed.step.dependOn(xcframework.step);
     install_step.dependOn(&install_mxbai_embed.step);
+
+    const signedFW = Codesign.create(.{ .b = b, .path = xc_fw_path });
+    signedFW.step.dependOn(xcframework.step);
+    install_step.dependOn(signedFW.step);
 
     ////////////////
     // Unit Tests //
@@ -171,13 +117,13 @@ pub fn build(b: *std.Build) !void {
     const root_options = b.addOptions();
     root_options.addOption(usize, "vec_sz", 3);
     root_unit_tests.root_module.addOptions("config", root_options);
-    _ = SQLiteStep.create(.{
+    _ = SQLite.create(.{
         .b = b,
         .dest = root_unit_tests,
         .target = x86_target,
         .optimize = optimize,
     });
-    _ = ORTStep.create(.{
+    _ = ORT.create(.{
         .b = b,
         .dest = root_unit_tests,
         .target = x86_target,
@@ -194,7 +140,7 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .filters = &.{"model"},
     });
-    _ = SQLiteStep.create(.{
+    _ = SQLite.create(.{
         .b = b,
         .dest = model_unit_tests,
         .target = x86_target,
@@ -211,7 +157,7 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .filters = &.{"embed"},
     });
-    _ = ORTStep.create(.{
+    _ = ORT.create(.{
         .b = b,
         .dest = embed_unit_tests,
         .target = x86_target,
@@ -246,13 +192,13 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .filters = &.{"benchmark"},
     });
-    _ = SQLiteStep.create(.{
+    _ = SQLite.create(.{
         .b = b,
         .dest = benchmark_unit_tests,
         .target = x86_target,
         .optimize = optimize,
     });
-    _ = ORTStep.create(.{
+    _ = ORT.create(.{
         .b = b,
         .dest = benchmark_unit_tests,
         .target = x86_target,
@@ -285,7 +231,66 @@ pub fn build(b: *std.Build) !void {
     lldb_step.dependOn(&lldb.step);
 }
 
-const SQLiteStep = struct {
+const Baselib = struct {
+    pub const Options = struct {
+        b: *std.Build,
+        target: std.Build.ResolvedTarget,
+        optimize: std.builtin.OptimizeMode,
+    };
+
+    step: *Step,
+    output: LazyPath,
+
+    pub fn create(opts: Baselib.Options) Baselib {
+        const interface_file = opts.b.path("src/intf.zig");
+
+        const options = opts.b.addOptions();
+        options.addOption(usize, "vec_sz", 8192);
+
+        const base_nana_lib = opts.b.addStaticLibrary(.{
+            .name = "nana",
+            .root_source_file = interface_file,
+            .target = opts.target,
+            .optimize = opts.optimize,
+        });
+        base_nana_lib.root_module.addOptions("config", options);
+        const sqlite_step = SQLite.create(.{
+            .b = opts.b,
+            .dest = base_nana_lib,
+            .target = opts.target,
+            .optimize = opts.optimize,
+        });
+        _ = ORT.create(.{
+            .b = opts.b,
+            .dest = base_nana_lib,
+            .target = opts.target,
+            .optimize = opts.optimize,
+        });
+
+        // Combine Libs
+        var lib_sources = [_]LazyPath{
+            base_nana_lib.getEmittedBin(),
+            sqlite_step.output,
+        };
+        const outname = opts.b.fmt("libnana-{s}-{s}.a", .{
+            @tagName(opts.target.query.os_tag.?),
+            @tagName(opts.target.query.cpu_arch.?),
+        });
+        const combine_lib = Libtool.create(opts.b, .{
+            .name = "nana",
+            .out_name = outname,
+            .sources = &lib_sources,
+        });
+        combine_lib.step.dependOn(&base_nana_lib.step);
+
+        return .{
+            .step = combine_lib.step,
+            .output = combine_lib.output,
+        };
+    }
+};
+
+const SQLite = struct {
     // step: *Step,
     output: LazyPath,
 
@@ -299,8 +304,11 @@ const SQLiteStep = struct {
         optimize: std.builtin.OptimizeMode,
     };
 
-    pub fn create(opts: SQLiteOptions) SQLiteStep {
-        const sqlite_dep = opts.b.dependency("sqlite", .{ .target = opts.target, .optimize = opts.optimize });
+    pub fn create(opts: SQLiteOptions) SQLite {
+        const sqlite_dep = opts.b.dependency("sqlite", .{
+            .target = opts.target,
+            .optimize = opts.optimize,
+        });
         const sqlite_art = sqlite_dep.artifact("sqlite");
         const sqlite_mod = sqlite_dep.module("sqlite");
 
@@ -315,11 +323,12 @@ const SQLiteStep = struct {
         };
     }
 };
-const ORTStep = struct {
+
+const ORT = struct {
     // step: *Step,
     // output: LazyPath,
 
-    const ORTOptions = struct {
+    const Options = struct {
         // The build
         b: *std.Build,
         // That which we want to link with
@@ -329,21 +338,26 @@ const ORTStep = struct {
         optimize: std.builtin.OptimizeMode,
     };
 
-    pub fn create(opts: ORTOptions) ORTStep {
+    pub fn create(opts: ORT.Options) ORT {
         const onnx_dep = opts.b.dependency("zig_onnxruntime", .{ .target = opts.target, .optimize = opts.optimize });
         const onnx_mod = onnx_dep.module("zig-onnxruntime");
 
         opts.dest.root_module.addImport("onnxruntime", onnx_mod);
         opts.dest.linkLibCpp();
+        opts.dest.linkLibC();
 
-        // TODO: this is SO brittle. Fix this.
-        const sdk_path: LazyPath = .{
-            .cwd_relative = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.2.sdk",
-        };
-        opts.dest.root_module.addSystemFrameworkPath(sdk_path.path(opts.b, "System/Library/Frameworks"));
-        opts.dest.root_module.addSystemIncludePath(sdk_path.path(opts.b, "usr/include"));
-        opts.dest.root_module.addLibraryPath(sdk_path.path(opts.b, "usr/lib"));
-        opts.dest.linkFramework("Foundation");
+        const sdk_path = std.zig.system.darwin.getSdk(opts.b.allocator, opts.target.result);
+
+        if (sdk_path) |resolved_sdk_path| {
+            const sdk: LazyPath = .{ .cwd_relative = resolved_sdk_path };
+
+            opts.dest.root_module.addSystemFrameworkPath(sdk.path(opts.b, "System/Library/Frameworks"));
+            opts.dest.root_module.addSystemIncludePath(sdk.path(opts.b, "usr/include"));
+            opts.dest.root_module.addLibraryPath(sdk.path(opts.b, "usr/lib"));
+            opts.dest.linkFramework("Foundation");
+        } else {
+            unreachable;
+        }
 
         return .{
             // .step = &install_onnx_libs.step,
@@ -354,7 +368,7 @@ const ORTStep = struct {
 
 // TY mitchellh
 // https://gist.github.com/mitchellh/0ee168fb34915e96159b558b89c9a74b#file-libtoolstep-zig
-const LibtoolStep = struct {
+const Libtool = struct {
     pub const Options = struct {
         /// The name of this step.
         name: []const u8,
@@ -372,27 +386,27 @@ const LibtoolStep = struct {
 
     /// The output file from the libtool run.
     output: LazyPath,
+
+    /// Run libtool against a list of library files to combine into a single
+    /// static library.
+    pub fn create(b: *std.Build, opts: Libtool.Options) *Libtool {
+        const self = b.allocator.create(Libtool) catch @panic("OOM");
+
+        const run_step = RunStep.create(b, b.fmt("libtool {s}", .{opts.name}));
+        run_step.addArgs(&.{ "libtool", "-static", "-o" });
+        const output = run_step.addOutputFileArg(opts.out_name);
+        for (opts.sources) |source| run_step.addFileArg(source);
+
+        self.* = .{
+            .step = &run_step.step,
+            .output = output,
+        };
+
+        return self;
+    }
 };
 
-/// Run libtool against a list of library files to combine into a single
-/// static library.
-pub fn createLibtoolStep(b: *std.Build, opts: LibtoolStep.Options) *LibtoolStep {
-    const self = b.allocator.create(LibtoolStep) catch @panic("OOM");
-
-    const run_step = RunStep.create(b, b.fmt("libtool {s}", .{opts.name}));
-    run_step.addArgs(&.{ "libtool", "-static", "-o" });
-    const output = run_step.addOutputFileArg(opts.out_name);
-    for (opts.sources) |source| run_step.addFileArg(source);
-
-    self.* = .{
-        .step = &run_step.step,
-        .output = output,
-    };
-
-    return self;
-}
-
-const LipoStep = struct {
+const Lipo = struct {
     pub const Options = struct {
         /// The name of the xcframework to create.
         name: []const u8,
@@ -401,34 +415,35 @@ const LipoStep = struct {
         out_name: []const u8,
 
         /// Library file (dylib, a) to package.
-        inputs: []const LazyPath,
+        inputs: []Baselib,
     };
 
     step: *Step,
 
     /// Resulting binary
     output: LazyPath,
+
+    pub fn create(b: *std.Build, opts: Lipo.Options) *Lipo {
+        const self = b.allocator.create(Lipo) catch @panic("OOM");
+
+        const run_step = RunStep.create(b, b.fmt("lipo {s}", .{opts.name}));
+        run_step.addArgs(&.{ "lipo", "-create", "-output" });
+        const output = run_step.addOutputFileArg(opts.out_name);
+        for (opts.inputs) |lib| {
+            run_step.addFileArg(lib.output);
+            run_step.step.dependOn(lib.step);
+        }
+
+        self.* = .{
+            .step = &run_step.step,
+            .output = output,
+        };
+
+        return self;
+    }
 };
 
-pub fn createLipoStep(b: *std.Build, opts: LipoStep.Options) *LipoStep {
-    const self = b.allocator.create(LipoStep) catch @panic("OOM");
-
-    const run_step = RunStep.create(b, b.fmt("lipo {s}", .{opts.name}));
-    run_step.addArgs(&.{ "lipo", "-create", "-output" });
-    const output = run_step.addOutputFileArg(opts.out_name);
-    for (opts.inputs) |input| {
-        run_step.addFileArg(input);
-    }
-
-    self.* = .{
-        .step = &run_step.step,
-        .output = output,
-    };
-
-    return self;
-}
-
-const XCFrameworkStep = struct {
+const XCFramework = struct {
     pub const Options = struct {
         /// The name of the xcframework to create.
         name: []const u8,
@@ -444,40 +459,67 @@ const XCFrameworkStep = struct {
     };
 
     step: *Step,
+
+    pub fn create(b: *std.Build, opts: XCFramework.Options) *XCFramework {
+        const self = b.allocator.create(XCFramework) catch @panic("OOM");
+
+        // We have to delete the old xcframework first since we're writing
+        // to a static path.
+        const run_delete = run: {
+            const run = RunStep.create(b, b.fmt("xcframework delete {s}", .{opts.name}));
+            run.has_side_effects = true;
+            run.addArgs(&.{ "rm", "-rf", opts.out_path });
+            break :run run;
+        };
+
+        // Then we run xcodebuild to create the framework.
+        const run_create = run: {
+            const run = RunStep.create(b, b.fmt("xcframework {s}", .{opts.name}));
+            run.has_side_effects = true;
+            run.addArgs(&.{ "xcodebuild", "-create-xcframework" });
+            for (opts.libraries, 0..) |library, i| {
+                run.addArg("-library");
+                run.addFileArg(library);
+                run.addArg("-headers");
+                run.addFileArg(opts.headers[i]);
+            }
+            run.addArg("-output");
+            run.addArg(opts.out_path);
+            break :run run;
+        };
+        run_create.step.dependOn(&run_delete.step);
+
+        self.* = .{
+            .step = &run_create.step,
+        };
+
+        return self;
+    }
 };
 
-pub fn createXCFrameworkStep(b: *std.Build, opts: XCFrameworkStep.Options) *XCFrameworkStep {
-    const self = b.allocator.create(XCFrameworkStep) catch @panic("OOM");
-
-    // We have to delete the old xcframework first since we're writing
-    // to a static path.
-    const run_delete = run: {
-        const run = RunStep.create(b, b.fmt("xcframework delete {s}", .{opts.name}));
-        run.has_side_effects = true;
-        run.addArgs(&.{ "rm", "-rf", opts.out_path });
-        break :run run;
+const Codesign = struct {
+    pub const Options = struct {
+        b: *std.Build,
+        /// The path of the xcframework to sign.
+        path: []const u8,
     };
 
-    // Then we run xcodebuild to create the framework.
-    const run_create = run: {
-        const run = RunStep.create(b, b.fmt("xcframework {s}", .{opts.name}));
-        run.has_side_effects = true;
-        run.addArgs(&.{ "xcodebuild", "-create-xcframework" });
-        for (opts.libraries, 0..) |library, i| {
-            run.addArg("-library");
-            run.addFileArg(library);
-            run.addArg("-headers");
-            run.addFileArg(opts.headers[i]);
-        }
-        run.addArg("-output");
-        run.addArg(opts.out_path);
-        break :run run;
-    };
-    run_create.step.dependOn(&run_delete.step);
+    step: *Step,
 
-    self.* = .{
-        .step = &run_create.step,
-    };
+    pub fn create(opts: Codesign.Options) Codesign {
+        const run_step = RunStep.create(opts.b, opts.b.fmt("CodeSign {s}", .{opts.path}));
+        run_step.addArgs(&.{
+            "codesign",
+            "--timestamp",
+            "-s",
+            "5AE3B7EECB504FB7ED5B00BB70576647A21ADB15", // Apple Development: email@email.com
+            opts.path,
+        });
 
-    return self;
-}
+        const self: Codesign = .{
+            .step = &run_step.step,
+        };
+
+        return self;
+    }
+};

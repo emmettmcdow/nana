@@ -34,7 +34,7 @@ struct ContentView: View {
             TextEditor(text: $text)
                 .font(.system(size: 14))
                 .foregroundColor(palette.foreground)
-                .accentColor(palette.foreground)
+            
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .scrollContentBackground(.hidden)
                 .padding(EdgeInsets(top: 20, leading: 20, bottom: 0, trailing: 0))

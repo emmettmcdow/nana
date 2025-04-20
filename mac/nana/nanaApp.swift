@@ -13,11 +13,11 @@ import NanaKit
 @main
 struct nanaApp: App {
     init() {
-        #if DEBUG
+        #if !DEBUG
             let basedir = "./"
         #else
             let filemanager = FileManager.default
-            guard let url = filemanager.url(forUbiquityContainerIdentifier: "iCloud.userdata") else {
+            guard let url = filemanager.url(forUbiquityContainerIdentifier: "iCloud.com.mcdow.nana.dev-container") else {
                 print("Could not get url")
                 return
             }

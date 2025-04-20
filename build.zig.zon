@@ -25,9 +25,9 @@
     // internet connectivity.
     .dependencies = .{
         .sqlite = .{
-            .url = "git+https://github.com/vrischmann/zig-sqlite#59c06617d5b86546c0c739e73ae01d3965dbe8ce",
-            .hash = "sqlite-3.48.0-F2R_a_uGDgCfOH5UEJYjuOCe-HixnLjToxOdEGAEM3xk",
-            // .path = "../zig-sqlite",
+            // .url = "git+https://github.com/vrischmann/zig-sqlite#59c06617d5b86546c0c739e73ae01d3965dbe8ce",
+            // .hash = "sqlite-3.48.0-F2R_a_uGDgCfOH5UEJYjuOCe-HixnLjToxOdEGAEM3xk",
+            .path = "../zig-sqlite",
         },
         // TODO: push up my fork
         .zig_onnxruntime = .{
