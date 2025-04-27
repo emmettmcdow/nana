@@ -44,8 +44,8 @@
             .hash = "N-V-__8AAHA3AAAC4KczOLDXg5_B7avBnZL4YFlLwaDPYv08",
         },
         // TODO: find way to store this - there is no tgz available
-        .mxbai_embed = .{
-            .path = "../mxbai-embed-large-v1/",
+        .embed_model = .{
+            .path = "../potion-base-2M/",
         },
     },
     .paths = .{

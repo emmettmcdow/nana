@@ -19,6 +19,7 @@ enum Error {
 int nana_init(const char *, unsigned int, const char *, unsigned int);
 int nana_deinit();
 int nana_create(void);
+int nana_import(const char *, unsigned int);
 int nana_create_time(int);
 int nana_mod_time(int);
 

@@ -15,7 +15,8 @@ struct Note: Identifiable {
     var created: Date
     var modified: Date
 }
-
+// 1MB
+let MAX_BUF = 1_000_000
 extension Note {
     init(id: Int32) {
         let create = nana_create_time(id)
@@ -24,8 +25,17 @@ extension Note {
         let mod = nana_mod_time(id)
         assert(create > 0, "Failed to get mod_time")
         
-        var content_buf = Array<Int8>(repeating: 0, count: 1000)
-        let sz = nana_read_all(id, &content_buf, numericCast(content_buf.count))
+        var bufsize = 10
+        var sz: Int32 = -1
+        var content_buf = Array<Int8>(repeating: 0, count: bufsize)
+        while (bufsize < MAX_BUF) {
+            sz = nana_read_all(id, &content_buf, numericCast(content_buf.count))
+            if (sz >= 0) {
+                break
+            }
+            bufsize *= 10
+            content_buf = Array<Int8>(repeating: 0, count: bufsize)
+        }
         assert(sz >= 0, "Failed to read content")
         
         self.id = id

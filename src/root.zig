@@ -17,7 +17,7 @@ const VectorID = types.VectorID;
 const NoteID = model.NoteID;
 const Note = model.Note;
 
-pub const Error = error{ NotFound, BufferTooSmall };
+pub const Error = error{ NotFound, BufferTooSmall, MalformedPath };
 
 // TODO: this is a hack...
 const SMALL_TESTING_MODEL = "zig-out/share/mnist-12-int8.onnx";
@@ -35,20 +35,18 @@ pub const Runtime = struct {
     vectors: vector.DB,
     embedder: embed.Embedder,
     tokenizer: embed.Tokenizer,
-    arena: std.heap.ArenaAllocator,
+    allocator: std.mem.Allocator,
     embed_model: [:0]const u8 = SMALL_TESTING_MODEL,
     skipEmbed: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, opts: RuntimeOpts) !Runtime {
-        var arena = std.heap.ArenaAllocator.init(allocator);
-
-        const database = try model.DB.init(arena.allocator(), .{
+        const database = try model.DB.init(allocator, .{
             .basedir = opts.basedir,
             .mem = opts.mem,
         });
 
-        const embedder = try embed.Embedder.init(arena.allocator(), opts.model);
-        const tokenizer = try embed.Tokenizer.init(arena.allocator());
+        const embedder = try embed.Embedder.init(allocator, opts.model);
+        const tokenizer = try embed.Tokenizer.init(allocator);
         var vectors = try vector.DB.init(allocator, opts.basedir);
 
         return Runtime{
@@ -57,7 +55,7 @@ pub const Runtime = struct {
             .vectors = try vectors.load(VECTOR_DB_PATH),
             .embedder = embedder,
             .tokenizer = tokenizer,
-            .arena = arena,
+            .allocator = allocator,
             .skipEmbed = opts.skipEmbed,
         };
     }
@@ -66,30 +64,67 @@ pub const Runtime = struct {
         self.db.deinit();
         self.vectors.deinit();
         self.embedder.deinit();
-        self.arena.deinit();
     }
     // FS lazy write - only create file on write
     pub fn create(self: *Runtime) !NoteID {
         return self.db.create();
     }
 
-    pub fn get(self: *Runtime, id: NoteID) !Note {
-        return self.db.get(id);
+    const ImportOpts = struct {
+        copy: bool = false,
+    };
+
+    pub fn import(self: *Runtime, path: []const u8, opts: ImportOpts) !NoteID {
+        var f: std.fs.File = undefined;
+        if (!opts.copy) {
+            f = try self.basedir.openFile(path, .{});
+        } else {
+            f = try std.fs.openFileAbsolute(path, .{});
+        }
+        defer f.close();
+
+        const created: i64 = @intCast(@divTrunc((try f.metadata()).created().?, 1000));
+        const modified: i64 = @intCast(@divTrunc((try f.metadata()).modified(), 1000));
+        if (!opts.copy) {
+            return self.db.import(created, modified, .{ .path = path });
+        }
+
+        const sourceDirPath = std.fs.path.dirname(path) orelse return Error.MalformedPath;
+        const sourceName = std.fs.path.basename(path);
+        var sourceDir = try std.fs.openDirAbsolute(sourceDirPath, .{});
+        defer sourceDir.close();
+        try sourceDir.copyFile(sourceName, self.basedir, sourceName, .{});
+
+        const id = try self.db.import(created, modified, .{ .path = sourceName });
+        if (self.skipEmbed) return id;
+
+        // TODO: don't use a MB of stack space...
+        // TODO: instead of using the copy function, could we embed whilst copying?
+        var buf: [1_000_000]u8 = undefined;
+        const sz = try self.readAll(id, &buf);
+        try self.embedText(id, buf[0..sz]);
+
+        return id;
     }
 
-    pub fn update(self: *Runtime, note: Note) !void {
-        return self.db.update(note);
+    pub fn get(self: *Runtime, id: NoteID, allocator: std.mem.Allocator) !Note {
+        return self.db.get(id, allocator);
+    }
+
+    pub fn update(self: *Runtime, noteID: NoteID) !void {
+        return self.db.update(noteID);
     }
 
     pub fn delete(self: *Runtime, id: NoteID) !void {
-        const note = try self.get(id);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
 
-        var buf: [64]u8 = undefined;
-        const path = note.path(&buf);
-        self.basedir.access(path, .{}) catch {
+        const note = try self.get(id, arena.allocator());
+
+        self.basedir.access(note.path, .{}) catch {
             return self.db.delete(note);
         };
-        try self.basedir.deleteFile(path);
+        try self.basedir.deleteFile(note.path);
         return self.db.delete(note);
     }
 
@@ -98,53 +133,48 @@ pub const Runtime = struct {
             return self.delete(id);
         }
 
-        const note = try self.get(id);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
 
-        var buf: [64]u8 = undefined;
-        const path = note.path(&buf);
+        const note = try self.get(id, arena.allocator());
 
-        const f = try self.basedir.createFile(path, .{ .read = true, .truncate = true });
+        const f = try self.basedir.createFile(note.path, .{ .read = true, .truncate = true });
         defer f.close();
         try f.writeAll(content);
 
         // TODO: can we flag this to be removed in prod?
         if (self.skipEmbed) {
-            try self.update(note);
+            try self.update(id);
             return;
         }
+
+        try self.embedText(id, content);
+        try self.update(id);
+        return;
+    }
+
+    fn embedText(self: *Runtime, id: NoteID, content: []const u8) !void {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
 
         var it = std.mem.splitAny(u8, content, ",.!?;-()/'\"");
         while (it.next()) |sentence| {
             const tokens = try self.tokenizer.tokenize(sentence);
             // Skip anything not tokenizable - <2 means there's only the start and end tokens.
             if (tokens.input_ids.len < 3) continue;
-            const embeddings = try self.embedder.embed(tokens);
-            // TODO: remove this copy - it's only necessary at the moment because I haven't made
-            //       the embedder quite as strict as the vector DB. So the embedder outputs slices
-            //       but we need fixed length arrays. Hence the copy.
-            // std.debug.print("Embeddings: {d}, vec_sz: {d}\n", .{ embeddings.len, vec_sz });
-            assert(embeddings.len == vec_sz);
-            var tmp_embeddings: [vec_sz]vec_type = undefined;
-            std.mem.copyForwards(vec_type, &tmp_embeddings, embeddings);
-            const vec: Vector = tmp_embeddings;
-
-            const vector_id = try self.vectors.put(vec);
-            try self.db.appendVector(id, vector_id);
+            try self.db.appendVector(id, try self.vectors.put(try self.embedder.embed(tokens)));
         }
 
         // TODO: be more efficient - don't save all of the vectors on every write
         try self.vectors.save(VECTOR_DB_PATH);
-
-        try self.update(note);
-        return;
     }
 
     pub fn readAll(self: *Runtime, id: NoteID, buf: []u8) !usize {
-        const note = try self.get(id);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const note = try self.get(id, arena.allocator());
 
-        var pathbuf: [64]u8 = undefined;
-        const path = note.path(&pathbuf);
-        const f = self.basedir.openFile(path, .{}) catch |err| switch (err) {
+        const f = self.basedir.openFile(note.path, .{}) catch |err| switch (err) {
             error.FileNotFound => {
                 return 0; // Lazy creation
             },
@@ -174,15 +204,7 @@ pub const Runtime = struct {
         const tokens = try self.tokenizer.tokenize(query);
         // Skip anything not tokenizable - <2 means there's only the start and end tokens.
         if (tokens.input_ids.len < 3) return 0;
-        const embeddings = try self.embedder.embed(tokens);
-        // TODO: remove this copy - it's only necessary at the moment because I haven't made
-        //       the embedder quite as strict as the vector DB. So the embedder outputs slices
-        //       but we need fixed length arrays. Hence the copy.
-        // std.debug.print("Embeddings: {d}, vec_sz: {d}\n", .{ embeddings.len, vec_sz });
-        assert(embeddings.len == vec_sz);
-        var tmp_embeddings: [vec_sz]vec_type = undefined;
-        std.mem.copyForwards(vec_type, &tmp_embeddings, embeddings);
-        const query_vec: Vector = tmp_embeddings;
+        const query_vec = try self.embedder.embed(tokens);
 
         var vec_ids: [1000]VectorID = undefined;
 
@@ -201,18 +223,23 @@ const expectError = std.testing.expectError;
 test "no create on read" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
     defer rt.deinit();
 
     const nid1 = try rt.create();
-    const n1 = try rt.get(nid1);
-    var buf: [64]u8 = undefined;
-    const path = n1.path(&buf);
-    try expectError(error.FileNotFound, rt.basedir.access(path, .{ .mode = .read_write }));
+    const n1 = try rt.get(nid1, arena.allocator());
+    try expectError(error.FileNotFound, rt.basedir.access(n1.path, .{ .mode = .read_write }));
 
+    var buf: [1000]u8 = undefined;
     const sz = try rt.readAll(nid1, &buf);
     try expect(sz == 0);
-    try expectError(error.FileNotFound, rt.basedir.access(path, .{ .mode = .read_write }));
+    try expectError(error.FileNotFound, rt.basedir.access(n1.path, .{ .mode = .read_write }));
 }
 
 fn _test_empty_dir_exclude_db(dir: std.fs.Dir) !bool {
@@ -229,7 +256,13 @@ fn _test_empty_dir_exclude_db(dir: std.fs.Dir) !bool {
 test "lazily create files" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
     defer rt.deinit();
 
     const noteID = try rt.create();
@@ -242,55 +275,79 @@ test "lazily create files" {
 test "modify on write" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
     defer rt.deinit();
 
     const noteID = try rt.create();
-    var note = try rt.get(noteID);
-    try expect(note.created == note.modified);
+    const n1 = try rt.get(noteID, arena.allocator());
+    try expect(n1.created == n1.modified);
 
     var expected = "Contents of a note!";
     try rt.writeAll(noteID, expected[0..]);
-    note = try rt.get(noteID);
-    try expect(note.created != note.modified);
+    const n2 = try rt.get(noteID, arena.allocator());
+    try expect(n2.created != n2.modified);
 }
 
 test "no modify on read" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
     defer rt.deinit();
 
     const noteID = try rt.create();
-    var note = try rt.get(noteID);
-    try expect(note.created == note.modified);
+    const n1 = try rt.get(noteID, arena.allocator());
+    try expect(n1.created == n1.modified);
 
     var buf: [20]u8 = undefined;
     _ = try rt.readAll(noteID, &buf);
-    note = try rt.get(noteID);
-    try expect(note.created == note.modified);
+    const n2 = try rt.get(noteID, arena.allocator());
+    try expect(n2.created == n2.modified);
 }
 
 test "no modify on search" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
     defer rt.deinit();
 
     const noteID = try rt.create();
-    var note = try rt.get(noteID);
-    try expect(note.created == note.modified);
+    const n1 = try rt.get(noteID, arena.allocator());
+    try expect(n1.created == n1.modified);
 
     var buf2: [20]c_int = undefined;
     _ = try rt.search("", &buf2, 420);
-    note = try rt.get(noteID);
-    try expect(note.created == note.modified);
+    const n2 = try rt.get(noteID, arena.allocator());
+    try expect(n2.created == n2.modified);
 }
 
 test "r/w-all note" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
     defer rt.deinit();
 
     const noteID = try rt.create();
@@ -307,16 +364,22 @@ test "r/w-all note" {
 test "r/w-all updated time" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
     defer rt.deinit();
 
     const noteID = try rt.create();
-    const oldNote = try rt.get(noteID);
+    const oldNote = try rt.get(noteID, arena.allocator());
 
     var expected = "Contents of a note!";
     try rt.writeAll(noteID, expected[0..]);
 
-    const newNote = try rt.get(noteID);
+    const newNote = try rt.get(noteID, arena.allocator());
 
     try expect(newNote.modified > oldNote.modified);
 }
@@ -324,7 +387,13 @@ test "r/w-all updated time" {
 test "r/w-all too smol output buffer" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
     defer rt.deinit();
 
     const noteID = try rt.create();
@@ -345,7 +414,13 @@ test "r/w-all too smol output buffer" {
 test "delete empty note on empty writeAll" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
     defer rt.deinit();
 
     const noteID = try rt.create();
@@ -353,7 +428,7 @@ test "delete empty note on empty writeAll" {
     try rt.writeAll(noteID, expected[0..]);
 
     // Should not fail
-    const note = try rt.get(noteID);
+    const note = try rt.get(noteID, arena.allocator());
     var buffer: [20]u8 = undefined;
     const n = try rt.readAll(noteID, &buffer);
     try std.testing.expectEqualStrings(expected, buffer[0..n]);
@@ -362,19 +437,24 @@ test "delete empty note on empty writeAll" {
     const nothing = "";
     try rt.writeAll(noteID, nothing);
 
-    const out = rt.get(noteID);
+    const out = rt.get(noteID, arena.allocator());
+
     try std.testing.expectError(model.Error.NotFound, out);
 
-    var pathbuf: [64]u8 = undefined;
-    const path = note.path(&pathbuf);
-    const f = tmpD.dir.openFile(path, .{});
+    const f = tmpD.dir.openFile(note.path, .{});
     try std.testing.expectError(error.FileNotFound, f);
 }
 
 test "delete only if exists" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
     defer rt.deinit();
 
     const noteID = try rt.create();
@@ -384,7 +464,13 @@ test "delete only if exists" {
 test "search no query" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
     defer rt.deinit();
 
     var i: usize = 0;
@@ -409,7 +495,13 @@ test "search no query" {
 test "search no query orderby modified" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
     defer rt.deinit();
 
     const noteID1 = try rt.create();
@@ -423,8 +515,7 @@ test "search no query orderby modified" {
     try expect(buffer[0] == @as(c_int, @intCast(noteID2)));
     try expect(buffer[1] == @as(c_int, @intCast(noteID1)));
 
-    const note1 = try rt.get(noteID1);
-    try rt.update(note1);
+    try rt.update(noteID1);
 
     var buffer2: [10]c_int = undefined;
     const written2 = try rt.search("", &buffer2, null);
@@ -436,7 +527,13 @@ test "search no query orderby modified" {
 test "exclude param 'empty search'" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
     defer rt.deinit();
 
     const noteID1 = try rt.create();
@@ -453,7 +550,13 @@ test "exclude param 'empty search'" {
 test "exclude param 'empty search' - 2" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
     defer rt.deinit();
 
     const noteID1 = try rt.create();
@@ -470,7 +573,13 @@ test "exclude param 'empty search' - 2" {
 test "exclude from 'empty search' unmodifieds" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try Runtime.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir, .skipEmbed = true });
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
     defer rt.deinit();
 
     const noteID1 = try rt.create();
@@ -481,4 +590,115 @@ test "exclude from 'empty search' unmodifieds" {
     const written = try rt.search("", &buffer, null);
     try expect(written == 1);
     try expect(buffer[0] == @as(c_int, @intCast(noteID1)));
+}
+
+test "import" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
+    defer rt.deinit();
+
+    const path = "somefile.txt";
+    var f = try tmpD.dir.createFile(path, .{});
+    f.close();
+
+    var f2 = try tmpD.dir.openFile(path, .{ .mode = .write_only });
+    try f2.writeAll("Something!");
+    const created: i64 = @intCast(@divTrunc((try f2.metadata()).created().?, 1000));
+    const modified: i64 = @intCast(@divTrunc((try f2.metadata()).modified(), 1000));
+    f2.close();
+
+    const id = try rt.import(path, .{});
+    const note = try rt.get(id, arena.allocator());
+
+    try expect(note.created == created);
+    try expect(note.modified == modified);
+    try expectEqlStrings(note.path, path);
+}
+
+test "import copy" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
+    defer rt.deinit();
+
+    const path = "/tmp/something.txt";
+    var f = try std.fs.createFileAbsolute(path, .{});
+    f.close();
+
+    var f2 = try std.fs.openFileAbsolute(path, .{ .mode = .write_only });
+    try f2.writeAll("Something!");
+    const created: i64 = @intCast(@divTrunc((try f2.metadata()).created().?, 1000));
+    const modified: i64 = @intCast(@divTrunc((try f2.metadata()).modified(), 1000));
+    f2.close();
+
+    const id = try rt.import(path, .{ .copy = true });
+    try std.fs.deleteFileAbsolute(path);
+    const note = try rt.get(id, arena.allocator());
+
+    try expect(note.created == created);
+    try expect(note.modified == modified);
+    try expectEqlStrings(note.path, std.fs.path.basename(path));
+}
+
+test "import run embedding" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .model = embed.MXBAI_QUANTIZED_MODEL,
+    });
+    defer rt.deinit();
+
+    const path = "/tmp/something.txt";
+    var f = try std.fs.createFileAbsolute(path, .{});
+    defer f.close();
+    try f.writeAll("something");
+
+    const id = try rt.import(path, .{ .copy = true });
+
+    var buf: [1]c_int = undefined;
+    const results = try rt.search("something", &buf, null);
+
+    try expect(results == 1);
+    try expect(buf[0] == id);
+}
+
+test "embedText hello" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .model = embed.MXBAI_QUANTIZED_MODEL,
+    });
+    defer rt.deinit();
+
+    const id = try rt.create();
+
+    const text = "hello";
+    try rt.embedText(id, text);
+
+    var buf: [1]c_int = undefined;
+    const results = try rt.search(text, &buf, null);
+
+    try expect(results == 1);
+    try expect(buf[0] == id);
 }

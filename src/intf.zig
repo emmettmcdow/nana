@@ -85,10 +85,26 @@ export fn nana_create() c_int {
     return @intCast(id);
 }
 
+// Output: CError on failure, NoteID if success
+export fn nana_import(path: [*:0]const u8, pathlen: c_uint) c_int {
+    if (!init) {
+        return @intFromEnum(CError.NotInit);
+    }
+    const id = rt.import(path[0..pathlen], .{ .copy = true }) catch |err| {
+        std.log.err("Failed to create note: {}\n", .{err});
+        return @intFromEnum(CError.CreateFail);
+    };
+
+    return @intCast(id);
+}
+
 // Input: NoteID
 // Output: Create/Mod Time
 export fn nana_create_time(noteID: c_int) c_int {
-    const note = rt.get(@intCast(noteID)) catch |err| {
+    var arena = std.heap.ArenaAllocator.init(gpa.allocator());
+    defer arena.deinit();
+
+    const note = rt.get(@intCast(noteID), arena.allocator()) catch |err| {
         std.log.err("Failed to get note with id '{d}': {}\n", .{ noteID, err });
         return @intFromEnum(CError.GetFail);
     };
@@ -97,7 +113,10 @@ export fn nana_create_time(noteID: c_int) c_int {
     return @intCast(@divTrunc(note.created, 1_000_000));
 }
 export fn nana_mod_time(noteID: c_int) c_int {
-    const note = rt.get(@intCast(noteID)) catch |err| {
+    var arena = std.heap.ArenaAllocator.init(gpa.allocator());
+    defer arena.deinit();
+
+    const note = rt.get(@intCast(noteID), arena.allocator()) catch |err| {
         std.log.err("Failed to get note with id '{d}': {}\n", .{ noteID, err });
         return @intFromEnum(CError.GetFail);
     };
@@ -120,6 +139,7 @@ export fn nana_search(query: [*:0]const u8, outbuf: [*c]c_int, sz: c_uint, ignor
 
 export fn nana_write_all(noteID: c_int, content: [*:0]const u8) c_int {
     const zigStyle: []const u8 = std.mem.sliceTo(content, 0);
+    std.debug.print("Write-alling {d}\n", .{noteID});
     rt.writeAll(@intCast(noteID), zigStyle) catch |err| switch (err) {
         error.FileNotFound => {
             std.log.err("Failed to write note with id '{d}': {}\n", .{ noteID, err });

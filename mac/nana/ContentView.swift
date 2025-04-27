@@ -34,7 +34,6 @@ struct ContentView: View {
             TextEditor(text: $text)
                 .font(.system(size: 14))
                 .foregroundColor(palette.foreground)
-            
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .scrollContentBackground(.hidden)
                 .padding(EdgeInsets(top: 20, leading: 20, bottom: 0, trailing: 0))
@@ -48,10 +47,17 @@ struct ContentView: View {
                     SearchButton(onClick: {
                         var ids = Array<Int32>(repeating: 0, count: 100)
                         let n = nana_search("", &ids, numericCast(ids.count), noteId)
+                        if (n < 0 ) {
+                            print("Some error occurred while searching: ", n)
+                            return
+                        }
                         queriedNotes = []
-                        for i in 0...Int(n-1) {
-                            let id = ids[i]
-                            queriedNotes.append(Note(id: id))
+                        if (n > 0) {
+                            // I have no idea why the docs say its far-end exclusive. It's not. Am i stupid?
+                            for i in 0...Int(n-1) {
+                                let id = ids[i]
+                                queriedNotes.append(Note(id: id))
+                            }
                         }
                         searchVisible.toggle()
                     })

@@ -49,7 +49,7 @@ pub fn build(b: *std.Build) !void {
     // TODO: make these lazy
     // Dependencies
     const mnist_dep = b.dependency("mnist_testing", .{});
-    const mxbai_embed_dep = b.dependency("mxbai_embed", .{});
+    const model_dep = b.dependency("embed_model", .{});
 
     // Static files
     const install_mnist = b.addInstallDirectory(.{
@@ -57,13 +57,12 @@ pub fn build(b: *std.Build) !void {
         .install_dir = .{ .custom = "share" },
         .install_subdir = ".",
     });
-    const install_mxbai_embed = b.addInstallDirectory(.{
-        .source_dir = mxbai_embed_dep.path("onnx"),
+    const install_model = b.addInstallDirectory(.{
+        .source_dir = model_dep.path("onnx"),
         .install_dir = .{ .custom = "share" },
         .install_subdir = ".",
     });
-    install_step.dependOn(&install_mnist.step);
-    install_step.dependOn(&install_mxbai_embed.step);
+    install_step.dependOn(&install_model.step);
 
     ///////////////////
     // Build the Lib //
@@ -97,8 +96,7 @@ pub fn build(b: *std.Build) !void {
         },
     });
     xcframework.step.dependOn(static_lib_universal.step);
-    install_mxbai_embed.step.dependOn(xcframework.step);
-    install_step.dependOn(&install_mxbai_embed.step);
+    install_step.dependOn(&install_model.step);
 
     const signedFW = Codesign.create(.{ .b = b, .path = xc_fw_path });
     signedFW.step.dependOn(xcframework.step);
@@ -115,7 +113,7 @@ pub fn build(b: *std.Build) !void {
         .filters = &.{"root"},
     });
     const root_options = b.addOptions();
-    root_options.addOption(usize, "vec_sz", 3);
+    root_options.addOption(usize, "vec_sz", 64);
     root_unit_tests.root_module.addOptions("config", root_options);
     _ = SQLite.create(.{
         .b = b,
@@ -131,6 +129,7 @@ pub fn build(b: *std.Build) !void {
     });
     const run_root_unit_tests = b.addRunArtifact(root_unit_tests);
     const test_root = b.step("test-root", "run the tests for src/root.zig");
+    test_root.dependOn(&install_mnist.step);
     test_root.dependOn(&run_root_unit_tests.step);
 
     // Model
@@ -163,8 +162,12 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
     });
+    const embed_options = b.addOptions();
+    embed_options.addOption(usize, "vec_sz", 64);
+    embed_unit_tests.root_module.addOptions("config", embed_options);
     const run_embed_unit_tests = b.addRunArtifact(embed_unit_tests);
     const test_embed = b.step("test-embed", "run the tests for src/embed.zig");
+    test_embed.dependOn(&install_model.step);
     test_embed.dependOn(&run_embed_unit_tests.step);
 
     // Vector
@@ -185,7 +188,7 @@ pub fn build(b: *std.Build) !void {
     // Benchmark
     const benchmark_options = b.addOptions();
     // benchmark_options.addOption(type, "vec_type", f32);
-    benchmark_options.addOption(usize, "vec_sz", 8192);
+    benchmark_options.addOption(usize, "vec_sz", 64);
     const benchmark_unit_tests = b.addTest(.{
         .root_source_file = benchmark_file,
         .target = x86_target,
@@ -226,7 +229,7 @@ pub fn build(b: *std.Build) !void {
         // Uncomment this if lib_unit_tests needs lldb args or test args
         // "--",
     });
-    lldb.addArtifactArg(benchmark_unit_tests);
+    lldb.addArtifactArg(root_unit_tests);
     const lldb_step = b.step("debug", "run the tests under lldb");
     lldb_step.dependOn(&lldb.step);
 }
@@ -245,7 +248,7 @@ const Baselib = struct {
         const interface_file = opts.b.path("src/intf.zig");
 
         const options = opts.b.addOptions();
-        options.addOption(usize, "vec_sz", 8192);
+        options.addOption(usize, "vec_sz", 64);
 
         const base_nana_lib = opts.b.addStaticLibrary(.{
             .name = "nana",

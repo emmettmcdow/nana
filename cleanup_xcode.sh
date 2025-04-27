@@ -3,4 +3,5 @@
 
 base="$HOME/Library/Containers/mcdow.nana/Data"
 rm "$base/db.db";
-find $base -regex "[0-9]+" -type f | xargs rm;
+rm "$base/vecs.db";
+find $base -name "[0-9]*" -type f | xargs rm;

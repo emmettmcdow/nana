@@ -18,7 +18,11 @@ var score: usize = 0;
 test "binary single words" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var rt = try root.Runtime.init(testing_allocator, .{
+
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    var rt = try root.Runtime.init(arena.allocator(), .{
         .mem = true,
         .basedir = tmpD.dir,
         .model = embed_model,
@@ -38,6 +42,7 @@ test "binary single words" {
         if (searchBuf[0] == id1) score += 50;
         if (n_out == 1) score += 50;
     }
+    std.debug.print("Score after first round: {d}\n", .{score});
     max_score += 100;
 
     const id3 = try rt.create();
@@ -49,6 +54,7 @@ test "binary single words" {
         if (searchBuf[0] == id3) score += 50;
         if (n_out == 1) score += 50;
     }
+    std.debug.print("Score after second round: {d}\n", .{score});
     max_score += 100;
 
     const id5 = try rt.create();
@@ -60,6 +66,7 @@ test "binary single words" {
         if (searchBuf[0] == id5) score += 50;
         if (n_out == 1) score += 50;
     }
+    std.debug.print("Score after third round: {d}\n", .{score});
     max_score += 100;
 }
 
