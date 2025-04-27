@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const config = @import("config");
 const types = @import("types.zig");
 const Vector = types.Vector;
 const VectorID = types.VectorID;
@@ -118,7 +119,7 @@ pub const DB = struct {
 
         for (1..self.meta.vec_n + 1) |id| {
             const similar = cosine_similarity(self.get(id), query);
-            // std.debug.print("Similarity: {d}\n", .{similar});
+            debugSearchSimilar(id, similar);
             if (similar > THRESHOLD) {
                 try pq.add(.{ .id = id, .sim = similar });
             }
@@ -130,6 +131,11 @@ pub const DB = struct {
         }
 
         return i;
+    }
+
+    fn debugSearchSimilar(vecID: VectorID, similarity: vec_type) void {
+        if (!config.debug) return;
+        std.debug.print("    ID({d}) similarity: {d}\n", .{ vecID, similarity });
     }
 
     pub fn save(self: Self, path: []const u8) !void {

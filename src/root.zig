@@ -8,6 +8,7 @@ const embed = @import("embed.zig");
 const model = @import("model.zig");
 const vector = @import("vector.zig");
 
+const config = @import("config");
 const types = @import("types.zig");
 const vec_sz = types.vec_sz;
 const vec_type = types.vec_type;
@@ -150,6 +151,7 @@ pub const Runtime = struct {
 
         try self.embedText(id, content);
         try self.update(id);
+
         return;
     }
 
@@ -163,6 +165,7 @@ pub const Runtime = struct {
             // Skip anything not tokenizable - <2 means there's only the start and end tokens.
             if (tokens.input_ids.len < 3) continue;
             try self.db.appendVector(id, try self.vectors.put(try self.embedder.embed(tokens)));
+            self.db.debugShowTable(.Vectors);
         }
 
         // TODO: be more efficient - don't save all of the vectors on every write
@@ -208,14 +211,36 @@ pub const Runtime = struct {
 
         var vec_ids: [1000]VectorID = undefined;
 
-        // std.debug.print("Searching for {s}\n", .{query});
+        debugSearchHeader(query);
         const found_n = try self.vectors.search(query_vec, &vec_ids);
+        self.debugSearchRankedResults(vec_ids[0..found_n]);
 
         for (0..found_n) |i| {
             // TODO: CRITICAL unsafe af casting
             buf[i] = @as(c_int, @intCast(try self.db.vecToNote(vec_ids[i])));
         }
         return found_n;
+    }
+
+    fn debugSearchHeader(query: []const u8) void {
+        if (!config.debug) return;
+        std.debug.print("Checking similarity against '{s}':\n", .{query});
+    }
+    fn debugSearchRankedResults(self: *Runtime, ids: []VectorID) void {
+        if (!config.debug) return;
+        for (ids, 1..) |id, i| {
+            var buf: [1000]u8 = undefined;
+            const noteID = self.db.vecToNote(id) catch undefined;
+            const sz = self.readAll(
+                noteID,
+                &buf,
+            ) catch undefined;
+            std.debug.print("    {d}. ID({d})'{s}' \n", .{
+                i,
+                noteID,
+                buf[0..sz],
+            });
+        }
     }
 };
 

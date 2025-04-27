@@ -227,12 +227,13 @@ pub const Tokenizer = struct {
         var tok: u16 = undefined;
         var i: usize = 1;
         while (it.next()) |word| {
+            const trimmed_word = std.mem.trim(u8, word, &std.ascii.whitespace);
+            if (trimmed_word.len == 0) continue;
             var wordbuf: [MAX_TOKEN_LENGTH]u8 = undefined;
-            const lowerWord = toLower(word, &wordbuf);
+            const lowerWord = toLower(trimmed_word, &wordbuf);
             tok = self.map.get(lowerWord) orelse {
+                std.debug.print("dropping token -> '{s}'!\n", .{lowerWord});
                 break;
-                // std.debug.print("we are bailing on token -> '{s}'!\n", .{lowerWord});
-                // unreachable;
             };
             self._input_buf[i] = tok;
             i += 1;
@@ -307,4 +308,22 @@ test "tokenize - YES SIR" {
     const output = try t.tokenize(input);
     try expectEqualSlices(i64, output.input_ids, expected.input_ids);
     try expectEqualSlices(i64, output.offsets, expected.offsets);
+}
+
+test "tokenize - strip edge whitespace" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var t = try Tokenizer.init(allocator);
+
+    const input: []const u8 = "  yes sir\t";
+    const expected = Tokens{
+        .input_ids = &.{ 101, 1754, 1915, 102 },
+        .offsets = &.{0},
+    };
+
+    const output = try t.tokenize(input);
+    try expectEqualSlices(i64, expected.input_ids, output.input_ids);
+    try expectEqualSlices(i64, expected.offsets, output.offsets);
 }

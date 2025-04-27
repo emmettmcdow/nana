@@ -14,10 +14,7 @@ fn toSentinel(allocator: std.mem.Allocator, str: []const u8) ![:0]const u8 {
 const xc_fw_path = "macos/NanaKit.xcframework";
 
 pub fn build(b: *std.Build) !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    var arena = std.heap.ArenaAllocator.init(gpa.allocator());
-    defer arena.deinit();
-
+    const debug = b.option(bool, "debug-output", "Show debug output") orelse false;
     const optimize = b.standardOptimizeOption(.{});
 
     const install_step = b.getInstallStep();
@@ -75,6 +72,7 @@ pub fn build(b: *std.Build) !void {
             .b = b,
             .target = target,
             .optimize = optimize,
+            .debug = debug,
         }));
     }
 
@@ -114,6 +112,7 @@ pub fn build(b: *std.Build) !void {
     });
     const root_options = b.addOptions();
     root_options.addOption(usize, "vec_sz", 64);
+    root_options.addOption(bool, "debug", debug);
     root_unit_tests.root_module.addOptions("config", root_options);
     _ = SQLite.create(.{
         .b = b,
@@ -164,6 +163,7 @@ pub fn build(b: *std.Build) !void {
     });
     const embed_options = b.addOptions();
     embed_options.addOption(usize, "vec_sz", 64);
+    embed_options.addOption(bool, "debug", debug);
     embed_unit_tests.root_module.addOptions("config", embed_options);
     const run_embed_unit_tests = b.addRunArtifact(embed_unit_tests);
     const test_embed = b.step("test-embed", "run the tests for src/embed.zig");
@@ -174,6 +174,7 @@ pub fn build(b: *std.Build) !void {
     const vector_options = b.addOptions();
     // vector_options.addOption(type, "vec_type", f32);
     vector_options.addOption(usize, "vec_sz", 3);
+    vector_options.addOption(bool, "debug", debug);
     const vector_unit_tests = b.addTest(.{
         .root_source_file = vector_file,
         .target = x86_target,
@@ -189,6 +190,7 @@ pub fn build(b: *std.Build) !void {
     const benchmark_options = b.addOptions();
     // benchmark_options.addOption(type, "vec_type", f32);
     benchmark_options.addOption(usize, "vec_sz", 64);
+    benchmark_options.addOption(bool, "debug", debug);
     const benchmark_unit_tests = b.addTest(.{
         .root_source_file = benchmark_file,
         .target = x86_target,
@@ -239,6 +241,7 @@ const Baselib = struct {
         b: *std.Build,
         target: std.Build.ResolvedTarget,
         optimize: std.builtin.OptimizeMode,
+        debug: bool,
     };
 
     step: *Step,
@@ -248,6 +251,7 @@ const Baselib = struct {
         const interface_file = opts.b.path("src/intf.zig");
 
         const options = opts.b.addOptions();
+        options.addOption(bool, "debug", opts.debug);
         options.addOption(usize, "vec_sz", 64);
 
         const base_nana_lib = opts.b.addStaticLibrary(.{

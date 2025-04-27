@@ -3,6 +3,7 @@ const sqlite = @import("sqlite");
 
 const types = @import("types.zig");
 const VectorID = types.VectorID;
+const config = @import("config");
 
 const PATH_MAX = 1000;
 
@@ -66,6 +67,9 @@ const DELETE_NOTE = "DELETE FROM notes WHERE id = ?;";
 const EMPTY_NOTE = "SELECT id FROM notes WHERE created = modified LIMIT 1;";
 
 const SEARCH_NO_QUERY = "SELECT id FROM notes WHERE created != modified ORDER BY modified DESC LIMIT ?;";
+
+const SHOW_NOTES = "SELECT * from notes;";
+const SHOW_VECTOR = "SELECT * from vectors;";
 
 pub const Error = error{ NotFound, BufferTooSmall, NotInitialized };
 
@@ -310,8 +314,12 @@ pub const DB = struct {
 
     pub fn vecToNote(self: *Self, vectorID: VectorID) !NoteID {
         var diags = sqlite.Diagnostics{};
-        var stmt = self.db.prepareWithDiags(GET_NOTEID_FROM_VECID, .{ .diags = &diags }) catch |err| {
-            std.log.err("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
+        const query = GET_NOTEID_FROM_VECID;
+        var stmt = self.db.prepareWithDiags(query, .{ .diags = &diags }) catch |err| {
+            std.log.err(
+                "unable to prepare statement, got error {}. diagnostics: {s}",
+                .{ err, diags },
+            );
             return err;
         };
 
@@ -325,6 +333,48 @@ pub const DB = struct {
             return id;
         }
         return Error.NotFound;
+    }
+
+    const Table = enum { Notes, Vectors };
+
+    pub fn debugShowTable(self: *Self, comptime table: Table) void {
+        if (!config.debug) return;
+        var diags = sqlite.Diagnostics{};
+        var stmt = self.db.prepareWithDiags(switch (table) {
+            .Notes => SHOW_NOTES,
+            .Vectors => SHOW_VECTOR,
+        }, .{ .diags = &diags }) catch |err| {
+            std.log.err("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
+            return;
+        };
+
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        switch (table) {
+            .Notes => {
+                const rows = stmt.all(Note, arena.allocator(), .{}, .{}) catch undefined;
+                for (rows) |note| {
+                    std.debug.print("{d},{d},{d},{s}\n", note);
+                }
+            },
+            .Vectors => {
+                const rows = stmt.all(VectorRow, arena.allocator(), .{}, .{}) catch undefined;
+                std.debug.print("{s}, {s}, {s}, {s}\n", .{
+                    "vec. ID",
+                    "note ID",
+                    "next ID",
+                    "last ID",
+                });
+                for (rows) |vector| {
+                    std.debug.print("{d: ^7}| {d: ^7}| {d: ^7}| {d: ^7}\n", .{
+                        vector.vector_id,
+                        vector.note_id,
+                        vector.next_vec_id orelse 420,
+                        vector.last_vec_id orelse 420,
+                    });
+                }
+            },
+        }
     }
 };
 
