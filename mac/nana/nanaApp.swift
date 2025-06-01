@@ -13,7 +13,7 @@ import NanaKit
 @main
 struct nanaApp: App {
     init() {
-        #if !DEBUG
+        #if DEBUG
             let basedir = "./"
         #else
             let filemanager = FileManager.default

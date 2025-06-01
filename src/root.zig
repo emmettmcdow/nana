@@ -18,7 +18,7 @@ const VectorID = types.VectorID;
 const NoteID = model.NoteID;
 const Note = model.Note;
 
-pub const Error = error{ NotFound, BufferTooSmall, MalformedPath };
+pub const Error = error{ NotFound, BufferTooSmall, MalformedPath, NotNote };
 
 // TODO: this is a hack...
 const SMALL_TESTING_MODEL = "zig-out/share/mnist-12-int8.onnx";
@@ -84,9 +84,18 @@ pub const Runtime = struct {
         }
         defer f.close();
 
+        var notNote = true;
+        for ([_][]const u8{ "md", "txt" }) |ext| {
+            if (std.mem.eql(u8, path[path.len - ext.len ..], ext)) {
+                notNote = false;
+                break;
+            }
+        }
+
         const created: i64 = @intCast(@divTrunc((try f.metadata()).created().?, 1000));
         const modified: i64 = @intCast(@divTrunc((try f.metadata()).modified(), 1000));
         if (!opts.copy) {
+            if (notNote) return Error.NotNote;
             return self.db.import(created, modified, .{ .path = path });
         }
 
@@ -96,6 +105,7 @@ pub const Runtime = struct {
         defer sourceDir.close();
         try sourceDir.copyFile(sourceName, self.basedir, sourceName, .{});
 
+        if (notNote) return Error.NotNote;
         const id = try self.db.import(created, modified, .{ .path = sourceName });
         if (self.skipEmbed) return id;
 
@@ -156,7 +166,7 @@ pub const Runtime = struct {
     }
 
     fn embedText(self: *Runtime, id: NoteID, content: []const u8) !void {
-        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
 
         var it = std.mem.splitAny(u8, content, ",.!?;-()/'\"");
@@ -215,8 +225,10 @@ pub const Runtime = struct {
         const found_n = try self.vectors.search(query_vec, &vec_ids);
         self.debugSearchRankedResults(vec_ids[0..found_n]);
 
-        for (0..found_n) |i| {
+        for (0..@min(found_n, buf.len)) |i| {
             // TODO: CRITICAL unsafe af casting
+            // TODO: remove duplicate notes
+            // TODO: create scoring system for multiple results in one note
             buf[i] = @as(c_int, @intCast(try self.db.vecToNote(vec_ids[i])));
         }
         return found_n;
@@ -702,6 +714,52 @@ test "import run embedding" {
 
     try expect(results == 1);
     try expect(buf[0] == id);
+}
+
+test "import skip unrecognized file extensions" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
+    defer rt.deinit();
+
+    const png = "/tmp/something.png";
+    var f = try std.fs.createFileAbsolute(png, .{});
+    try f.writeAll("something");
+    f.close();
+    const tar = "/tmp/something.tar";
+    f = try std.fs.createFileAbsolute(tar, .{});
+    try f.writeAll("something");
+    f.close();
+    const pdf = "/tmp/something.pdf";
+    f = try std.fs.createFileAbsolute(pdf, .{});
+    try f.writeAll("something");
+    f.close();
+
+    const txt = "/tmp/something.txt";
+    f = try std.fs.createFileAbsolute(txt, .{});
+    try f.writeAll("something");
+    f.close();
+    const md = "/tmp/something.md";
+    f = try std.fs.createFileAbsolute(md, .{});
+    try f.writeAll("something");
+    f.close();
+
+    for ([2][]const u8{ txt, md }) |path| {
+        _ = try rt.import(path, .{ .copy = true });
+        f = try tmpD.dir.openFile(std.fs.path.basename(path), .{});
+        f.close();
+    }
+    for ([3][]const u8{ png, tar, pdf }) |path| {
+        try expectError(Error.NotNote, rt.import(path, .{ .copy = true }));
+        f = try tmpD.dir.openFile(std.fs.path.basename(path), .{});
+        f.close();
+    }
 }
 
 test "embedText hello" {

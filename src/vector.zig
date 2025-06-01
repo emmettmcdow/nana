@@ -127,6 +127,7 @@ pub const DB = struct {
 
         var i: usize = 0;
         while (pq.removeOrNull()) |pair| : (i += 1) {
+            if (i >= buf.len) break;
             buf[i] = pair.id;
         }
 

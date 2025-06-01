@@ -165,7 +165,6 @@ const Tokens = struct {
 };
 
 fn toLower(str: []const u8, buf: []u8) []u8 {
-    if (str.len >= MAX_TOKEN_LENGTH) unreachable;
     for (str, 0..) |c, i| {
         // TODO: handle non-ascii?
         if (std.ascii.isAscii(c)) {
@@ -229,6 +228,10 @@ pub const Tokenizer = struct {
         while (it.next()) |word| {
             const trimmed_word = std.mem.trim(u8, word, &std.ascii.whitespace);
             if (trimmed_word.len == 0) continue;
+            if (trimmed_word.len >= MAX_TOKEN_LENGTH) {
+                std.debug.print("skipping too-long token -> '{s}'!\n", .{trimmed_word});
+                continue;
+            }
             var wordbuf: [MAX_TOKEN_LENGTH]u8 = undefined;
             const lowerWord = toLower(trimmed_word, &wordbuf);
             tok = self.map.get(lowerWord) orelse {
@@ -320,6 +323,26 @@ test "tokenize - strip edge whitespace" {
     const input: []const u8 = "  yes sir\t";
     const expected = Tokens{
         .input_ids = &.{ 101, 1754, 1915, 102 },
+        .offsets = &.{0},
+    };
+
+    const output = try t.tokenize(input);
+    try expectEqualSlices(i64, expected.input_ids, output.input_ids);
+    try expectEqualSlices(i64, expected.offsets, output.offsets);
+}
+
+test "tokenize - skip too-long token" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var t = try Tokenizer.init(allocator);
+
+    const input =
+        \\ looooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooong
+    ;
+    const expected = Tokens{
+        .input_ids = &.{ 101, 102 },
         .offsets = &.{0},
     };
 
