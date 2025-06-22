@@ -15,7 +15,7 @@ enum AppColorScheme: String, CaseIterable, Identifiable, Codable {
     case light = "Light"
     case dark = "Dark"
     case system = "System"
-    
+
     var id: String { rawValue }
 }
 
@@ -36,8 +36,8 @@ enum ColorSchemePreference: String, CaseIterable, Identifiable {
 struct Palette {
     var foreground: Color
     var background: Color
-    var tertiary:   Color
-    
+    var tertiary: Color
+
     static func forPreference(_ preference: ColorSchemePreference, colorScheme: ColorScheme) -> Palette {
         switch preference {
         case .light:
@@ -52,14 +52,12 @@ struct Palette {
     }
 }
 
-
-
 struct GeneralSettingsView: View {
     @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
     @State private var showFileImporter = false
     @State private var totalFiles = 0
     @State private var completeFiles = 0
-
+    @State private var importError = ""
 
     var body: some View {
         VStack {
@@ -71,12 +69,14 @@ struct GeneralSettingsView: View {
                 }
                 .pickerStyle(.segmented)
             }
-            
-            if (totalFiles != completeFiles) {
+            if importError != "" {
+                Text("Failed to import files: \(importError)")
+                    .lineLimit(nil)
+            } else if totalFiles != completeFiles {
                 ProgressView(value: Float(completeFiles), total: Float(totalFiles))
                     .progressViewStyle(.linear)
                     .padding(.horizontal)
-            } else if (totalFiles != 0) {
+            } else if totalFiles != 0 {
                 Text("Successfully imported \(totalFiles) files")
             }
 
@@ -88,67 +88,86 @@ struct GeneralSettingsView: View {
             .fileImporter(
                 isPresented: $showFileImporter,
                 allowedContentTypes: [.directory],
-                allowsMultipleSelection: true
+                allowsMultipleSelection: false
             ) { result in
-                switch result {
-                case .success(let dirs):
-                    dirs.forEach { dir in
-                        // gain access to the directory
-                        let gotAccess = dir.startAccessingSecurityScopedResource()
-                        if !gotAccess { return }
-                        let resourceKeys : [URLResourceKey] = [.creationDateKey, .isDirectoryKey]
-                        let enumerator = FileManager.default.enumerator(at: dir,
-                                                    includingPropertiesForKeys: resourceKeys,
-                                                                       options: [.skipsHiddenFiles], errorHandler: { (url, error) -> Bool in
-                                                                                print("directoryEnumerator error at \(url): ", error)
-                                                                                return true
-                            })!
-                        totalFiles = 0
-                        for case let fileURL as URL in enumerator {
-                            do {
-                                let resourceValues = try fileURL.resourceValues(forKeys: Set(resourceKeys))
-                                if (!resourceValues.isDirectory!) {
-                                    totalFiles += 1
-                                }
-                            } catch {
-                                print(error)
-                            }
-
+                Task.detached(priority: .userInitiated) {
+                    let gottenResult = try result.get()
+                    guard let dirURL = gottenResult.first else {
+                        await MainActor.run {
+                            importError = "No directory selected"
                         }
-                        
-                        let enumerator2 = FileManager.default.enumerator(at: dir,
-                                                    includingPropertiesForKeys: resourceKeys,
-                                                                       options: [.skipsHiddenFiles], errorHandler: { (url, error) -> Bool in
-                                                                                print("directoryEnumerator error at \(url): ", error)
-                                                                                return true
-                            })!
-                        for case let fileURL as URL in enumerator2 {
-                            do {
-                                let resourceValues = try fileURL.resourceValues(forKeys: Set(resourceKeys))
-                                if (!resourceValues.isDirectory!) {
-                                    let res = nana_import(fileURL.path, numericCast(fileURL.path.count))
-                                    if res <= 0 {
-                                        print("Failed to import " + fileURL.path + " with error: \(res)")
-                                    }
-                                    completeFiles += 1
-                                }
-                            } catch {
-                                print(error)
-                            }
-
-                        }
-
-                        // release access
-                        dir.stopAccessingSecurityScopedResource()
+                        return
                     }
-                case .failure(let error):
-                    // handle error
-                    print(error)
+                    await MainActor.run {
+                        totalFiles = 0
+                    }
+                    guard dirURL.startAccessingSecurityScopedResource() else {
+                        await MainActor.run {
+                            importError = "Failed to start accessing security-scoped resource"
+                            totalFiles = 0
+                        }
+                        return
+                    }
+                    defer { dirURL.stopAccessingSecurityScopedResource() }
+
+                    let allFiles = filesInDir(dirURL: dirURL)
+
+                    await MainActor.run {
+                        totalFiles = allFiles.count
+                    }
+                    for fileURL in allFiles {
+                        let res = await MainActor.run {
+                            fileURL.withCString { cString in
+                                nana_import(cString, numericCast(fileURL.utf8.count))
+                            }
+                        }
+                        guard res >= 0 else {
+                            await MainActor.run {
+                                importError = "Failed to import " + fileURL + " with error: \(res)"
+                                totalFiles = 0
+                            }
+                            return
+                        }
+                        await MainActor.run {
+                            completeFiles += 1
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-func importObsidianDir(dir: URL, completeFiles: Binding<Int>, totalFiles: Binding<Int>) {
+func filesInDir(dirURL: URL) -> [String] {
+    var files: [String] = []
+    let resourceKeys: [URLResourceKey] = [.creationDateKey, .isDirectoryKey, .pathKey]
+    let fileNumberEnumerator = FileManager.default.enumerator(at: dirURL,
+                                                              includingPropertiesForKeys: resourceKeys,
+                                                              options: [.skipsHiddenFiles],
+                                                              errorHandler: { url, error -> Bool in
+                                                                  print("directoryEnumerator error at \(url): ", error)
+                                                                  return true
+                                                              })!
+    for case let fileURL as URL in fileNumberEnumerator {
+        do {
+            let resourceValues = try fileURL.resourceValues(forKeys: Set(resourceKeys))
+            if !resourceValues.isDirectory! {
+                if let path = resourceValues.path {
+                    files.append(path)
+                }
+            }
+        } catch {
+            print(error)
+        }
+    }
+    return files
 }
+
+// switch result {
+// case .success(let dirs):
+// case .failure(let error):
+//     // handle error
+//     print(error)
+// }
+
+func importObsidianDir(dir _: URL, completeFiles _: Binding<Int>, totalFiles _: Binding<Int>) {}

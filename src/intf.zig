@@ -23,6 +23,8 @@ const CError = enum(c_int) {
 
 const PATH_MAX = 1000;
 
+// TODO: we need to make this thread safe - it's sketchy rn
+
 // Output: CError
 export fn nana_init(
     basedir: [*:0]const u8,

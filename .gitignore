@@ -4,5 +4,6 @@ testing/
 macos/
 mac/nana/Resources
 *.db
+PROJECT-NOTES.md
 
 node_modules/
