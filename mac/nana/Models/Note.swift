@@ -7,7 +7,26 @@
 
 import Foundation
 
+#if DEBUG
+// Stub implementations for SwiftUI Previews
+func nana_create_time(_ id: Int32) -> Int64 {
+    return Int64(Date().timeIntervalSince1970)
+}
+
+func nana_mod_time(_ id: Int32) -> Int64 {
+    return Int64(Date().timeIntervalSince1970)
+}
+
+func nana_read_all(_ id: Int32, _ buffer: inout [Int8], _ bufferSize: Int) -> Int32 {
+    let sampleContent = "Sample note content for preview"
+    let utf8Array = Array(sampleContent.utf8.map { Int8(bitPattern: $0) }) + [0]
+    let copyCount = min(utf8Array.count, bufferSize)
+    buffer.replaceSubrange(0..<copyCount, with: utf8Array.prefix(copyCount))
+    return Int32(copyCount - 1) // Don't count null terminator
+}
+#else
 import NanaKit
+#endif
 
 struct Note: Identifiable {
     var id: Int32

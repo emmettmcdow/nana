@@ -7,7 +7,28 @@
 
 import SwiftUI
 
+#if DEBUG
+// Stub implementations for SwiftUI Previews
+func nana_create() -> Int32 {
+    return Int32.random(in: 1...1000)
+}
+
+func nana_search(_ query: String, _ ids: inout [Int32], _ maxCount: Int, _ currentNoteId: Int32) -> Int32 {
+    // Return some sample note IDs for preview
+    let sampleIds: [Int32] = [1, 2, 3, 4, 5]
+    let returnCount = min(sampleIds.count, maxCount)
+    for i in 0..<returnCount {
+        ids[i] = sampleIds[i]
+    }
+    return Int32(returnCount)
+}
+
+func nana_write_all(_ id: Int32, _ content: String) -> Int32 {
+    return 0 // Success
+}
+#else
 import NanaKit
+#endif
 
 
 struct ContentView: View {

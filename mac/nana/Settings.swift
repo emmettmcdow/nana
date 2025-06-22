@@ -9,7 +9,13 @@ import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
 
-import NanaKit
+#if DEBUG
+    func nana_import(_: UnsafePointer<Int8>, _: Int) -> Int32 {
+        return 1 // Success
+    }
+#else
+    import NanaKit
+#endif
 
 enum AppColorScheme: String, CaseIterable, Identifiable, Codable {
     case light = "Light"
@@ -54,87 +60,111 @@ struct Palette {
 
 struct GeneralSettingsView: View {
     @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
-    @State private var showFileImporter = false
-    @State private var totalFiles = 0
-    @State private var completeFiles = 0
-    @State private var importError = ""
+    @State var showFileImporter = false
+    @State var totalFiles = 0
+    @State var skippedFiles = 0
+    @State var completeFiles = 0
+    @State var importError = ""
 
     var body: some View {
-        VStack {
-            Form {
-                Picker("Color Scheme:", selection: $preference) {
-                    ForEach(ColorSchemePreference.allCases) { option in
-                        Text(option.description).tag(option)
-                    }
-                }
-                .pickerStyle(.segmented)
-            }
-            if importError != "" {
-                Text("Failed to import files: \(importError)")
-                    .lineLimit(nil)
-            } else if totalFiles != completeFiles {
-                ProgressView(value: Float(completeFiles), total: Float(totalFiles))
-                    .progressViewStyle(.linear)
-                    .padding(.horizontal)
-            } else if totalFiles != 0 {
-                Text("Successfully imported \(totalFiles) files")
-            }
-
-            Button {
-                showFileImporter = true
-            } label: {
-                Label("Import Obsidian Vault", systemImage: "doc.circle")
-            }
-            .fileImporter(
-                isPresented: $showFileImporter,
-                allowedContentTypes: [.directory],
-                allowsMultipleSelection: false
-            ) { result in
-                Task.detached(priority: .userInitiated) {
-                    let gottenResult = try result.get()
-                    guard let dirURL = gottenResult.first else {
-                        await MainActor.run {
-                            importError = "No directory selected"
-                        }
-                        return
-                    }
-                    await MainActor.run {
-                        totalFiles = 0
-                    }
-                    guard dirURL.startAccessingSecurityScopedResource() else {
-                        await MainActor.run {
-                            importError = "Failed to start accessing security-scoped resource"
-                            totalFiles = 0
-                        }
-                        return
-                    }
-                    defer { dirURL.stopAccessingSecurityScopedResource() }
-
-                    let allFiles = filesInDir(dirURL: dirURL)
-
-                    await MainActor.run {
-                        totalFiles = allFiles.count
-                    }
-                    for fileURL in allFiles {
-                        let res = await MainActor.run {
-                            fileURL.withCString { cString in
-                                nana_import(cString, numericCast(fileURL.utf8.count))
+        TabView {
+            Tab("Appearance", systemImage: "paintpalette") {
+                VStack {
+                    Form {
+                        Picker("Color Scheme:", selection: $preference) {
+                            ForEach(ColorSchemePreference.allCases) { option in
+                                Text(option.description).tag(option)
                             }
                         }
-                        guard res >= 0 else {
+                        .pickerStyle(.segmented)
+                    }
+                }.padding()
+            }
+            Tab("Data", systemImage: "document") {
+                VStack {
+                    if importError != "" {
+                        Text("Failed to import files:")
+                        ScrollView {
+                            Text(importError)
+                                .font(.system(.body, design: .monospaced))
+                                .padding()
+                        }
+                        .frame(maxHeight: 200)
+                    } else if totalFiles != (completeFiles + skippedFiles) {
+                        Text("Importing \(totalFiles) files...")
+                        ProgressView(value: Float(completeFiles), total: Float(totalFiles))
+                            .progressViewStyle(.linear)
+                            .padding(.horizontal)
+                    } else if totalFiles != 0 {
+                        Text("Successfully imported \(completeFiles) files")
+                        if skippedFiles != 0 {
+                            Text("Skipped importing \(completeFiles) files")
+                        }
+                    }
+
+                    Button {
+                        showFileImporter = true
+                    } label: {
+                        Label("Import Obsidian Vault", systemImage: "doc.circle")
+                    }
+                    .fileImporter(
+                        isPresented: $showFileImporter,
+                        allowedContentTypes: [.directory],
+                        allowsMultipleSelection: false
+                    ) { result in
+                        Task.detached(priority: .userInitiated) {
+                            let gottenResult = try result.get()
+                            guard let dirURL = gottenResult.first else {
+                                await MainActor.run {
+                                    importError = "No directory selected"
+                                }
+                                return
+                            }
                             await MainActor.run {
-                                importError = "Failed to import " + fileURL + " with error: \(res)"
                                 totalFiles = 0
                             }
-                            return
-                        }
-                        await MainActor.run {
-                            completeFiles += 1
+                            guard dirURL.startAccessingSecurityScopedResource() else {
+                                await MainActor.run {
+                                    importError = "Failed to start accessing security-scoped resource"
+                                    totalFiles = 0
+                                }
+                                return
+                            }
+                            defer { dirURL.stopAccessingSecurityScopedResource() }
+
+                            let allFiles = filesInDir(dirURL: dirURL)
+
+                            await MainActor.run {
+                                totalFiles = allFiles.count
+                            }
+                            for fileURL in allFiles {
+                                let res = await MainActor.run {
+                                    fileURL.withCString { cString in
+                                        nana_import(cString, numericCast(fileURL.utf8.count))
+                                    }
+                                }
+                                if res <= 0 {
+                                    if res != -13 {
+                                        await MainActor.run {
+                                            importError = "Failed to import " + fileURL + " with error: \(res)"
+                                            totalFiles = 0
+                                        }
+                                        return
+                                    }
+                                    await MainActor.run {
+                                        skippedFiles += 1
+                                    }
+                                }
+                                await MainActor.run {
+                                    completeFiles += 1
+                                }
+                            }
                         }
                     }
                 }
+                .padding()
             }
-        }
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -163,11 +193,52 @@ func filesInDir(dirURL: URL) -> [String] {
     return files
 }
 
-// switch result {
-// case .success(let dirs):
-// case .failure(let error):
-//     // handle error
-//     print(error)
-// }
+#Preview("Settings") {
+    GeneralSettingsView(
+        showFileImporter: false,
+        totalFiles: 0,
+        skippedFiles: 0,
+        completeFiles: 0,
+        importError: ""
+    )
+}
 
-func importObsidianDir(dir _: URL, completeFiles _: Binding<Int>, totalFiles _: Binding<Int>) {}
+#Preview("Settings Import 50%") {
+    GeneralSettingsView(
+        showFileImporter: false,
+        totalFiles: 10,
+        skippedFiles: 0,
+        completeFiles: 5,
+        importError: ""
+    )
+}
+
+#Preview("Settings Import Complete") {
+    GeneralSettingsView(
+        showFileImporter: false,
+        totalFiles: 10,
+        skippedFiles: 0,
+        completeFiles: 10,
+        importError: ""
+    )
+}
+
+#Preview("Settings Import Complete With Skip") {
+    GeneralSettingsView(
+        showFileImporter: false,
+        totalFiles: 10,
+        skippedFiles: 1,
+        completeFiles: 9,
+        importError: ""
+    )
+}
+
+#Preview("Settings Import Failed") {
+    GeneralSettingsView(
+        showFileImporter: false,
+        totalFiles: 10,
+        skippedFiles: 0,
+        completeFiles: 9,
+        importError: "Something went wrong while importing: bufferoverflow, stackoverflow, uh oh big oops OH NO everything is broken we got HACKED."
+    )
+}

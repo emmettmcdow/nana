@@ -19,6 +19,7 @@ const CError = enum(c_int) {
     ReadFail = -10,
     PathTooLong = -11,
     FileNotFound = -12,
+    InvalidFiletype = -13,
 };
 
 const PATH_MAX = 1000;
@@ -94,7 +95,14 @@ export fn nana_import(path: [*:0]const u8, pathlen: c_uint) c_int {
     }
     const id = rt.import(path[0..pathlen], .{ .copy = true }) catch |err| {
         std.log.err("Failed to create note: {}\n", .{err});
-        return @intFromEnum(CError.CreateFail);
+        switch (err) {
+            nana.Error.NotNote => {
+                return @intFromEnum(CError.InvalidFiletype);
+            },
+            else => {
+                return @intFromEnum(CError.CreateFail);
+            },
+        }
     };
 
     return @intCast(id);

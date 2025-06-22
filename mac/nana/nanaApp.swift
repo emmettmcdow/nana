@@ -5,10 +5,16 @@
 //  Created by Emmett McDow on 2/25/25.
 //
 
-import SwiftUI
 import Foundation
+import SwiftUI
 
-import NanaKit
+#if DEBUG
+    func nana_init(_: UnsafePointer<Int8>, _: UInt32, _: UnsafePointer<Int8>, _: UInt32) -> Int {
+        return 0
+    }
+#else
+    import NanaKit
+#endif
 
 @main
 struct nanaApp: App {
@@ -29,26 +35,27 @@ struct nanaApp: App {
             }
             let basedir = url.path
         #endif
-        
+
         let frameworkBundle = Bundle.main
         guard let modelPath = frameworkBundle.path(forResource: "model", ofType: "onnx") else {
             print("File not found")
             return
         }
         let err = nana_init(basedir, UInt32(basedir.count), modelPath, UInt32(modelPath.count))
-        if (err != 0) {
+        if err != 0 {
             fatalError("Failed to init libnana! With error:\(err)")
         }
     }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
         }.windowStyle(HiddenTitleBarWindowStyle())
-        
+
         #if os(macOS)
-        Settings {
-            GeneralSettingsView()
-        }
+            Settings {
+                GeneralSettingsView()
+            }
         #endif
     }
 }

@@ -1,6 +1,6 @@
 // nana.h
 
-enum Error { 
+enum NanaError { 
   Success = 0,
   DoubleInit = -1,
   NotInit = -2,
@@ -14,6 +14,7 @@ enum Error {
   ReadFail = -10,
   PathTooLong = -11,
   FileNotFound = -12,
+  InvalidFiletype = -13,
 };
 
 int nana_init(const char *, unsigned int, const char *, unsigned int);
