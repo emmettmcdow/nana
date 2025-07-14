@@ -1,6 +1,3 @@
-const std = @import("std");
-const nana = @import("root.zig");
-
 var rt: nana.Runtime = undefined;
 var init: bool = false;
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -30,17 +27,11 @@ const PATH_MAX = 1000;
 export fn nana_init(
     basedir: [*:0]const u8,
     basedir_sz: c_uint,
-    model: [*:0]const u8,
-    model_sz: c_uint,
 ) c_int {
     if (init) {
         return @intFromEnum(CError.DoubleInit);
     }
-    if (basedir_sz > PATH_MAX or model_sz > PATH_MAX) {
-        return @intFromEnum(CError.DoubleInit);
-    }
 
-    const model_str = model[0..model_sz :0];
     const basedir_str = basedir[0..basedir_sz :0];
 
     var buf: [PATH_MAX]u8 = undefined;
@@ -56,7 +47,7 @@ export fn nana_init(
         return @intFromEnum(CError.DirCreationFail);
     };
 
-    rt = nana.Runtime.init(gpa.allocator(), .{ .basedir = d, .model = model_str }) catch |err| {
+    rt = nana.Runtime.init(gpa.allocator(), .{ .basedir = d }) catch |err| {
         std.log.err("Failed to initialize nana: {}\n", .{err});
         return @intFromEnum(CError.InitFail);
     };
@@ -172,27 +163,5 @@ export fn nana_read_all(noteID: c_int, outbuf: [*c]u8, sz: c_uint) c_int {
     return @intCast(written);
 }
 
-// // Input: Search ID from nana_search, buffer, buffer size
-// // Output: -1 if no more results, otherwise NoteID
-// export fn nana_next_result(searchID: c_int) c_int {
-//     _ = searchID;
-//     return 0;
-// }
-
-// // Input: NoteID, buffer, buffer size
-// // Output: -1 if failure, otherwise written bytes
-// export fn nana_contents(noteID: c_int, buffer: [*]u8, bufSize: c_int) c_int {
-//     _ = noteID;
-//     _ = buffer;
-//     _ = bufSize;
-//     return 0;
-// }
-
-// // Input: NoteID, buffer, buffer size
-// // Output: -1 if failure, 0 if success
-// export fn nana_update(noteID: c_int, buffer: [*]u8, bufSize: c_int) c_int {
-//     _ = noteID;
-//     _ = buffer;
-//     _ = bufSize;
-//     return 0;
-// }
+const std = @import("std");
+const nana = @import("root.zig");

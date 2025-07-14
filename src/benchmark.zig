@@ -1,15 +1,3 @@
-const std = @import("std");
-const testing_allocator = std.testing.allocator;
-
-const root = @import("root.zig");
-const model = @import("model.zig");
-const embed = @import("embed.zig");
-
-const NoteID = model.NoteID;
-const Note = model.Note;
-
-const embed_model = embed.MXBAI_QUANTIZED_MODEL;
-
 // // Each test in the benchmark has a top score of 100. Each test will add 100 to this variable.
 var max_score: usize = 0;
 // Each test will add to the score depending on how close to 'correct' it is.
@@ -25,7 +13,6 @@ test "binary single words" {
     var rt = try root.Runtime.init(arena.allocator(), .{
         .mem = true,
         .basedir = tmpD.dir,
-        .model = embed_model,
     });
     defer rt.deinit();
 
@@ -42,7 +29,6 @@ test "binary single words" {
         if (searchBuf[0] == id1) score += 50;
         if (n_out == 1) score += 50;
     }
-    std.debug.print("Score after first round: {d}\n", .{score});
     max_score += 100;
 
     const id3 = try rt.create();
@@ -54,7 +40,6 @@ test "binary single words" {
         if (searchBuf[0] == id3) score += 50;
         if (n_out == 1) score += 50;
     }
-    std.debug.print("Score after second round: {d}\n", .{score});
     max_score += 100;
 
     const id5 = try rt.create();
@@ -66,7 +51,6 @@ test "binary single words" {
         if (searchBuf[0] == id5) score += 50;
         if (n_out == 1) score += 50;
     }
-    std.debug.print("Score after third round: {d}\n", .{score});
     max_score += 100;
 }
 
@@ -80,7 +64,6 @@ test "grok-generated semantic-similarity" {
     var rt = try root.Runtime.init(arena.allocator(), .{
         .mem = true,
         .basedir = tmpD.dir,
-        .model = embed_model,
     });
     defer rt.deinit();
 
@@ -147,7 +130,6 @@ test "sentence splitting - 1/3 match" {
     var rt = try root.Runtime.init(arena.allocator(), .{
         .mem = true,
         .basedir = tmpD.dir,
-        .model = embed_model,
     });
     defer rt.deinit();
 
@@ -169,7 +151,6 @@ test "sentence splitting - 1/3 match" {
     if (n_out > 0) {
         if (outputContains(searchBuf[0..n_out], id1)) score += 34;
         if (outputContains(searchBuf[0..n_out], id2)) score += 33;
-
         if (!outputContains(searchBuf[0..n_out], id3)) score += 33;
     }
 
@@ -186,3 +167,13 @@ fn outputContains(output: []c_int, item: NoteID) bool {
 test "show results" {
     std.debug.print("Got {d} points out of a max of {d}.\n", .{ score, max_score });
 }
+
+const std = @import("std");
+const testing_allocator = std.testing.allocator;
+
+const root = @import("root.zig");
+const model = @import("model.zig");
+const embed = @import("embed.zig");
+
+const NoteID = model.NoteID;
+const Note = model.Note;

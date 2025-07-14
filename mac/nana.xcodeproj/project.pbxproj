@@ -8,7 +8,6 @@
 
 /* Begin PBXBuildFile section */
 		C06E67972DAC5114000B073C /* NanaKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C06E67962DAC5114000B073C /* NanaKit.xcframework */; settings = {ATTRIBUTES = (Required, ); }; };
-		C0E6788C2DAB2D84006CC735 /* libc++.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = C0E6788B2DAB2D84006CC735 /* libc++.tbd */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -46,7 +45,6 @@
 		C0D13D852D6ED5B200D0032D /* nana.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = nana.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C0D13D962D6ED5B500D0032D /* nanaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = nanaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C0D13DA02D6ED5B500D0032D /* nanaUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = nanaUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		C0E6788B2DAB2D84006CC735 /* libc++.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = "libc++.tbd"; path = "Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.2.sdk/usr/lib/libc++.tbd"; sourceTree = DEVELOPER_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -73,7 +71,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				C06E67972DAC5114000B073C /* NanaKit.xcframework in Frameworks */,
-				C0E6788C2DAB2D84006CC735 /* libc++.tbd in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -118,7 +115,6 @@
 		C0E6788A2DAB2D83006CC735 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
-				C0E6788B2DAB2D84006CC735 /* libc++.tbd */,
 				C06E67962DAC5114000B073C /* NanaKit.xcframework */,
 			);
 			name = Frameworks;

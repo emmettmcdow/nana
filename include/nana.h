@@ -17,7 +17,7 @@ enum NanaError {
   InvalidFiletype = -13,
 };
 
-int nana_init(const char *, unsigned int, const char *, unsigned int);
+int nana_init(const char *, unsigned int);
 int nana_deinit();
 int nana_create(void);
 int nana_import(const char *, unsigned int);
@@ -27,9 +27,3 @@ int nana_mod_time(int);
 int nana_search(const char *, int *, unsigned int, int);
 int nana_write_all(int, const char *);
 int nana_read_all(int, char *, unsigned int);
-
-// TODO
-// int nana_search(char *);
-// int nana_next_result(int);
-// int nana_contents(int, char *, int);
-// int nana_update(int, char *, int);

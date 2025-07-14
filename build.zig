@@ -5,6 +5,7 @@ const RunStep = Step.Run;
 const LazyPath = std.Build.LazyPath;
 
 const PATH_MAX = 4096;
+const VEC_SZ = 512;
 
 fn toSentinel(allocator: std.mem.Allocator, str: []const u8) ![:0]const u8 {
     var output = try allocator.allocSentinel(u8, str.len, 0);
@@ -43,24 +44,6 @@ pub fn build(b: *std.Build) !void {
     const vector_file = b.path("src/vector.zig");
     const benchmark_file = b.path("src/benchmark.zig");
 
-    // TODO: make these lazy
-    // Dependencies
-    const mnist_dep = b.dependency("mnist_testing", .{});
-    const model_dep = b.dependency("embed_model", .{});
-
-    // Static files
-    const install_mnist = b.addInstallDirectory(.{
-        .source_dir = mnist_dep.path(""),
-        .install_dir = .{ .custom = "share" },
-        .install_subdir = ".",
-    });
-    const install_model = b.addInstallDirectory(.{
-        .source_dir = model_dep.path("onnx"),
-        .install_dir = .{ .custom = "share" },
-        .install_subdir = ".",
-    });
-    install_step.dependOn(&install_model.step);
-
     ///////////////////
     // Build the Lib //
     ///////////////////
@@ -94,7 +77,6 @@ pub fn build(b: *std.Build) !void {
         },
     });
     xcframework.step.dependOn(static_lib_universal.step);
-    install_step.dependOn(&install_model.step);
 
     const signedFW = Codesign.create(.{ .b = b, .path = xc_fw_path });
     signedFW.step.dependOn(xcframework.step);
@@ -111,7 +93,7 @@ pub fn build(b: *std.Build) !void {
         .filters = &.{"root"},
     });
     const root_options = b.addOptions();
-    root_options.addOption(usize, "vec_sz", 64);
+    root_options.addOption(usize, "vec_sz", VEC_SZ);
     root_options.addOption(bool, "debug", debug);
     root_unit_tests.root_module.addOptions("config", root_options);
     _ = SQLite.create(.{
@@ -120,15 +102,15 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
     });
-    _ = ORT.create(.{
+    _ = ObjC.create(.{
         .b = b,
         .dest = root_unit_tests,
         .target = x86_target,
         .optimize = optimize,
     });
+
     const run_root_unit_tests = b.addRunArtifact(root_unit_tests);
     const test_root = b.step("test-root", "run the tests for src/root.zig");
-    test_root.dependOn(&install_mnist.step);
     test_root.dependOn(&run_root_unit_tests.step);
 
     // Model
@@ -155,19 +137,18 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .filters = &.{"embed"},
     });
-    _ = ORT.create(.{
+    _ = ObjC.create(.{
         .b = b,
         .dest = embed_unit_tests,
         .target = x86_target,
         .optimize = optimize,
     });
     const embed_options = b.addOptions();
-    embed_options.addOption(usize, "vec_sz", 64);
+    embed_options.addOption(usize, "vec_sz", VEC_SZ);
     embed_options.addOption(bool, "debug", debug);
     embed_unit_tests.root_module.addOptions("config", embed_options);
     const run_embed_unit_tests = b.addRunArtifact(embed_unit_tests);
     const test_embed = b.step("test-embed", "run the tests for src/embed.zig");
-    test_embed.dependOn(&install_model.step);
     test_embed.dependOn(&run_embed_unit_tests.step);
 
     // Vector
@@ -189,7 +170,7 @@ pub fn build(b: *std.Build) !void {
     // Benchmark
     const benchmark_options = b.addOptions();
     // benchmark_options.addOption(type, "vec_type", f32);
-    benchmark_options.addOption(usize, "vec_sz", 64);
+    benchmark_options.addOption(usize, "vec_sz", VEC_SZ);
     benchmark_options.addOption(bool, "debug", debug);
     const benchmark_unit_tests = b.addTest(.{
         .root_source_file = benchmark_file,
@@ -203,7 +184,7 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
     });
-    _ = ORT.create(.{
+    _ = ObjC.create(.{
         .b = b,
         .dest = benchmark_unit_tests,
         .target = x86_target,
@@ -252,7 +233,7 @@ const Baselib = struct {
 
         const options = opts.b.addOptions();
         options.addOption(bool, "debug", opts.debug);
-        options.addOption(usize, "vec_sz", 64);
+        options.addOption(usize, "vec_sz", VEC_SZ);
 
         const base_nana_lib = opts.b.addStaticLibrary(.{
             .name = "nana",
@@ -267,7 +248,7 @@ const Baselib = struct {
             .target = opts.target,
             .optimize = opts.optimize,
         });
-        _ = ORT.create(.{
+        _ = ObjC.create(.{
             .b = opts.b,
             .dest = base_nana_lib,
             .target = opts.target,
@@ -331,11 +312,8 @@ const SQLite = struct {
     }
 };
 
-const ORT = struct {
-    // step: *Step,
-    // output: LazyPath,
-
-    const Options = struct {
+const ObjC = struct {
+    const ObjCOptions = struct {
         // The build
         b: *std.Build,
         // That which we want to link with
@@ -345,31 +323,15 @@ const ORT = struct {
         optimize: std.builtin.OptimizeMode,
     };
 
-    pub fn create(opts: ORT.Options) ORT {
-        const onnx_dep = opts.b.dependency("zig_onnxruntime", .{ .target = opts.target, .optimize = opts.optimize });
-        const onnx_mod = onnx_dep.module("zig-onnxruntime");
+    pub fn create(opts: ObjCOptions) ObjC {
+        var objc_dep = opts.b.dependency("zig_objc", .{
+            .target = opts.target,
+            .optimize = opts.optimize,
+        });
+        opts.dest.root_module.addImport("objc", objc_dep.module("objc"));
+        opts.dest.root_module.linkFramework("NaturalLanguage", .{});
 
-        opts.dest.root_module.addImport("onnxruntime", onnx_mod);
-        opts.dest.linkLibCpp();
-        opts.dest.linkLibC();
-
-        const sdk_path = std.zig.system.darwin.getSdk(opts.b.allocator, opts.target.result);
-
-        if (sdk_path) |resolved_sdk_path| {
-            const sdk: LazyPath = .{ .cwd_relative = resolved_sdk_path };
-
-            opts.dest.root_module.addSystemFrameworkPath(sdk.path(opts.b, "System/Library/Frameworks"));
-            opts.dest.root_module.addSystemIncludePath(sdk.path(opts.b, "usr/include"));
-            opts.dest.root_module.addLibraryPath(sdk.path(opts.b, "usr/lib"));
-            opts.dest.linkFramework("Foundation");
-        } else {
-            unreachable;
-        }
-
-        return .{
-            // .step = &install_onnx_libs.step,
-            // .output = onnx_art.getEmittedBin(),
-        };
+        return ObjC{};
     }
 };
 

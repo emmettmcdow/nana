@@ -1,10 +1,3 @@
-const std = @import("std");
-const sqlite = @import("sqlite");
-
-const types = @import("types.zig");
-const VectorID = types.VectorID;
-const config = @import("config");
-
 const PATH_MAX = 1000;
 
 const DB_LOCATION = "./db.db";
@@ -565,4 +558,11 @@ test "import note" {
     try expectEqlStrings(note.path, "/foo/bar/path");
 }
 
-test "delete note" {}
+test "delete note" {} // TODO
+
+const std = @import("std");
+const sqlite = @import("sqlite");
+
+const types = @import("types.zig");
+const VectorID = types.VectorID;
+const config = @import("config");

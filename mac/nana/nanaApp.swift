@@ -36,12 +36,7 @@ struct nanaApp: App {
             let basedir = url.path
         #endif
 
-        let frameworkBundle = Bundle.main
-        guard let modelPath = frameworkBundle.path(forResource: "model", ofType: "onnx") else {
-            print("File not found")
-            return
-        }
-        let err = nana_init(basedir, UInt32(basedir.count), modelPath, UInt32(modelPath.count))
+        let err = nana_init(basedir, UInt32(basedir.count))
         if err != 0 {
             fatalError("Failed to init libnana! With error:\(err)")
         }

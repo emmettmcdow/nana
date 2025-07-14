@@ -105,6 +105,8 @@ struct ContentView: View {
                     text = note.content
                     searchVisible.toggle()
                 }, onChange: {(q: String) -> Void in
+                    print(q)
+                    /*
                     var ids = Array<Int32>(repeating: 0, count: 100)
                     let n = nana_search(q, &ids, numericCast(ids.count), noteId)
                     queriedNotes = []
@@ -113,7 +115,7 @@ struct ContentView: View {
                             let id = ids[i]
                             queriedNotes.append(Note(id: id))
                         }
-                    }
+                    }*/
                 }, closeList: {() -> Void in
                     searchVisible.toggle()
                 })

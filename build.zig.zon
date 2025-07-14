@@ -29,23 +29,9 @@
             // .hash = "sqlite-3.48.0-F2R_a_uGDgCfOH5UEJYjuOCe-HixnLjToxOdEGAEM3xk",
             .path = "../zig-sqlite",
         },
-        // TODO: push up my fork
-        .zig_onnxruntime = .{
-            .path = "../onnxruntime.zig/",
-            // .url = "git+https://github.com/emmettmcdow/onnxruntime.zig#b3b9ad7dded8945e25bf17a943e88e2747387ad7",
-            // .hash = "onnxruntime-0.2.0-dQhkke9xAACVLsaBwPYX1clKEclADL638dXjHovRFYCF",
-        },
-        .onnxruntime_src = .{
-            .url = "git+https://github.com/microsoft/onnxruntime#56b660f36940a919295e6f1e18ad3a9a93a10bf7",
-            .hash = "N-V-__8AABAP8h4JlSzachauwIlS9cd4DX3htlsVzzcpgM-s",
-        },
-        .mnist_testing = .{
-            .url = "https://github.com/onnx/models/raw/refs/heads/main/validated/vision/classification/mnist/model/mnist-12-int8.tar.gz",
-            .hash = "N-V-__8AAHA3AAAC4KczOLDXg5_B7avBnZL4YFlLwaDPYv08",
-        },
-        // TODO: find way to store this - there is no tgz available
-        .embed_model = .{
-            .path = "../potion-base-2M/",
+        .zig_objc = .{
+            .url = "git+https://github.com/mitchellh/zig-objc#3bdbabb4f79533191a3d33a6df62b61400c40848",
+            .hash = "zig_objc-0.0.0-Ir_SpwUPAQDFk6tSkHUBvYrSBqTWCCkyyROrXDe9udTV",
         },
     },
     .paths = .{

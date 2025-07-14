@@ -1,20 +1,3 @@
-const std = @import("std");
-
-const config = @import("config");
-const types = @import("types.zig");
-const Vector = types.Vector;
-const VectorID = types.VectorID;
-const vec_sz = types.vec_sz;
-const vec_type = types.vec_type;
-
-const latest_format_version = 1;
-const v1_meta: StorageMetadata = .{
-    .fmt_v = latest_format_version,
-    .vec_sz = vec_sz,
-    .vec_type = BinaryTypeRepresentation.to_binary(vec_type),
-    .vec_n = 0,
-};
-
 // ********************************************************************************************* DB
 pub const BinaryTypeRepresentation = enum(u8) {
     float32,
@@ -99,7 +82,7 @@ pub const DB = struct {
     }
 
     pub fn search(self: Self, query: Vector, buf: []VectorID) !usize {
-        const THRESHOLD = 0.7;
+        const THRESHOLD = 0.35;
 
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
@@ -378,3 +361,20 @@ test "cosine zero-vec" {
     const output = cosine_similarity(a, b);
     try expect(output == 0);
 }
+
+const std = @import("std");
+
+const config = @import("config");
+const types = @import("types.zig");
+const Vector = types.Vector;
+const VectorID = types.VectorID;
+const vec_sz = types.vec_sz;
+const vec_type = types.vec_type;
+
+const latest_format_version = 1;
+const v1_meta: StorageMetadata = .{
+    .fmt_v = latest_format_version,
+    .vec_sz = vec_sz,
+    .vec_type = BinaryTypeRepresentation.to_binary(vec_type),
+    .vec_n = 0,
+};

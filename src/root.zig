@@ -1,32 +1,10 @@
-const std = @import("std");
-const expect = std.testing.expect;
-const expectEqlStrings = std.testing.expectEqualStrings;
-const assert = std.debug.assert;
-const testing_allocator = std.testing.allocator;
-
-const embed = @import("embed.zig");
-const model = @import("model.zig");
-const vector = @import("vector.zig");
-
-const config = @import("config");
-const types = @import("types.zig");
-const vec_sz = types.vec_sz;
-const vec_type = types.vec_type;
-const Vector = types.Vector;
-const VectorID = types.VectorID;
-
-const NoteID = model.NoteID;
-const Note = model.Note;
-
 pub const Error = error{ NotFound, BufferTooSmall, MalformedPath, NotNote };
 
 // TODO: this is a hack...
-const SMALL_TESTING_MODEL = "zig-out/share/mnist-12-int8.onnx";
 const VECTOR_DB_PATH = "vecs.db";
 pub const RuntimeOpts = struct {
     basedir: std.fs.Dir,
     mem: bool = false,
-    model: [:0]const u8 = SMALL_TESTING_MODEL,
     skipEmbed: bool = false,
 };
 
@@ -35,9 +13,7 @@ pub const Runtime = struct {
     db: model.DB,
     vectors: vector.DB,
     embedder: embed.Embedder,
-    tokenizer: embed.Tokenizer,
     allocator: std.mem.Allocator,
-    embed_model: [:0]const u8 = SMALL_TESTING_MODEL,
     skipEmbed: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, opts: RuntimeOpts) !Runtime {
@@ -46,8 +22,7 @@ pub const Runtime = struct {
             .mem = opts.mem,
         });
 
-        const embedder = try embed.Embedder.init(allocator, opts.model);
-        const tokenizer = try embed.Tokenizer.init(allocator);
+        const embedder = try embed.Embedder.init(allocator);
         var vectors = try vector.DB.init(allocator, opts.basedir);
 
         return Runtime{
@@ -55,7 +30,6 @@ pub const Runtime = struct {
             .db = database,
             .vectors = try vectors.load(VECTOR_DB_PATH),
             .embedder = embedder,
-            .tokenizer = tokenizer,
             .allocator = allocator,
             .skipEmbed = opts.skipEmbed,
         };
@@ -165,16 +139,16 @@ pub const Runtime = struct {
         return;
     }
 
+    // TODO: does this clear out previous embedding?
     fn embedText(self: *Runtime, id: NoteID, content: []const u8) !void {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
 
         var it = std.mem.splitAny(u8, content, ",.!?;-()/'\"");
+        var vec: Vector = undefined;
         while (it.next()) |sentence| {
-            const tokens = try self.tokenizer.tokenize(sentence);
-            // Skip anything not tokenizable - <2 means there's only the start and end tokens.
-            if (tokens.input_ids.len < 3) continue;
-            try self.db.appendVector(id, try self.vectors.put(try self.embedder.embed(tokens)));
+            vec = try self.embedder.embed(sentence) orelse continue;
+            try self.db.appendVector(id, try self.vectors.put(vec));
             self.db.debugShowTable(.Vectors);
         }
 
@@ -214,10 +188,7 @@ pub const Runtime = struct {
             return self.db.searchNoQuery(buf, ignore);
         }
 
-        const tokens = try self.tokenizer.tokenize(query);
-        // Skip anything not tokenizable - <2 means there's only the start and end tokens.
-        if (tokens.input_ids.len < 3) return 0;
-        const query_vec = try self.embedder.embed(tokens);
+        const query_vec = (try self.embedder.embed(query)) orelse return 0;
 
         var vec_ids: [1000]VectorID = undefined;
 
@@ -698,19 +669,18 @@ test "import run embedding" {
     var rt = try Runtime.init(arena.allocator(), .{
         .mem = true,
         .basedir = tmpD.dir,
-        .model = embed.MXBAI_QUANTIZED_MODEL,
     });
     defer rt.deinit();
 
     const path = "/tmp/something.txt";
     var f = try std.fs.createFileAbsolute(path, .{});
     defer f.close();
-    try f.writeAll("something");
+    try f.writeAll("hello");
 
     const id = try rt.import(path, .{ .copy = true });
 
     var buf: [1]c_int = undefined;
-    const results = try rt.search("something", &buf, null);
+    const results = try rt.search("hello", &buf, null);
 
     try expect(results == 1);
     try expect(buf[0] == id);
@@ -770,7 +740,6 @@ test "embedText hello" {
     var rt = try Runtime.init(arena.allocator(), .{
         .mem = true,
         .basedir = tmpD.dir,
-        .model = embed.MXBAI_QUANTIZED_MODEL,
     });
     defer rt.deinit();
 
@@ -785,3 +754,23 @@ test "embedText hello" {
     try expect(results == 1);
     try expect(buf[0] == id);
 }
+
+const std = @import("std");
+const expect = std.testing.expect;
+const expectEqlStrings = std.testing.expectEqualStrings;
+const assert = std.debug.assert;
+const testing_allocator = std.testing.allocator;
+
+const embed = @import("embed.zig");
+const model = @import("model.zig");
+const vector = @import("vector.zig");
+
+const config = @import("config");
+const types = @import("types.zig");
+const vec_sz = types.vec_sz;
+const vec_type = types.vec_type;
+const Vector = types.Vector;
+const VectorID = types.VectorID;
+
+const NoteID = model.NoteID;
+const Note = model.Note;
