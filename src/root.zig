@@ -199,13 +199,18 @@ pub const Runtime = struct {
         const found_n = try self.vectors.search(query_vec, &vec_ids);
         self.debugSearchRankedResults(vec_ids[0..found_n]);
 
-        for (0..@min(found_n, buf.len)) |i| {
+        var unique_found_n: usize = 0;
+        outer: for (0..@min(found_n, buf.len)) |i| {
             // TODO: CRITICAL unsafe af casting
-            // TODO: remove duplicate notes
             // TODO: create scoring system for multiple results in one note
-            buf[i] = @as(c_int, @intCast(try self.db.vecToNote(vec_ids[i])));
+            const noteID = @as(c_int, @intCast(try self.db.vecToNote(vec_ids[i])));
+            for (0..unique_found_n) |j| {
+                if (buf[j] == noteID) continue :outer;
+            }
+            buf[unique_found_n] = noteID;
+            unique_found_n += 1;
         }
-        return found_n;
+        return unique_found_n;
     }
 
     fn debugSearchHeader(query: []const u8) void {
@@ -556,6 +561,26 @@ test "search no query orderby modified" {
     try expect(written2 == 2);
     try expect(buffer2[0] == @as(c_int, @intCast(noteID1)));
     try expect(buffer2[1] == @as(c_int, @intCast(noteID2)));
+}
+
+test "search remove duplicates" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+    });
+    defer rt.deinit();
+
+    const noteID1 = try rt.create();
+    _ = try rt.writeAll(noteID1, "pizza. pizza. pizza.");
+
+    var buffer: [10]c_int = undefined;
+    const n = try rt.search("pizza", &buffer, null);
+    try expect(n == 1);
+    try expect(buffer[0] == @as(c_int, @intCast(noteID1)));
 }
 
 test "exclude param 'empty search'" {

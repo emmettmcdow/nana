@@ -83,8 +83,8 @@ pub const DB = struct {
 
     pub fn search(self: Self, query: Vector, buf: []VectorID) !usize {
         // This scores best on the benchmark but vibes-wise it's way off
-        // const THRESHOLD = 0.35;
-        const THRESHOLD = 0.7;
+        const THRESHOLD = 0.35;
+        // const THRESHOLD = 0.7;
 
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
@@ -119,9 +119,9 @@ pub const DB = struct {
         return i;
     }
 
-    fn debugSearchSimilar(vecID: VectorID, similarity: vec_type) void {
+    fn debugSearchSimilar(vecID: VectorID, similar: vec_type) void {
         if (!config.debug) return;
-        std.debug.print("    ID({d}) similarity: {d}\n", .{ vecID, similarity });
+        std.debug.print("    ID({d}) similarity: {d}\n", .{ vecID, similar });
     }
 
     pub fn save(self: Self, path: []const u8) !void {
@@ -309,9 +309,13 @@ fn is_zero(a: Vector) bool {
     return @reduce(.And, a == zero_vec);
 }
 
-pub fn cosine_similarity(a: Vector, b: Vector) vec_type {
+fn cosine_similarity(a: Vector, b: Vector) vec_type {
     if (is_zero(a) or is_zero(b)) return 0;
     return dot(a, b) / (magnitude(a) * magnitude(b));
+}
+
+fn similarity(a: Vector, b: Vector) vec_type {
+    return cosine_similarity(a, b);
 }
 
 test "cosine orthogonal" {

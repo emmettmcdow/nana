@@ -37,6 +37,7 @@ pub const Embedder = struct {
         const ns_input = NSString.msgSend(Object, fromUTF8, .{null_terminated_sentence});
         // std.debug.print("String: {s}, ns_input: {}\n", .{ sentence, ns_input });
         const embedding = NLEmbedding.msgSend(Object, sentenceEmbeddingForLanguage, .{ns_lang});
+        assert(embedding.getProperty(c_int, "dimension") == vec_sz);
         var vector: []vec_type = try self.allocator.alloc(vec_type, vec_sz);
         if (!embedding.msgSend(bool, getVectorForString, .{ vector[0..vec_sz], ns_input })) {
             return null;
