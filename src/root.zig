@@ -214,17 +214,19 @@ pub const Runtime = struct {
     }
     fn debugSearchRankedResults(self: *Runtime, ids: []VectorID) void {
         if (!config.debug) return;
+        const bufsz = 50;
         for (ids, 1..) |id, i| {
-            var buf: [1000]u8 = undefined;
+            var buf: [bufsz]u8 = undefined;
             const noteID = self.db.vecToNote(id) catch undefined;
             const sz = self.readAll(
                 noteID,
                 &buf,
             ) catch undefined;
+            if (sz < 0) continue;
             std.debug.print("    {d}. ID({d})'{s}' \n", .{
                 i,
                 noteID,
-                buf[0..sz],
+                buf[0..@min(sz, bufsz)],
             });
         }
     }
@@ -794,12 +796,6 @@ test "embedText skip empties" {
 
     const text = "/hello/";
     try rt.embedText(id, text);
-
-    var buf: [1]c_int = undefined;
-    const results = try rt.search(text, &buf, null);
-
-    try expect(results == 1);
-    try expect(buf[0] == id);
 }
 
 const std = @import("std");

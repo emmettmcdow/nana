@@ -37,6 +37,7 @@ struct ContentView: View {
     @State private var text: String = ""
     @State private var queriedNotes: [Note] = []
     @State var searchVisible = false
+    @State private var searchTimer: Timer?
 
     @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
     @Environment(\.colorScheme) private var colorScheme
@@ -49,18 +50,21 @@ struct ContentView: View {
     }
 
     private func search(q: String) {
-        var ids = [Int32](repeating: 0, count: MAX_ITEMS)
-        let n = min(Int(nana_search(q, &ids, numericCast(ids.count), noteId)), MAX_ITEMS)
-        if n < 0 {
-            print("Some error occurred while searching: ", n)
-            return
-        }
-        queriedNotes = []
-        if n > 0 {
-            // I have no idea why the docs say its far-end exclusive. It's not. Am i stupid?
-            for i in 0 ... (n - 1) {
-                let id = ids[i]
-                queriedNotes.append(Note(id: id))
+        searchTimer?.invalidate()
+        searchTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { _ in
+            var ids = [Int32](repeating: 0, count: MAX_ITEMS)
+            let n = min(Int(nana_search(q, &ids, numericCast(ids.count), noteId)), MAX_ITEMS)
+            if n < 0 {
+                print("Some error occurred while searching: ", n)
+                return
+            }
+            queriedNotes = []
+            if n > 0 {
+                // I have no idea why the docs say its far-end exclusive. It's not. Am i stupid?
+                for i in 0 ... (n - 1) {
+                    let id = ids[i]
+                    queriedNotes.append(Note(id: id))
+                }
             }
         }
     }

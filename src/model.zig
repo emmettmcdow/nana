@@ -48,6 +48,8 @@ const APPEND_VECTOR =
 
 const GET_NOTEID_FROM_VECID = "SELECT note_id FROM vectors WHERE vector_id = ?;";
 
+const GET_VECS_FROM_NOTEID = "SELECT vector_id, note_id, next_vec_id, last_vec_id FROM vectors WHERE note_id = ? LIMIT ?;";
+
 const UPDATE_NOTE =
     \\UPDATE notes SET modified = ? WHERE id = ?;
 ;
@@ -85,10 +87,17 @@ pub fn genPath(noteID: NoteID, buf: []u8) []const u8 {
 }
 
 const VectorRow = struct {
-    note_id: NoteID,
     vector_id: VectorID,
+    note_id: NoteID,
     next_vec_id: ?VectorID,
     last_vec_id: ?VectorID,
+
+    fn equal(self: VectorRow, other: VectorRow) bool {
+        return self.note_id == other.note_id and
+            self.vector_id == other.vector_id and
+            self.next_vec_id == other.next_vec_id and
+            self.last_vec_id == self.last_vec_id;
+    }
 };
 
 pub const DBOpts = struct {
@@ -328,6 +337,29 @@ pub const DB = struct {
         return Error.NotFound;
     }
 
+    pub fn vecsForNote(self: *Self, noteID: NoteID, buf: []VectorRow) !usize {
+        var diags = sqlite.Diagnostics{};
+        var stmt = self.db.prepareWithDiags(GET_VECS_FROM_NOTEID, .{ .diags = &diags }) catch |err| {
+            std.log.err("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
+            return err;
+        };
+
+        defer stmt.deinit();
+
+        var iter = try stmt.iterator(VectorRow, .{
+            .note_id = noteID,
+            .limit = buf.len,
+        });
+
+        var written: usize = 0;
+        while (try iter.next(.{})) |vec| {
+            buf[written] = vec;
+            written += 1;
+        }
+
+        return written;
+    }
+
     const Table = enum { Notes, Vectors };
 
     pub fn debugShowTable(self: *Self, comptime table: Table) void {
@@ -538,6 +570,26 @@ test "appendVector + vec2note simple" {
     try expect(noteID == try db.vecToNote(42));
     // not found case
     try expect(9000 == db.vecToNote(1234) catch 9000);
+}
+
+test "appending is consecutive" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var db = try DB.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
+    defer db.deinit();
+
+    var buf: [3]VectorRow = undefined;
+
+    const noteID = try db.create();
+    try db.appendVector(noteID, 1);
+    try db.appendVector(noteID, 2);
+    try db.appendVector(noteID, 3);
+
+    const n = try db.vecsForNote(noteID, &buf);
+    try expect(n == 3);
+    try expect(buf[0].equal(.{ .note_id = noteID, .vector_id = 1, .next_vec_id = 2, .last_vec_id = null }));
+    try expect(buf[1].equal(.{ .note_id = noteID, .vector_id = 2, .next_vec_id = 3, .last_vec_id = 1 }));
+    try expect(buf[2].equal(.{ .note_id = noteID, .vector_id = 3, .next_vec_id = null, .last_vec_id = 2 }));
 }
 
 test "import note" {
