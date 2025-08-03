@@ -82,7 +82,9 @@ pub const DB = struct {
     }
 
     pub fn search(self: Self, query: Vector, buf: []VectorID) !usize {
-        const THRESHOLD = 0.35;
+        // This scores best on the benchmark but vibes-wise it's way off
+        // const THRESHOLD = 0.35;
+        const THRESHOLD = 0.7;
 
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();

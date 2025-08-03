@@ -147,6 +147,7 @@ pub const Runtime = struct {
         var it = std.mem.splitAny(u8, content, ",.!?;-()/'\"");
         var vec: Vector = undefined;
         while (it.next()) |sentence| {
+            if (sentence.len < 2) continue;
             vec = try self.embedder.embed(sentence) orelse continue;
             try self.db.appendVector(id, try self.vectors.put(vec));
             self.db.debugShowTable(.Vectors);
@@ -173,9 +174,11 @@ pub const Runtime = struct {
 
         const n = try f.readAll(buf);
 
-        if (n == buf.len) {
+        // Save space for the null-terminator
+        if (n >= buf.len - 1) {
             return Error.BufferTooSmall;
         }
+        buf[n] = 0;
 
         return n;
     }
@@ -302,6 +305,27 @@ test "modify on write" {
     try expect(n2.created != n2.modified);
 }
 
+test "readAll null-term" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
+    defer rt.deinit();
+
+    const noteID = try rt.create();
+    try rt.writeAll(noteID, "1234");
+
+    var buf: [20]u8 = [_]u8{'1'} ** 20;
+    _ = try rt.readAll(noteID, &buf);
+    assert(buf[3] == '4');
+    assert(buf[4] == 0);
+}
+
 test "no modify on read" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
@@ -363,7 +387,7 @@ test "r/w-all note" {
     var expected = "Contents of a note!";
     try rt.writeAll(noteID, expected[0..]);
 
-    var buffer: [20]u8 = undefined;
+    var buffer: [21]u8 = undefined;
     const n = try rt.readAll(noteID, &buffer);
 
     try std.testing.expectEqualStrings(expected, buffer[0..n]);
@@ -746,6 +770,29 @@ test "embedText hello" {
     const id = try rt.create();
 
     const text = "hello";
+    try rt.embedText(id, text);
+
+    var buf: [1]c_int = undefined;
+    const results = try rt.search(text, &buf, null);
+
+    try expect(results == 1);
+    try expect(buf[0] == id);
+}
+
+test "embedText skip empties" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+    });
+    defer rt.deinit();
+
+    const id = try rt.create();
+
+    const text = "/hello/";
     try rt.embedText(id, text);
 
     var buf: [1]c_int = undefined;

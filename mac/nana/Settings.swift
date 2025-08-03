@@ -9,7 +9,7 @@ import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
 
-#if DEBUG
+#if DISABLE_NANAKIT
     func nana_import(_: UnsafePointer<Int8>, _: Int) -> Int32 {
         return 1 // Success
     }

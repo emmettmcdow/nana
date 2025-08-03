@@ -7,39 +7,39 @@
 
 import SwiftUI
 
-#if DEBUG
-// Stub implementations for SwiftUI Previews
-func nana_create() -> Int32 {
-    return Int32.random(in: 1...1000)
-}
-
-func nana_search(_ query: String, _ ids: inout [Int32], _ maxCount: Int, _ currentNoteId: Int32) -> Int32 {
-    // Return some sample note IDs for preview
-    let sampleIds: [Int32] = [1, 2, 3, 4, 5]
-    let returnCount = min(sampleIds.count, maxCount)
-    for i in 0..<returnCount {
-        ids[i] = sampleIds[i]
+#if DISABLE_NANAKIT
+    // Stub implementations for SwiftUI Previews
+    func nana_create() -> Int32 {
+        return Int32.random(in: 1 ... 1000)
     }
-    return Int32(returnCount)
-}
 
-func nana_write_all(_ id: Int32, _ content: String) -> Int32 {
-    return 0 // Success
-}
+    func nana_search(_: String, _ ids: inout [Int32], _ maxCount: Int, _: Int32) -> Int32 {
+        // Return some sample note IDs for preview
+        let sampleIds: [Int32] = [1, 2, 3, 4, 5]
+        let returnCount = min(sampleIds.count, maxCount)
+        for i in 0 ..< returnCount {
+            ids[i] = sampleIds[i]
+        }
+        return Int32(returnCount)
+    }
+
+    func nana_write_all(_: Int32, _: String) -> Int32 {
+        return 0 // Success
+    }
 #else
-import NanaKit
+    import NanaKit
 #endif
 
+let MAX_ITEMS = 100
 
 struct ContentView: View {
     @State private var noteId: Int32
     @State private var text: String = ""
     @State private var queriedNotes: [Note] = []
     @State var searchVisible = false
-    
+
     @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
     @Environment(\.colorScheme) private var colorScheme
-
 
     init() {
         let newId = nana_create()
@@ -47,11 +47,28 @@ struct ContentView: View {
         noteId = newId
         noteId = 1
     }
-    
+
+    private func search(q: String) {
+        var ids = [Int32](repeating: 0, count: MAX_ITEMS)
+        let n = min(Int(nana_search(q, &ids, numericCast(ids.count), noteId)), MAX_ITEMS)
+        if n < 0 {
+            print("Some error occurred while searching: ", n)
+            return
+        }
+        queriedNotes = []
+        if n > 0 {
+            // I have no idea why the docs say its far-end exclusive. It's not. Am i stupid?
+            for i in 0 ... (n - 1) {
+                let id = ids[i]
+                queriedNotes.append(Note(id: id))
+            }
+        }
+    }
+
     var body: some View {
         let palette = Palette.forPreference(preference, colorScheme: colorScheme)
-        
-        ZStack() {
+
+        ZStack {
             TextEditor(text: $text)
                 .font(.system(size: 14))
                 .foregroundColor(palette.foreground)
@@ -61,25 +78,12 @@ struct ContentView: View {
                 .background(palette.background)
                 .scrollIndicators(.never)
 
-            HStack() {
+            HStack {
                 Spacer()
-                VStack() {
+                VStack {
                     Spacer()
                     SearchButton(onClick: {
-                        var ids = Array<Int32>(repeating: 0, count: 100)
-                        let n = nana_search("", &ids, numericCast(ids.count), noteId)
-                        if (n < 0 ) {
-                            print("Some error occurred while searching: ", n)
-                            return
-                        }
-                        queriedNotes = []
-                        if (n > 0) {
-                            // I have no idea why the docs say its far-end exclusive. It's not. Am i stupid?
-                            for i in 0...Int(n-1) {
-                                let id = ids[i]
-                                queriedNotes.append(Note(id: id))
-                            }
-                        }
+                        search(q: "")
                         searchVisible.toggle()
                     })
                     CircularPlusButton(action: {
@@ -94,31 +98,21 @@ struct ContentView: View {
             }.padding()
             if searchVisible {
                 FileList(notes: $queriedNotes,
-                         onSelect: {(note: Note) -> Void in
-                    if (text.count > 0) {
-                        // Save the current buffer
-                        let res = nana_write_all(noteId, text)
-                        assert(res == 0, "Failed to write all")
-                    }
-                    
-                    noteId = note.id
-                    text = note.content
-                    searchVisible.toggle()
-                }, onChange: {(q: String) -> Void in
-                    print(q)
-                    /*
-                    var ids = Array<Int32>(repeating: 0, count: 100)
-                    let n = nana_search(q, &ids, numericCast(ids.count), noteId)
-                    queriedNotes = []
-                    if (n > 0) {
-                        for i in 0...Int(n-1) {
-                            let id = ids[i]
-                            queriedNotes.append(Note(id: id))
-                        }
-                    }*/
-                }, closeList: {() -> Void in
-                    searchVisible.toggle()
-                })
+                         onSelect: { (note: Note) in
+                             if text.count > 0 {
+                                 // Save the current buffer
+                                 let res = nana_write_all(noteId, text)
+                                 assert(res == 0, "Failed to write all")
+                             }
+
+                             noteId = note.id
+                             text = note.content
+                             searchVisible.toggle()
+                         }, onChange: { (q: String) in
+                             search(q: q)
+                         }, closeList: { () in
+                             searchVisible.toggle()
+                         })
             }
         }
         .background(palette.background)
@@ -131,7 +125,6 @@ struct ContentView: View {
         }())
     }
 }
-
 
 #Preview("Editor") {
     ContentView()

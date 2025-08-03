@@ -39,7 +39,7 @@ pub const Embedder = struct {
         const embedding = NLEmbedding.msgSend(Object, sentenceEmbeddingForLanguage, .{ns_lang});
         var vector: []vec_type = try self.allocator.alloc(vec_type, vec_sz);
         if (!embedding.msgSend(bool, getVectorForString, .{ vector[0..vec_sz], ns_input })) {
-            unreachable;
+            return null;
         }
 
         return vector[0..vec_sz].*;
@@ -82,6 +82,16 @@ test "embed skip empty" {
     var e = try Embedder.init(allocator);
 
     _ = try e.embed("Hello world") orelse assert(false);
+}
+
+test "embed skip failures" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var e = try Embedder.init(allocator);
+
+    _ = try e.embed("(*^(*&(# 4327897493287498*&)(FKJDHDHLKDJHLKFHKLFHD") orelse assert(false);
 }
 
 const std = @import("std");

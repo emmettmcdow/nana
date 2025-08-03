@@ -8,8 +8,8 @@
 import Foundation
 import SwiftUI
 
-#if DEBUG
-    func nana_init(_: UnsafePointer<Int8>, _: UInt32, _: UnsafePointer<Int8>, _: UInt32) -> Int {
+#if DISABLE_NANAKIT
+    func nana_init(_: UnsafePointer<Int8>, _: UInt32) -> Int {
         return 0
     }
 #else
