@@ -1,16 +1,80 @@
+pub const Error = error{MultipleRemove};
+
+const latest_format_version = 1;
+const v1_meta: StorageMetadata = .{
+    .fmt_v = latest_format_version,
+    .vec_sz = vec_sz,
+    .vec_type = BinaryTypeRepresentation.to_binary(vec_type),
+    .idx_type = BinaryTypeRepresentation.to_binary(u8),
+    .vec_n = 0,
+};
+
+// **************************************************************************************** Helpers
+// Endianness doesn't matter since we only check whether the value is 0 or not... for now
+pub inline fn writeSlice(
+    w: *FileWriter,
+    slice: []u8,
+) !void {
+    for (slice) |byte| {
+        try w.writeByte(byte);
+    }
+}
+
+pub inline fn readSlice(
+    r: *FileReader,
+    buf: []u8,
+) !void {
+    for (0..buf.len) |i| {
+        buf[i] = try r.readByte();
+    }
+}
+
+pub inline fn end_i(s: []u8) usize {
+    for (1..s.len + 1) |rev_i| {
+        const i = s.len - rev_i;
+        if (s[i] != 0) return i + 1;
+    }
+    return 0;
+}
+
+pub inline fn readVec(v: *Vector, r: *FileReader, endian: std.builtin.Endian) !void {
+    for (0..v1_meta.vec_sz) |j| {
+        const elem = r.readInt(v1_meta.vec_type.stored_as(), endian) catch |err| {
+            std.debug.print("Error: {}\n", .{err});
+            return err;
+        };
+        const converted = @as(v1_meta.vec_type.to_type(), @bitCast(elem));
+        v[j] = converted;
+    }
+}
+
+pub inline fn writeVec(v: Vector, w: *FileWriter, endian: std.builtin.Endian) !void {
+    const array: [vec_sz]vec_type = v;
+    for (array) |elem| {
+        try w.writeInt(
+            v1_meta.vec_type.stored_as(),
+            @bitCast(elem),
+            endian,
+        );
+    }
+}
+
 // ********************************************************************************************* DB
 pub const BinaryTypeRepresentation = enum(u8) {
     float32,
+    uint8,
 
     pub inline fn to_type(self: BinaryTypeRepresentation) type {
         switch (self) {
             .float32 => return f32,
+            .uint8 => return u8,
         }
     }
 
     pub inline fn to_binary(T: type) BinaryTypeRepresentation {
         switch (T) {
             f32 => return .float32,
+            u8 => return .uint8,
             else => undefined,
         }
     }
@@ -18,20 +82,25 @@ pub const BinaryTypeRepresentation = enum(u8) {
     pub inline fn stored_as(self: BinaryTypeRepresentation) type {
         switch (self) {
             .float32 => return u32,
+            .uint8 => return u8,
         }
     }
 };
 
+/// This is the metadata we need to determine what the binary format of the rest of the file looks
+/// like. Nothing dynamic should be in here. Only fixed-size data.
 pub const StorageMetadata = packed struct {
-    // Big if true
+    /// Big if true
     endian: bool = true,
-    // This defines what version of the storage metadata to use
+    /// This defines what version of the storage metadata to use
     fmt_v: u8,
-    // Dimensionality
+    /// Dimensionality
     vec_sz: usize,
-    // Binary representation of a Zig type
+    /// Type of the elements in the vectors. Binary representation of a Zig type
     vec_type: BinaryTypeRepresentation,
-    // Number of vectors
+    /// Type of the elements in the index. Binary representation of a Zig type
+    idx_type: BinaryTypeRepresentation,
+    /// Number of vectors
     vec_n: usize,
 
     const Self = @This();
@@ -44,21 +113,36 @@ pub const StorageMetadata = packed struct {
         }
     }
 };
-
-const assert = std.debug.assert;
+//  ___Index____ ___Vecs____
+// |___________||__________|
+// |1  |0  |1  |v1 |nil|v2 |
+// |___|___|___|___|___|___|
+//
+//  Each index corresponds to a single index within the vector array.
+//  The integer will be non-zero if that vector index is occupied, zero otherwise.
 pub const DB = struct {
     meta: StorageMetadata = v1_meta,
+    index: []u8,
     vectors: []Vector,
     capacity: usize,
     allocator: std.mem.Allocator,
     dir: std.fs.Dir,
 
+    const Opts = struct {
+        sz: usize = 32,
+    };
+
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, dir: std.fs.Dir) !Self {
+    pub fn init(allocator: std.mem.Allocator, dir: std.fs.Dir, opts: Opts) !Self {
+        const vecs = try allocator.alloc(Vector, opts.sz);
+        @memset(vecs, std.mem.zeroes(Vector));
+        const idx = try allocator.alloc(u8, opts.sz);
+        @memset(idx, 0);
         return DB{
-            .vectors = try allocator.alloc(Vector, 32),
-            .capacity = 32,
+            .vectors = vecs,
+            .index = idx,
+            .capacity = opts.sz,
             .allocator = allocator,
             .dir = dir,
         };
@@ -68,17 +152,30 @@ pub const DB = struct {
     }
 
     pub fn get(self: Self, id: VectorID) Vector {
-        return self.vectors[id - 1];
+        return self.vectors[id];
     }
 
     pub fn put(self: *Self, v: Vector) !VectorID {
-        if (self.meta.vec_n + 1 == self.capacity) {
-            self.vectors = try self.allocator.realloc(self.vectors, self.capacity * 2);
-            self.capacity *= 2;
-        }
-        self.vectors[self.meta.vec_n] = v;
+        const new_id = self.nextIndex();
+        assert(self.index[new_id] == 0);
         self.meta.vec_n += 1;
-        return self.meta.vec_n;
+
+        try self.grow();
+
+        self.putAt(v, new_id);
+        return new_id;
+    }
+
+    fn putAt(self: *Self, v: Vector, id: usize) void {
+        self.vectors[id] = v;
+        self.index[id] = 1;
+    }
+
+    pub fn rm(self: *Self, id: VectorID) !void {
+        if (self.index[id] == 0) return Error.MultipleRemove;
+        assert(self.meta.vec_n > 0);
+        self.index[id] = 0;
+        self.meta.vec_n -= 1;
     }
 
     pub fn search(self: Self, query: Vector, buf: []VectorID) !usize {
@@ -102,7 +199,8 @@ pub const DB = struct {
 
         var pq = std.PriorityQueue(entry, void, entry.order).init(arena.allocator(), undefined);
 
-        for (1..self.meta.vec_n + 1) |id| {
+        for (self.index, 0..) |valid, id| {
+            if (valid == 0) continue;
             const similar = cosine_similarity(self.get(id), query);
             debugSearchSimilar(id, similar);
             if (similar > THRESHOLD) {
@@ -132,16 +230,9 @@ pub const DB = struct {
         defer f.close();
         var writer = f.writer();
         try writer.writeStructEndian(self.meta, self.meta.endianness());
-        for (self.vectors, 0..) |vec, i| {
-            if (i >= self.meta.vec_n) break;
-            const array: [vec_sz]vec_type = vec;
-            for (array) |elem| {
-                try writer.writeInt(
-                    v1_meta.vec_type.stored_as(),
-                    @bitCast(elem),
-                    self.meta.endianness(),
-                );
-            }
+        try writeSlice(&writer, self.index);
+        for (0..end_i(self.index)) |i| {
+            try writeVec(self.vectors[i], &writer, self.meta.endianness());
         }
 
         return;
@@ -170,22 +261,42 @@ pub const DB = struct {
         assert(self.meta.fmt_v == v1_meta.fmt_v);
         assert(self.meta.vec_sz == v1_meta.vec_sz);
         assert(self.meta.vec_type == v1_meta.vec_type);
+        assert(self.meta.idx_type == v1_meta.idx_type);
 
-        // Reset the number of vectors - put increments the size
-        const vec_n = self.meta.vec_n;
-        self.meta.vec_n = 0;
-        for (0..vec_n) |_| {
+        try self.grow();
+        try readSlice(&reader, self.index);
+
+        for (0..end_i(self.index)) |i| {
             var v: Vector = undefined;
-            for (0..v1_meta.vec_sz) |j| {
-                const elem = try reader.readInt(v1_meta.vec_type.stored_as(), endian);
-                const converted = @as(v1_meta.vec_type.to_type(), @bitCast(elem));
-                v[j] = converted;
-            }
-            // Improvement: we know the sz of the vectors. Alloc once instead of realloc with put.
-            _ = try self.put(v);
+            if (self.index[i] == 0) continue;
+            try readVec(&v, &reader, endian);
+            self.putAt(v, i);
         }
 
         return self.*;
+    }
+
+    /// Locates the next empty index for a vector. Prioritizes filling holes in the arrays.
+    fn nextIndex(self: *Self) usize {
+        for (self.index, 0..) |v, i| {
+            if (v == 0) return i;
+        }
+        unreachable;
+    }
+
+    /// Grows the backing data structure to fit the `self.meta.vec_n`.
+    fn grow(self: *Self) !void {
+        var sz = self.capacity;
+        while (self.meta.vec_n >= sz) {
+            sz *= 2;
+        }
+        if (sz == self.capacity) return;
+
+        self.index = try self.allocator.realloc(self.index, sz);
+        @memset(self.index[self.capacity..], 0);
+        self.vectors = try self.allocator.realloc(self.vectors, sz);
+        @memset(self.vectors[self.capacity..], std.mem.zeroes(Vector));
+        self.capacity = sz;
     }
 };
 
@@ -199,7 +310,7 @@ test "test put / get" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    var inst = try DB.init(arena.allocator(), tmpD.dir);
+    var inst = try DB.init(arena.allocator(), tmpD.dir, .{});
     try expect(inst.meta.vec_n == 0);
     const vec1 = Vector{ 1, 1, 1 };
     const id = try inst.put(vec1);
@@ -215,7 +326,7 @@ test "re-init DB" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    var inst = try DB.init(arena.allocator(), tmpD.dir);
+    var inst = try DB.init(arena.allocator(), tmpD.dir, .{});
     try expect(inst.meta.vec_n == 0);
     const vec1 = Vector{ 1, 1, 1 };
     const id = try inst.put(vec1);
@@ -223,7 +334,7 @@ test "re-init DB" {
     try inst.save("temp.db");
     inst.deinit();
 
-    var inst2 = try DB.init(arena.allocator(), tmpD.dir);
+    var inst2 = try DB.init(arena.allocator(), tmpD.dir, .{});
     inst2 = try inst2.load("temp.db");
     try expect(inst2.meta.vec_n == 1);
     const vec2 = inst2.get(id);
@@ -244,7 +355,7 @@ test "re-init DB multiple" {
         .{ -0.5, -0.5, -0.5 },
     };
 
-    var inst = try DB.init(arena.allocator(), tmpD.dir);
+    var inst = try DB.init(arena.allocator(), tmpD.dir, .{});
     try expect(inst.meta.vec_n == 0);
     for (vecs) |vec| {
         _ = try inst.put(vec);
@@ -253,13 +364,55 @@ test "re-init DB multiple" {
     try inst.save("temp.db");
     inst.deinit();
 
-    var inst2 = try DB.init(arena.allocator(), tmpD.dir);
+    var inst2 = try DB.init(arena.allocator(), tmpD.dir, .{});
     inst2 = try inst2.load("temp.db");
     try expect(inst2.meta.vec_n == vecs.len);
-    for (1..vecs.len) |i| {
-        const vec2 = inst2.get(i);
-        try expect(@reduce(.And, vecs[i - 1] == vec2));
+    for (0..vecs.len - 1) |i| {
+        try expect(@reduce(.And, vecs[i] == inst2.get(i)));
     }
+    inst2.deinit();
+}
+
+test "re-init DB index" {
+    var tmpD = tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    const vecs: [4]Vector = .{
+        .{ 1, 1, 1 },
+        .{ 1, 2, 3 },
+        .{ 0.5, 0.5, 0.5 },
+        .{ -0.5, -0.5, -0.5 },
+    };
+    var ids: [4]VectorID = undefined;
+
+    var inst = try DB.init(arena.allocator(), tmpD.dir, .{});
+    try expect(inst.meta.vec_n == 0);
+    for (vecs, 0..) |vec, i| {
+        ids[i] = try inst.put(vec);
+    }
+    for (inst.index[0..4]) |val| {
+        try expect(val != 0);
+    }
+    try inst.rm(ids[0]);
+    try inst.rm(ids[2]);
+
+    try expect(inst.index[0] == 0);
+    try expect(inst.index[1] == 1);
+    try expect(inst.index[2] == 0);
+    try expect(inst.index[3] == 1);
+    try expect(inst.meta.vec_n == vecs.len - 2);
+    try inst.save("temp.db");
+    inst.deinit();
+
+    var inst2 = try DB.init(arena.allocator(), tmpD.dir, .{});
+    inst2 = try inst2.load("temp.db");
+    try expect(inst2.meta.vec_n == vecs.len - 2);
+    try expect(inst2.index[0] == 0);
+    try expect(inst2.index[1] == 1);
+    try expect(inst2.index[2] == 0);
+    try expect(inst2.index[3] == 1);
     inst2.deinit();
 }
 
@@ -269,7 +422,7 @@ test "test put resize" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    var inst = try DB.init(arena.allocator(), tmpD.dir);
+    var inst = try DB.init(arena.allocator(), tmpD.dir, .{});
     try expect(inst.meta.vec_n == 0);
     try expect(inst.capacity == 32);
 
@@ -290,9 +443,38 @@ test "no failure on loading non-existent db" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    var inst = try DB.init(arena.allocator(), tmpD.dir);
+    var inst = try DB.init(arena.allocator(), tmpD.dir, .{});
     _ = try inst.load("vecs.db");
     inst.deinit();
+}
+
+test "grow" {
+    var tmpD = tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    var inst = try DB.init(arena.allocator(), tmpD.dir, .{ .sz = 1 });
+    try inst.grow();
+    try expect(inst.capacity == 1);
+    try expect(inst.vectors.len == 1);
+    try expect(inst.index.len == 1);
+    _ = try inst.put(std.mem.zeroes(Vector));
+    try expect(inst.capacity == 2);
+    try expect(inst.vectors.len == 2);
+    try expect(inst.index.len == 2);
+    _ = try inst.put(std.mem.zeroes(Vector));
+    try expect(inst.capacity == 4);
+    try expect(inst.vectors.len == 4);
+    try expect(inst.index.len == 4);
+    _ = try inst.put(std.mem.zeroes(Vector));
+    try expect(inst.capacity == 4);
+    try expect(inst.vectors.len == 4);
+    try expect(inst.index.len == 4);
+    try expect(inst.index[0] == 1);
+    try expect(inst.index[1] == 1);
+    try expect(inst.index[2] == 1);
+    try expect(inst.index[3] == 0);
 }
 
 // **************************************************************************************** Vectors
@@ -369,6 +551,10 @@ test "cosine zero-vec" {
 }
 
 const std = @import("std");
+const assert = std.debug.assert;
+const FileWriter = std.fs.File.Writer;
+const FileReader = std.fs.File.Reader;
+const native_endian = std.builtin.cpu.arch.endian();
 
 const config = @import("config");
 const types = @import("types.zig");
@@ -376,11 +562,3 @@ const Vector = types.Vector;
 const VectorID = types.VectorID;
 const vec_sz = types.vec_sz;
 const vec_type = types.vec_type;
-
-const latest_format_version = 1;
-const v1_meta: StorageMetadata = .{
-    .fmt_v = latest_format_version,
-    .vec_sz = vec_sz,
-    .vec_type = BinaryTypeRepresentation.to_binary(vec_type),
-    .vec_n = 0,
-};

@@ -48,7 +48,8 @@ const APPEND_VECTOR =
 
 const GET_NOTEID_FROM_VECID = "SELECT note_id FROM vectors WHERE vector_id = ?;";
 
-const GET_VECS_FROM_NOTEID = "SELECT vector_id, note_id, next_vec_id, last_vec_id FROM vectors WHERE note_id = ? LIMIT ?;";
+const GET_VECS_FROM_NOTEID = "SELECT vector_id, note_id, next_vec_id, last_vec_id FROM vectors WHERE note_id = ?;";
+const DELETE_VEC = "DELETE FROM vectors WHERE vector_id = ?;";
 
 const UPDATE_NOTE =
     \\UPDATE notes SET modified = ? WHERE id = ?;
@@ -97,6 +98,21 @@ const VectorRow = struct {
             self.vector_id == other.vector_id and
             self.next_vec_id == other.next_vec_id and
             self.last_vec_id == self.last_vec_id;
+    }
+};
+
+const VectorIterator = struct {
+    stmt: sqlite.StatementType(.{}, GET_VECS_FROM_NOTEID),
+    it: Iterator(VectorRow),
+
+    const Self = @This();
+
+    pub fn deinit(self: *Self) void {
+        self.stmt.deinit();
+    }
+
+    pub fn next(self: *Self) !?VectorRow {
+        return self.it.next(.{});
     }
 };
 
@@ -337,27 +353,24 @@ pub const DB = struct {
         return Error.NotFound;
     }
 
-    pub fn vecsForNote(self: *Self, noteID: NoteID, buf: []VectorRow) !usize {
+    pub fn vecsForNote(self: *Self, noteID: NoteID) !VectorIterator {
         var diags = sqlite.Diagnostics{};
         var stmt = self.db.prepareWithDiags(GET_VECS_FROM_NOTEID, .{ .diags = &diags }) catch |err| {
             std.log.err("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
             return err;
         };
+        return .{ .stmt = stmt, .it = try stmt.iterator(VectorRow, .{ .note_id = noteID }) };
+    }
 
+    pub fn deleteVec(self: *Self, vID: VectorID) !void {
+        var diags = sqlite.Diagnostics{};
+        var stmt = self.db.prepareWithDiags(DELETE_VEC, .{ .diags = &diags }) catch |err| {
+            std.log.err("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
+            return err;
+        };
         defer stmt.deinit();
 
-        var iter = try stmt.iterator(VectorRow, .{
-            .note_id = noteID,
-            .limit = buf.len,
-        });
-
-        var written: usize = 0;
-        while (try iter.next(.{})) |vec| {
-            buf[written] = vec;
-            written += 1;
-        }
-
-        return written;
+        return stmt.exec(.{}, .{ .vector_id = vID });
     }
 
     const Table = enum { Notes, Vectors };
@@ -578,18 +591,31 @@ test "appending is consecutive" {
     var db = try DB.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
     defer db.deinit();
 
-    var buf: [3]VectorRow = undefined;
-
     const noteID = try db.create();
     try db.appendVector(noteID, 1);
     try db.appendVector(noteID, 2);
     try db.appendVector(noteID, 3);
 
-    const n = try db.vecsForNote(noteID, &buf);
+    const buf: [3]VectorRow = .{
+        .{ .note_id = noteID, .vector_id = 1, .next_vec_id = 2, .last_vec_id = null },
+        .{ .note_id = noteID, .vector_id = 2, .next_vec_id = 3, .last_vec_id = 1 },
+        .{ .note_id = noteID, .vector_id = 3, .next_vec_id = null, .last_vec_id = 2 },
+    };
+
+    var n: usize = 0;
+    var it = try db.vecsForNote(noteID);
+    defer it.deinit();
+    outer: while (try it.next()) |row| {
+        n += 1;
+        for (buf) |vr| {
+            if (row.vector_id == vr.vector_id) {
+                try expect(row.equal(vr));
+                continue :outer;
+            }
+        }
+        try expect(false);
+    }
     try expect(n == 3);
-    try expect(buf[0].equal(.{ .note_id = noteID, .vector_id = 1, .next_vec_id = 2, .last_vec_id = null }));
-    try expect(buf[1].equal(.{ .note_id = noteID, .vector_id = 2, .next_vec_id = 3, .last_vec_id = 1 }));
-    try expect(buf[2].equal(.{ .note_id = noteID, .vector_id = 3, .next_vec_id = null, .last_vec_id = 2 }));
 }
 
 test "import note" {
@@ -610,10 +636,37 @@ test "import note" {
     try expectEqlStrings(note.path, "/foo/bar/path");
 }
 
+test "deleteVec" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var db = try DB.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
+    defer db.deinit();
+
+    const noteID = try db.create();
+    try db.appendVector(noteID, 1);
+    try db.appendVector(noteID, 2);
+    try db.appendVector(noteID, 3);
+
+    var it = try db.vecsForNote(noteID);
+    while (try it.next()) |row| {
+        try db.deleteVec(row.vector_id);
+    }
+    it.deinit();
+
+    var n: usize = 0;
+    it = try db.vecsForNote(noteID);
+    while (try it.next()) |_| {
+        n += 1;
+    }
+    it.deinit();
+    try expect(n == 0);
+}
+
 test "delete note" {} // TODO
 
 const std = @import("std");
 const sqlite = @import("sqlite");
+const Iterator = sqlite.Iterator;
 
 const types = @import("types.zig");
 const VectorID = types.VectorID;

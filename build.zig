@@ -16,6 +16,8 @@ const xc_fw_path = "macos/NanaKit.xcframework";
 
 pub fn build(b: *std.Build) !void {
     const debug = b.option(bool, "debug-output", "Show debug output") orelse false;
+    // Need to find a way to merge this with existing filtering per compilation unit
+    // const test_filter = b.option([]const u8, "test-filter", "Skip tests that do not match any filter") orelse &[]const u8{};
     const optimize = b.standardOptimizeOption(.{});
 
     const install_step = b.getInstallStep();

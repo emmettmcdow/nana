@@ -23,7 +23,7 @@ pub const Runtime = struct {
         });
 
         const embedder = try embed.Embedder.init(allocator);
-        var vectors = try vector.DB.init(allocator, opts.basedir);
+        var vectors = try vector.DB.init(allocator, opts.basedir, .{});
 
         return Runtime{
             .basedir = opts.basedir,
@@ -83,11 +83,21 @@ pub const Runtime = struct {
         const id = try self.db.import(created, modified, .{ .path = sourceName });
         if (self.skipEmbed) return id;
 
-        // TODO: don't use a MB of stack space...
-        // TODO: instead of using the copy function, could we embed whilst copying?
-        var buf: [1_000_000]u8 = undefined;
-        const sz = try self.readAll(id, &buf);
-        try self.embedText(id, buf[0..sz]);
+        var bufsz: usize = 64;
+        var buf = try self.allocator.alloc(u8, bufsz);
+        defer self.allocator.free(buf);
+        while (true) {
+            const sz = self.readAll(id, buf[0..bufsz]) catch |e| switch (e) {
+                Error.BufferTooSmall => {
+                    bufsz = try std.math.mul(usize, bufsz, 2);
+                    if (!self.allocator.resize(buf, bufsz)) return OutOfMemory;
+                    continue;
+                },
+                else => |leftover_err| return leftover_err,
+            };
+            try self.embedText(id, buf[0..sz]);
+            break;
+        }
 
         return id;
     }
@@ -127,7 +137,7 @@ pub const Runtime = struct {
         defer f.close();
         try f.writeAll(content);
 
-        // TODO: can we flag this to be removed in prod?
+        // can we flag this to be removed in prod?
         if (self.skipEmbed) {
             try self.update(id);
             return;
@@ -139,21 +149,23 @@ pub const Runtime = struct {
         return;
     }
 
-    // TODO: does this clear out previous embedding?
     fn embedText(self: *Runtime, id: NoteID, content: []const u8) !void {
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer arena.deinit();
+        var vecs = try self.db.vecsForNote(id);
+        defer vecs.deinit();
+        while (try vecs.next()) |v| {
+            try self.db.deleteVec(v.vector_id);
+            try self.vectors.rm(v.vector_id);
+        }
 
         var it = std.mem.splitAny(u8, content, ",.!?;-()/'\"");
-        var vec: Vector = undefined;
         while (it.next()) |sentence| {
             if (sentence.len < 2) continue;
-            vec = try self.embedder.embed(sentence) orelse continue;
+            const vec = try self.embedder.embed(sentence) orelse continue;
             try self.db.appendVector(id, try self.vectors.put(vec));
             self.db.debugShowTable(.Vectors);
         }
 
-        // TODO: be more efficient - don't save all of the vectors on every write
+        // be more efficient - don't save all of the vectors on every write
         try self.vectors.save(VECTOR_DB_PATH);
     }
 
@@ -201,7 +213,6 @@ pub const Runtime = struct {
 
         var unique_found_n: usize = 0;
         outer: for (0..@min(found_n, buf.len)) |i| {
-            // TODO: CRITICAL unsafe af casting
             // TODO: create scoring system for multiple results in one note
             const noteID = @as(c_int, @intCast(try self.db.vecToNote(vec_ids[i])));
             for (0..unique_found_n) |j| {
@@ -222,11 +233,11 @@ pub const Runtime = struct {
         const bufsz = 50;
         for (ids, 1..) |id, i| {
             var buf: [bufsz]u8 = undefined;
-            const noteID = self.db.vecToNote(id) catch undefined;
+            const noteID = self.db.vecToNote(id) catch unreachable;
             const sz = self.readAll(
                 noteID,
                 &buf,
-            ) catch undefined;
+            ) catch unreachable;
             if (sz < 0) continue;
             std.debug.print("    {d}. ID({d})'{s}' \n", .{
                 i,
@@ -525,7 +536,6 @@ test "search no query" {
 
     i = 0;
     while (i < 9) : (i += 1) {
-        // std.debug.print("Want: {d}, Got: {d}\n", .{ i + 1, output[i] });
         try expect(buffer[8 - i] == @as(c_int, @intCast(i + 1)));
     }
 }
@@ -823,7 +833,30 @@ test "embedText skip empties" {
     try rt.embedText(id, text);
 }
 
+test "embedText clear previous" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+    });
+    defer rt.deinit();
+
+    const id = try rt.create();
+
+    try rt.embedText(id, "hello");
+
+    var buf: [1]c_int = undefined;
+    try expect(try rt.search("hello", &buf, null) == 1);
+
+    try rt.embedText(id, "flatiron");
+    try expect(try rt.search("hello", &buf, null) == 0);
+}
+
 const std = @import("std");
+const OutOfMemory = std.mem.Allocator.Error.OutOfMemory;
 const expect = std.testing.expect;
 const expectEqlStrings = std.testing.expectEqualStrings;
 const assert = std.debug.assert;
