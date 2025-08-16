@@ -19,22 +19,24 @@ import SwiftUI
 @main
 struct nanaApp: App {
     init() {
-        #if DEBUG
-            let basedir = "./"
-        #else
-            let filemanager = FileManager.default
-            guard let url = filemanager.url(forUbiquityContainerIdentifier: "iCloud.com.mcdow.nana.dev-container") else {
-                print("Could not get url")
-                return
-            }
-            do {
-                try filemanager.startDownloadingUbiquitousItem(at: url)
-            } catch {
-                print("Could not dl url")
-                return
-            }
-            let basedir = url.path
-        #endif
+        guard let containerIdentifier = Bundle.main.object(forInfoDictionaryKey:
+        "CloudKitContainerIdentifier") as? String else {
+            print("Could not get container identifier from Info.plist")
+            return
+        }
+        print(containerIdentifier)
+        let filemanager = FileManager.default
+        guard let url = filemanager.url(forUbiquityContainerIdentifier: containerIdentifier) else {
+            print("Could not get url")
+            return
+        }
+        do {
+            try filemanager.startDownloadingUbiquitousItem(at: url)
+        } catch {
+            print("Could not dl url")
+            return
+        }
+        let basedir = url.path()
 
         let err = nana_init(basedir, UInt32(basedir.count))
         if err != 0 {

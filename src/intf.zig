@@ -32,7 +32,7 @@ export fn nana_init(
     if (std.mem.eql(u8, basedir_str, "./")) {
         path = std.process.getCwd(&buf) catch unreachable;
     } else {
-        path = basedir_str;
+        path = std.Uri.percentDecodeBackwards(&buf, basedir_str);
     }
 
     const d = std.fs.openDirAbsolute(path, .{ .iterate = true }) catch |err| {
