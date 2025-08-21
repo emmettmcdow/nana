@@ -38,8 +38,10 @@ struct ContentView: View {
     @State private var queriedNotes: [Note] = []
     @State var searchVisible = false
     @State private var searchTimer: Timer?
+    @State private var hover: Bool = false
 
     @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
+    @AppStorage("fontSize") private var fontSize: Double = 14
     @Environment(\.colorScheme) private var colorScheme
 
     init() {
@@ -73,8 +75,15 @@ struct ContentView: View {
         let palette = Palette.forPreference(preference, colorScheme: colorScheme)
 
         ZStack {
+            Group {
+                Button("") { fontSize = min(fontSize + 1, 64) }.keyboardShortcut("+")
+                Button("") { fontSize = max(fontSize - 1, 1) }.keyboardShortcut("-")
+            }
+            .opacity(0)
+            .hidden()
+
             TextEditor(text: $text)
-                .font(.system(size: 14))
+                .font(.system(size: fontSize))
                 .foregroundColor(palette.foreground)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .scrollContentBackground(.hidden)
@@ -82,24 +91,6 @@ struct ContentView: View {
                 .background(palette.background)
                 .scrollIndicators(.never)
 
-            HStack {
-                Spacer()
-                VStack {
-                    Spacer()
-                    SearchButton(onClick: {
-                        search(q: "")
-                        searchVisible.toggle()
-                    })
-                    CircularPlusButton(action: {
-                        let res = nana_write_all(noteId, text)
-                        assert(res == 0, "Failed to write all")
-                        let newId = nana_create()
-                        assert(newId > 0, "Failed to create new note")
-                        noteId = newId
-                        text = ""
-                    })
-                }
-            }.padding()
             if searchVisible {
                 FileList(notes: $queriedNotes,
                          onSelect: { (note: Note) in
@@ -117,6 +108,25 @@ struct ContentView: View {
                          }, closeList: { () in
                              searchVisible.toggle()
                          })
+            } else {
+                HStack {
+                    Spacer()
+                    VStack {
+                        Spacer()
+                        SearchButton(onClick: {
+                            search(q: "")
+                            searchVisible.toggle()
+                        })
+                        CircularPlusButton(action: {
+                            let res = nana_write_all(noteId, text)
+                            assert(res == 0, "Failed to write all")
+                            let newId = nana_create()
+                            assert(newId > 0, "Failed to create new note")
+                            noteId = newId
+                            text = ""
+                        })
+                    }
+                }.padding()
             }
         }
         .background(palette.background)

@@ -20,11 +20,11 @@ import SwiftUI
 struct nanaApp: App {
     init() {
         guard let containerIdentifier = Bundle.main.object(forInfoDictionaryKey:
-        "CloudKitContainerIdentifier") as? String else {
+            "CloudKitContainerIdentifier") as? String
+        else {
             print("Could not get container identifier from Info.plist")
             return
         }
-        print(containerIdentifier)
         let filemanager = FileManager.default
         guard let url = filemanager.url(forUbiquityContainerIdentifier: containerIdentifier) else {
             print("Could not get url")

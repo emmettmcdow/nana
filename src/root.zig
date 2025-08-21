@@ -197,8 +197,9 @@ pub const Runtime = struct {
 
     // Search should query the database and return N written
     // Parameter buf is really an array of NoteIDs. Need to use c_int though
-    // TODO: make the ignore field more complex?
     pub fn search(self: *Runtime, query: []const u8, buf: []c_int, ignore: ?NoteID) !usize {
+        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:search" });
+        defer zone.end();
         if (query.len == 0) {
             return self.db.searchNoQuery(buf, ignore);
         }
@@ -862,16 +863,16 @@ const expectEqlStrings = std.testing.expectEqualStrings;
 const assert = std.debug.assert;
 const testing_allocator = std.testing.allocator;
 
+const tracy = @import("tracy");
+
 const embed = @import("embed.zig");
 const model = @import("model.zig");
 const vector = @import("vector.zig");
-
 const config = @import("config");
 const types = @import("types.zig");
 const vec_sz = types.vec_sz;
 const vec_type = types.vec_type;
 const Vector = types.Vector;
 const VectorID = types.VectorID;
-
 const NoteID = model.NoteID;
 const Note = model.Note;

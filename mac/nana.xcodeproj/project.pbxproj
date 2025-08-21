@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C00512CF2E562A6200696F0C /* libc++.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = C00512CE2E562A6200696F0C /* libc++.tbd */; };
 		C06E67972DAC5114000B073C /* NanaKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C06E67962DAC5114000B073C /* NanaKit.xcframework */; settings = {ATTRIBUTES = (Required, ); }; };
 /* End PBXBuildFile section */
 
@@ -41,6 +42,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		C00512CE2E562A6200696F0C /* libc++.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = "libc++.tbd"; path = "Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.2.sdk/usr/lib/libc++.tbd"; sourceTree = DEVELOPER_DIR; };
 		C06E67962DAC5114000B073C /* NanaKit.xcframework */ = {isa = PBXFileReference; expectedSignature = "AppleDeveloperProgram:GMAF223AB9:Emmett McDow"; lastKnownFileType = wrapper.xcframework; name = NanaKit.xcframework; path = ../macos/NanaKit.xcframework; sourceTree = SOURCE_ROOT; };
 		C0D13D852D6ED5B200D0032D /* nana.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = nana.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C0D13D962D6ED5B500D0032D /* nanaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = nanaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -83,6 +85,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C00512CF2E562A6200696F0C /* libc++.tbd in Frameworks */,
 				C06E67972DAC5114000B073C /* NanaKit.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -128,6 +131,7 @@
 		C0E6788A2DAB2D83006CC735 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				C00512CE2E562A6200696F0C /* libc++.tbd */,
 				C06E67962DAC5114000B073C /* NanaKit.xcframework */,
 			);
 			name = Frameworks;
@@ -390,7 +394,7 @@
 				CODE_SIGN_ENTITLEMENTS = nana/nana.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"nana/Preview Content\"";
 				DEVELOPMENT_TEAM = GMAF223AB9;
 				ENABLE_PREVIEWS = YES;
@@ -416,10 +420,10 @@
 				LD_RUNPATH_SEARCH_PATHS = "";
 				LINK_WITH_STANDARD_LIBRARIES = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.2;
-				MARKETING_VERSION = 0.0.1;
+				MARKETING_VERSION = 0.0.2;
 				OTHER_LDFLAGS = "";
 				OTHER_SWIFT_FLAGS = "";
-				"OTHER_SWIFT_FLAGS[arch=*]" = "-DPREVIEW_BUILD";
+				"OTHER_SWIFT_FLAGS[arch=*]" = "-DPREVIEW_BUILD -DDISABLE_NANAKIT";
 				PREVIEW_BUILD = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = mcdow.nana;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -427,7 +431,7 @@
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SUPPORTS_MACCATALYST = NO;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DISABLE_NANAKIT";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
@@ -613,7 +617,7 @@
 				CODE_SIGN_ENTITLEMENTS = nana/nana.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"nana/Preview Content\"";
 				DEVELOPMENT_TEAM = GMAF223AB9;
 				ENABLE_PREVIEWS = YES;
@@ -637,7 +641,7 @@
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				LINK_WITH_STANDARD_LIBRARIES = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.2;
-				MARKETING_VERSION = 0.0.1;
+				MARKETING_VERSION = 0.0.2;
 				OTHER_LDFLAGS = "";
 				"OTHER_LDFLAGS[arch=*]" = "-fsanitize=address";
 				OTHER_SWIFT_FLAGS = "";
@@ -667,7 +671,7 @@
 				CODE_SIGN_ENTITLEMENTS = nana/nanaRelease.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"nana/Preview Content\"";
 				DEVELOPMENT_TEAM = GMAF223AB9;
 				ENABLE_PREVIEWS = YES;
@@ -691,7 +695,7 @@
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				LINK_WITH_STANDARD_LIBRARIES = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.2;
-				MARKETING_VERSION = 0.0.1;
+				MARKETING_VERSION = 0.0.2;
 				OTHER_LDFLAGS = "";
 				OTHER_SWIFT_FLAGS = "";
 				PREVIEW_BUILD = NO;

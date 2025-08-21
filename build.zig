@@ -71,12 +71,8 @@ pub fn build(b: *std.Build) !void {
     const xcframework = XCFramework.create(b, .{
         .name = "NanaKit",
         .out_path = xc_fw_path,
-        .libraries = &.{
-            static_lib_universal.output,
-        },
-        .headers = &.{
-            .{ .cwd_relative = "include" },
-        },
+        .libraries = &.{static_lib_universal.output},
+        .headers = &.{.{ .cwd_relative = "include" }},
     });
     xcframework.step.dependOn(static_lib_universal.step);
 
@@ -105,6 +101,12 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
     _ = ObjC.create(.{
+        .b = b,
+        .dest = root_unit_tests,
+        .target = x86_target,
+        .optimize = optimize,
+    });
+    _ = Tracy.create(.{
         .b = b,
         .dest = root_unit_tests,
         .target = x86_target,
@@ -192,6 +194,12 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
     });
+    _ = Tracy.create(.{
+        .b = b,
+        .dest = benchmark_unit_tests,
+        .target = x86_target,
+        .optimize = optimize,
+    });
     benchmark_unit_tests.root_module.addOptions("config", benchmark_options);
     const run_benchmark_unit_tests = b.addRunArtifact(benchmark_unit_tests);
     const test_benchmark = b.step("test-benchmark", "run the tests for src/benchmark.zig");
@@ -256,6 +264,12 @@ const Baselib = struct {
             .target = opts.target,
             .optimize = opts.optimize,
         });
+        _ = Tracy.create(.{
+            .b = opts.b,
+            .dest = base_nana_lib,
+            .target = opts.target,
+            .optimize = opts.optimize,
+        });
 
         // Combine Libs
         var lib_sources = [_]LazyPath{
@@ -285,11 +299,8 @@ const SQLite = struct {
     output: LazyPath,
 
     const SQLiteOptions = struct {
-        // The build
         b: *std.Build,
-        // That which we want to link with
         dest: *Step.Compile,
-        // Platform options
         target: std.Build.ResolvedTarget,
         optimize: std.builtin.OptimizeMode,
     };
@@ -316,11 +327,8 @@ const SQLite = struct {
 
 const ObjC = struct {
     const ObjCOptions = struct {
-        // The build
         b: *std.Build,
-        // That which we want to link with
         dest: *Step.Compile,
-        // Platform options
         target: std.Build.ResolvedTarget,
         optimize: std.builtin.OptimizeMode,
     };
@@ -334,6 +342,38 @@ const ObjC = struct {
         opts.dest.root_module.linkFramework("NaturalLanguage", .{});
 
         return ObjC{};
+    }
+};
+
+const Tracy = struct {
+    const TracyOptions = struct {
+        b: *std.Build,
+        dest: *Step.Compile,
+        target: std.Build.ResolvedTarget,
+        optimize: std.builtin.OptimizeMode,
+    };
+
+    pub fn create(opts: TracyOptions) Tracy {
+        const tracy_enable = if (opts.optimize == .Debug) true else false;
+        var tracy_dep = opts.b.dependency("tracy", .{
+            .target = opts.target,
+            .optimize = opts.optimize,
+            .tracy_enable = tracy_enable,
+        });
+        opts.dest.root_module.addImport("tracy", tracy_dep.module("tracy"));
+        if (!tracy_enable) {
+            return Tracy{};
+        }
+
+        opts.dest.root_module.linkLibrary(tracy_dep.artifact("tracy"));
+        opts.dest.root_module.link_libcpp = true;
+        const install_dir = std.Build.Step.InstallArtifact.Options.Dir{ .override = .{ .bin = {} } };
+        const install_tracy = opts.b.addInstallArtifact(tracy_dep.artifact("tracy"), .{
+            .dest_dir = install_dir,
+        });
+        opts.b.getInstallStep().dependOn(&install_tracy.step);
+
+        return Tracy{};
     }
 };
 

@@ -266,6 +266,9 @@ pub const DB = struct {
     }
 
     pub fn searchNoQuery(self: *Self, buf: []c_int, ignore: ?NoteID) !usize {
+        const zone = tracy.beginZone(@src(), .{ .name = "model.zig:searchNoQuery" });
+        defer zone.end();
+
         var diags = sqlite.Diagnostics{};
         var stmt = self.db.prepareWithDiags(SEARCH_NO_QUERY, .{ .diags = &diags }) catch |err| {
             std.log.err("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
@@ -667,6 +670,8 @@ test "delete note" {} // TODO
 const std = @import("std");
 const sqlite = @import("sqlite");
 const Iterator = sqlite.Iterator;
+
+const tracy = @import("tracy");
 
 const types = @import("types.zig");
 const VectorID = types.VectorID;

@@ -33,6 +33,10 @@
             .url = "git+https://github.com/mitchellh/zig-objc#3bdbabb4f79533191a3d33a6df62b61400c40848",
             .hash = "zig_objc-0.0.0-Ir_SpwUPAQDFk6tSkHUBvYrSBqTWCCkyyROrXDe9udTV",
         },
+        .tracy = .{
+            .url = "git+https://github.com/tealsnow/zig-tracy#74c75efe3576adc47846369d4df50f4f62a17597",
+            .hash = "tracy-0.0.10-Dn49m2RUAAAdadZoiLef0OCmVdUyeu5GmEzXoTAokcZl",
+        },
     },
     .paths = .{
         "build.zig",

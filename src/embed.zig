@@ -15,6 +15,8 @@ pub const Embedder = struct {
     }
 
     pub fn embed(self: *Self, sentence: []const u8) !?Vector {
+        const zone = tracy.beginZone(@src(), .{ .name = "embed.zig:embed" });
+        defer zone.end();
         const language = "en";
         // Types
         var NSString = objc.getClass("NSString").?;
@@ -103,6 +105,7 @@ const parseFromSliceLeaky = std.json.parseFromSliceLeaky;
 const objc = @import("objc");
 const Object = objc.Object;
 const Class = objc.Class;
+const tracy = @import("tracy");
 
 const types = @import("types.zig");
 const Vector = types.Vector;

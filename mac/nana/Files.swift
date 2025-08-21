@@ -12,21 +12,19 @@ struct FileList: View {
     var onSelect: (Note) -> Void
     var onChange: (String) -> Void
     var closeList: () -> Void
-    
+
     @State private var query: String = ""
     @State private var hoverClose = false
     @FocusState private var queryFocused: Bool
-    
+
     @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
     @Environment(\.colorScheme) private var colorScheme
-    
 
-    
     var body: some View {
         let palette = Palette.forPreference(preference, colorScheme: colorScheme)
-        
+
         GeometryReader { geometry in
-            ZStack() {
+            ZStack {
                 Color.black.opacity(0.3)
                     .ignoresSafeArea()
                     .onTapGesture {
@@ -51,22 +49,23 @@ struct FileList: View {
                             onChange(newtext)
                         }
                         Spacer()
-                        Button(action: {onChange("");closeList();}){
+                        Button(action: { onChange(""); closeList() }) {
                             ZStack {
                                 Circle()
                                     .fill(palette.background)
-                                    .frame(width:25, height:25)
+                                    .frame(width: 25, height: 25)
                                 Image(systemName: "xmark")
                                     .font(.system(size: 20))
                                     .foregroundColor(palette.tertiary.mix(with: .black, by: hoverClose ? 0.2 : 0.0))
                             }
-                        }.buttonStyle(PlainButtonStyle())
-                        .onHover{ _ in
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .onHover { _ in
                             self.hoverClose.toggle()
                         }
                     }
                     .padding()
-                    
+
                     Results(notes: notes, onSelect: onSelect)
                 }
                 .frame(idealWidth: 300, maxWidth: min(geometry.size.width * 0.6, 500), maxHeight: geometry.size.height * 0.6)
@@ -85,6 +84,14 @@ struct FileList: View {
             case .system: nil
             }
         }())
+        .onContinuousHover { phase in
+            switch phase {
+            case .active:
+                NSCursor.arrow.push()
+            case .ended:
+                NSCursor.pop()
+            }
+        }
     }
 }
 
@@ -104,18 +111,18 @@ struct Results: View {
     }
 }
 
-struct ResultRow: View{
+struct ResultRow: View {
     var note: Note
     var onSelect: (Note) -> Void
     @State private var isHovered = false
-    
+
     @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
     @Environment(\.colorScheme) private var colorScheme
-    
+
     var body: some View {
         let palette = Palette.forPreference(preference, colorScheme: colorScheme)
-        
-        HStack(){
+
+        HStack {
             Text(self.note.content)
                 .lineLimit(3)
                 .foregroundStyle(palette.foreground)
@@ -125,7 +132,7 @@ struct ResultRow: View{
                 .italic()
         }
         .background(palette.background.mix(with: palette.foreground, by: isHovered ? 0.1 : 0.0))
-        .onHover { hovering in
+        .onHover { _ in
             isHovered.toggle()
         }
         .onTapGesture {
@@ -158,5 +165,5 @@ let li3 = "Aenean at mauris est. Etiam felis velit, tempor a ipsum quis, ornare 
         Note(id: 5, content: li3, created: Date(), modified: Date()),
         Note(id: 6, content: li3, created: Date(), modified: Date()),
     ]
-    FileList(notes: $notes, onSelect: {(n: Note) -> Void in print(n.id)}, onChange: {(q: String) -> Void in print(q)}, closeList: {() -> Void in print("closed")})
+    FileList(notes: $notes, onSelect: { (n: Note) in print(n.id) }, onChange: { (q: String) in print(q) }, closeList: { () in print("closed") })
 }
