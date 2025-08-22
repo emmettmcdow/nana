@@ -133,7 +133,6 @@ export fn nana_search(query: [*:0]const u8, outbuf: [*c]c_int, sz: c_uint, ignor
 
 export fn nana_write_all(noteID: c_int, content: [*:0]const u8) c_int {
     const zigStyle: []const u8 = std.mem.sliceTo(content, 0);
-    std.debug.print("Write-alling {d}\n", .{noteID});
     rt.writeAll(@intCast(noteID), zigStyle) catch |err| switch (err) {
         error.FileNotFound => {
             std.log.err("Failed to write note with id '{d}': {}\n", .{ noteID, err });

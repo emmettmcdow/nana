@@ -40,8 +40,11 @@ pub const Runtime = struct {
         self.vectors.deinit();
         self.embedder.deinit();
     }
-    // FS lazy write - only create file on write
+
     pub fn create(self: *Runtime) !NoteID {
+        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:create" });
+        defer zone.end();
+
         return self.db.create();
     }
 
@@ -50,6 +53,9 @@ pub const Runtime = struct {
     };
 
     pub fn import(self: *Runtime, path: []const u8, opts: ImportOpts) !NoteID {
+        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:import" });
+        defer zone.end();
+
         var f: std.fs.File = undefined;
         if (!opts.copy) {
             f = try self.basedir.openFile(path, .{});
@@ -103,14 +109,23 @@ pub const Runtime = struct {
     }
 
     pub fn get(self: *Runtime, id: NoteID, allocator: std.mem.Allocator) !Note {
+        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:get" });
+        defer zone.end();
+
         return self.db.get(id, allocator);
     }
 
     pub fn update(self: *Runtime, noteID: NoteID) !void {
+        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:update" });
+        defer zone.end();
+
         return self.db.update(noteID);
     }
 
     pub fn delete(self: *Runtime, id: NoteID) !void {
+        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:delete" });
+        defer zone.end();
+
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
 
@@ -124,6 +139,9 @@ pub const Runtime = struct {
     }
 
     pub fn writeAll(self: *Runtime, id: NoteID, content: []const u8) !void {
+        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:writeAll" });
+        defer zone.end();
+
         if (content.len == 0) {
             return self.delete(id);
         }
@@ -150,6 +168,9 @@ pub const Runtime = struct {
     }
 
     fn embedText(self: *Runtime, id: NoteID, content: []const u8) !void {
+        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:embedText" });
+        defer zone.end();
+
         var vecs = try self.db.vecsForNote(id);
         defer vecs.deinit();
         while (try vecs.next()) |v| {
@@ -170,6 +191,9 @@ pub const Runtime = struct {
     }
 
     pub fn readAll(self: *Runtime, id: NoteID, buf: []u8) !usize {
+        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:readAll" });
+        defer zone.end();
+
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const note = try self.get(id, arena.allocator());
@@ -200,6 +224,7 @@ pub const Runtime = struct {
     pub fn search(self: *Runtime, query: []const u8, buf: []c_int, ignore: ?NoteID) !usize {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:search" });
         defer zone.end();
+
         if (query.len == 0) {
             return self.db.searchNoQuery(buf, ignore);
         }

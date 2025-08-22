@@ -45,6 +45,7 @@ pub fn build(b: *std.Build) !void {
     const embed_file = b.path("src/embed.zig");
     const vector_file = b.path("src/vector.zig");
     const benchmark_file = b.path("src/benchmark.zig");
+    const profile_file = b.path("src/profile.zig");
 
     ///////////////////
     // Build the Lib //
@@ -147,6 +148,12 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
     });
+    _ = Tracy.create(.{
+        .b = b,
+        .dest = embed_unit_tests,
+        .target = x86_target,
+        .optimize = optimize,
+    });
     const embed_options = b.addOptions();
     embed_options.addOption(usize, "vec_sz", VEC_SZ);
     embed_options.addOption(bool, "debug", debug);
@@ -173,7 +180,6 @@ pub fn build(b: *std.Build) !void {
 
     // Benchmark
     const benchmark_options = b.addOptions();
-    // benchmark_options.addOption(type, "vec_type", f32);
     benchmark_options.addOption(usize, "vec_sz", VEC_SZ);
     benchmark_options.addOption(bool, "debug", debug);
     const benchmark_unit_tests = b.addTest(.{
@@ -204,6 +210,38 @@ pub fn build(b: *std.Build) !void {
     const run_benchmark_unit_tests = b.addRunArtifact(benchmark_unit_tests);
     const test_benchmark = b.step("test-benchmark", "run the tests for src/benchmark.zig");
     test_benchmark.dependOn(&run_benchmark_unit_tests.step);
+
+    const profile_options = b.addOptions();
+    profile_options.addOption(usize, "vec_sz", VEC_SZ);
+    profile_options.addOption(bool, "debug", debug);
+    const profile_exe = b.addExecutable(.{
+        .name = "profile",
+        .root_source_file = profile_file,
+        .target = x86_target,
+        .optimize = optimize,
+    });
+    _ = SQLite.create(.{
+        .b = b,
+        .dest = profile_exe,
+        .target = x86_target,
+        .optimize = optimize,
+    });
+    _ = ObjC.create(.{
+        .b = b,
+        .dest = profile_exe,
+        .target = x86_target,
+        .optimize = optimize,
+    });
+    _ = Tracy.create(.{
+        .b = b,
+        .dest = profile_exe,
+        .target = x86_target,
+        .optimize = optimize,
+    });
+    profile_exe.root_module.addOptions("config", profile_options);
+    const run_profile = b.addRunArtifact(profile_exe);
+    const profile_step = b.step("profile", "run the profile executable");
+    profile_step.dependOn(&run_profile.step);
 
     // All
     const test_step = b.step("test", "Run unit tests");
@@ -359,6 +397,7 @@ const Tracy = struct {
             .target = opts.target,
             .optimize = opts.optimize,
             .tracy_enable = tracy_enable,
+            .tracy_callstack = 62,
         });
         opts.dest.root_module.addImport("tracy", tracy_dep.module("tracy"));
         if (!tracy_enable) {

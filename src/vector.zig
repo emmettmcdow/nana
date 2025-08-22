@@ -179,6 +179,8 @@ pub const DB = struct {
     }
 
     pub fn search(self: Self, query: Vector, buf: []VectorID) !usize {
+        const zone = tracy.beginZone(@src(), .{ .name = "vector.zig:search" });
+        defer zone.end();
         // This scores best on the benchmark but vibes-wise it's way off
         const THRESHOLD = 0.35;
         // const THRESHOLD = 0.7;
@@ -555,6 +557,8 @@ const assert = std.debug.assert;
 const FileWriter = std.fs.File.Writer;
 const FileReader = std.fs.File.Reader;
 const native_endian = std.builtin.cpu.arch.endian();
+
+const tracy = @import("tracy");
 
 const config = @import("config");
 const types = @import("types.zig");
