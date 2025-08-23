@@ -5,6 +5,7 @@
 //  Created by Emmett McDow on 2/25/25.
 //
 
+import Combine
 import SwiftUI
 
 #if DISABLE_NANAKIT
@@ -41,7 +42,6 @@ struct ContentView: View {
     @State private var hover: Bool = false
 
     @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
-    @AppStorage("fontSize") private var fontSize: Double = 14
     @Environment(\.colorScheme) private var colorScheme
 
     init() {
@@ -75,31 +75,11 @@ struct ContentView: View {
         let palette = Palette.forPreference(preference, colorScheme: colorScheme)
 
         ZStack {
-            Group {
-                Button("") { fontSize = min(fontSize + 1, 64) }.keyboardShortcut("+")
-                Button("") { fontSize = max(fontSize - 1, 1) }.keyboardShortcut("-")
-            }
-            .opacity(0)
-            .hidden()
-
-            TextEditor(text: $text)
-                .font(.system(size: fontSize))
-                .foregroundColor(palette.foreground)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .scrollContentBackground(.hidden)
-                .padding(EdgeInsets(top: 20, leading: 20, bottom: 0, trailing: 0))
-                .background(palette.background)
-                .scrollIndicators(.never)
+            Editor(text: $text, noteID: $noteId, palette: palette)
 
             if searchVisible {
                 FileList(notes: $queriedNotes,
                          onSelect: { (note: Note) in
-                             if text.count > 0 {
-                                 // Save the current buffer
-                                 let res = nana_write_all(noteId, text)
-                                 assert(res == 0, "Failed to write all")
-                             }
-
                              noteId = note.id
                              text = note.content
                              searchVisible.toggle()
@@ -118,8 +98,6 @@ struct ContentView: View {
                             searchVisible.toggle()
                         })
                         CircularPlusButton(action: {
-                            let res = nana_write_all(noteId, text)
-                            assert(res == 0, "Failed to write all")
                             let newId = nana_create()
                             assert(newId > 0, "Failed to create new note")
                             noteId = newId
@@ -137,6 +115,63 @@ struct ContentView: View {
             case .system: nil
             }
         }())
+    }
+}
+
+struct Editor: View {
+    @Binding var text: String
+    @Binding var noteID: Int32
+
+    let palette: Palette
+    @StateObject private var textObserver = TextFieldObserver()
+
+    @AppStorage("fontSize") private var fontSize: Double = 14
+
+    var body: some View {
+        ZStack {
+            Group {
+                Button("") { fontSize = min(fontSize + 1, 64) }.keyboardShortcut("+")
+                Button("") { fontSize = max(fontSize - 1, 1) }.keyboardShortcut("-")
+            }
+            .opacity(0)
+            .hidden()
+
+            TextEditor(text: $text)
+                .font(.system(size: fontSize))
+                .foregroundColor(palette.foreground)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .scrollContentBackground(.hidden)
+                .padding(EdgeInsets(top: 20, leading: 20, bottom: 0, trailing: 0))
+                .background(palette.background)
+                .scrollIndicators(.never)
+                .onAppear {
+                    textObserver.text = text
+                    textObserver.noteID = noteID
+                }
+                .onChange(of: text) { newValue in
+                    textObserver.text = newValue
+                }
+                .onChange(of: noteID) { newValue in
+                    textObserver.noteID = newValue
+                }
+        }
+    }
+}
+
+class TextFieldObserver: ObservableObject {
+    @Published var text = ""
+    @Published var noteID: Int32 = -1
+
+    private var subscriptions = Set<AnyCancellable>()
+
+    init() {
+        $text
+            .debounce(for: .seconds(1), scheduler: DispatchQueue.main)
+            .sink(receiveValue: { [weak self] t in
+                guard let self = self else { return }
+                let res = nana_write_all(self.noteID, t)
+                assert(res == 0, "Failed to write all")
+            })
     }
 }
 

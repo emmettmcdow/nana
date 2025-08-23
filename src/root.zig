@@ -151,8 +151,13 @@ pub const Runtime = struct {
 
         const note = try self.get(id, arena.allocator());
 
-        const f = try self.basedir.createFile(note.path, .{ .read = true, .truncate = true });
+        const f = try self.basedir.createFile(note.path, .{ .read = true, .truncate = false });
         defer f.close();
+
+        if (try isUnchanged(f, content)) return;
+
+        try f.seekTo(0);
+        try f.setEndPos(0);
         try f.writeAll(content);
 
         // can we flag this to be removed in prod?
@@ -178,7 +183,7 @@ pub const Runtime = struct {
             try self.vectors.rm(v.vector_id);
         }
 
-        var it = std.mem.splitAny(u8, content, ",.!?;-()/'\"");
+        var it = std.mem.splitAny(u8, content, ".!?");
         while (it.next()) |sentence| {
             if (sentence.len < 2) continue;
             const vec = try self.embedder.embed(sentence) orelse continue;
@@ -273,6 +278,26 @@ pub const Runtime = struct {
         }
     }
 };
+
+fn isUnchanged(f: File, new_content: []const u8) !bool {
+    defer f.seekTo(0) catch unreachable;
+
+    const stat = try f.stat();
+    if (stat.size != new_content.len) return false;
+
+    var reader = f.reader();
+
+    var i: usize = 0;
+    while (true) : (i += 1) {
+        const c = reader.readByte() catch |err| switch (err) {
+            error.EndOfStream => return true,
+            else => return err,
+        };
+        if (new_content[i] != c) return false;
+    }
+
+    return true;
+}
 
 const expectError = std.testing.expectError;
 test "no create on read" {
@@ -881,12 +906,33 @@ test "embedText clear previous" {
     try expect(try rt.search("hello", &buf, null) == 0);
 }
 
+test "writeAll unchanged" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+    });
+    defer rt.deinit();
+
+    const id = try rt.create();
+    _ = try rt.writeAll(id, "hello");
+    const note_before = try rt.get(id, arena.allocator());
+    _ = try rt.writeAll(id, "hello");
+    const note_after = try rt.get(id, arena.allocator());
+
+    try expect(note_before.modified == note_after.modified);
+}
+
 const std = @import("std");
 const OutOfMemory = std.mem.Allocator.Error.OutOfMemory;
 const expect = std.testing.expect;
 const expectEqlStrings = std.testing.expectEqualStrings;
 const assert = std.debug.assert;
 const testing_allocator = std.testing.allocator;
+const File = std.fs.File;
 
 const tracy = @import("tracy");
 
