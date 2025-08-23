@@ -4,44 +4,47 @@ pub const Embedder = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
+    embedder: Object,
 
     pub fn init(allocator: std.mem.Allocator) !Self {
+        const init_zone = tracy.beginZone(@src(), .{ .name = "embed.zig:init" });
+        defer init_zone.end();
+
+        var NSString = objc.getClass("NSString").?;
+        var NLEmbedding = objc.getClass("NLEmbedding").?;
+        const fromUTF8 = objc.Sel.registerName("stringWithUTF8String:");
+
+        const sentenceEmbeddingForLanguage = objc.Sel.registerName("sentenceEmbeddingForLanguage:");
+        const language = "en";
+        const ns_lang = NSString.msgSend(Object, fromUTF8, .{language});
+
+        const embedder = NLEmbedding.msgSend(Object, sentenceEmbeddingForLanguage, .{ns_lang});
+        assert(embedder.getProperty(c_int, "dimension") == vec_sz);
+
         return Embedder{
             .allocator = allocator,
+            .embedder = embedder,
         };
     }
     pub fn deinit(self: *Self) void {
         _ = self;
     }
 
-    pub fn embed(self: *Self, sentence: []const u8) !?Vector {
+    pub fn embed(self: *Self, str: []const u8) !?Vector {
         const zone = tracy.beginZone(@src(), .{ .name = "embed.zig:embed" });
         defer zone.end();
-        const language = "en";
-        // Types
+
         var NSString = objc.getClass("NSString").?;
-        var NLEmbedding = objc.getClass("NLEmbedding").?;
-        // Functions
         const fromUTF8 = objc.Sel.registerName("stringWithUTF8String:");
-        const sentenceEmbeddingForLanguage = objc.Sel.registerName("sentenceEmbeddingForLanguage:");
         const getVectorForString = objc.Sel.registerName("getVector:forString:");
 
-        if (sentence.len == 0) return null;
+        if (str.len == 0) return null;
+        const c_str = try std.fmt.allocPrintZ(self.allocator, "{s}", .{str});
+        defer self.allocator.free(c_str);
+        const objc_str = NSString.msgSend(Object, fromUTF8, .{c_str.ptr});
 
-        // Ensure sentence is null-terminated for stringWithUTF8String:
-        const null_terminated_sentence = if (sentence.len > 0 and sentence[sentence.len - 1] == 0)
-            sentence.ptr
-        else
-            (try std.fmt.allocPrintZ(self.allocator, "{s}", .{sentence})).ptr;
-
-        // Do the work
-        const ns_lang = NSString.msgSend(Object, fromUTF8, .{language});
-        const ns_input = NSString.msgSend(Object, fromUTF8, .{null_terminated_sentence});
-        // std.debug.print("String: {s}, ns_input: {}\n", .{ sentence, ns_input });
-        const embedding = NLEmbedding.msgSend(Object, sentenceEmbeddingForLanguage, .{ns_lang});
-        assert(embedding.getProperty(c_int, "dimension") == vec_sz);
         var vector: []vec_type = try self.allocator.alloc(vec_type, vec_sz);
-        if (!embedding.msgSend(bool, getVectorForString, .{ vector[0..vec_sz], ns_input })) {
+        if (!self.embedder.msgSend(bool, getVectorForString, .{ vector[0..vec_sz], objc_str })) {
             return null;
         }
 
