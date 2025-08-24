@@ -25,7 +25,7 @@ pub const Runtime = struct {
         const embedder = try embed.Embedder.init(allocator);
         var vectors = try vector.DB.init(allocator, opts.basedir, .{});
 
-        return Runtime{
+        var self = Runtime{
             .basedir = opts.basedir,
             .db = database,
             .vectors = try vectors.load(VECTOR_DB_PATH),
@@ -33,6 +33,20 @@ pub const Runtime = struct {
             .allocator = allocator,
             .skipEmbed = opts.skipEmbed,
         };
+
+        var notes = try self.db.notes();
+        defer notes.deinit();
+
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        while (try notes.next(arena.allocator())) |n| {
+            const f = try self.basedir.openFile(n.path, .{});
+            defer f.close();
+            const stat = try f.stat();
+            if (stat.size == 0) try self.delete(n.id);
+        }
+
+        return self;
     }
 
     pub fn deinit(self: *Runtime) void {
@@ -507,43 +521,6 @@ test "r/w-all too smol output buffer" {
     try expect(false);
 }
 
-// TODO: is this unnecessary automatic behavior?
-test "delete empty note on empty writeAll" {
-    if (skip_test == true) return error.skip;
-
-    var tmpD = std.testing.tmpDir(.{ .iterate = true });
-    defer tmpD.cleanup();
-    var arena = std.heap.ArenaAllocator.init(testing_allocator);
-    defer arena.deinit();
-    var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
-        .basedir = tmpD.dir,
-        .skipEmbed = true,
-    });
-    defer rt.deinit();
-
-    const noteID = try rt.create();
-    var expected = "Some content!";
-    try rt.writeAll(noteID, expected[0..]);
-
-    // Should not fail
-    const note = try rt.get(noteID, arena.allocator());
-    var buffer: [20]u8 = undefined;
-    const n = try rt.readAll(noteID, &buffer);
-    try std.testing.expectEqualStrings(expected, buffer[0..n]);
-
-    // Now lets clear it out
-    const nothing = "";
-    try rt.writeAll(noteID, nothing);
-
-    const out = rt.get(noteID, arena.allocator());
-
-    try std.testing.expectError(model.Error.NotFound, out);
-
-    const f = tmpD.dir.openFile(note.path, .{});
-    try std.testing.expectError(error.FileNotFound, f);
-}
-
 test "delete only if exists" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
@@ -922,6 +899,33 @@ test "writeAll unchanged" {
     const note_after = try rt.get(id, arena.allocator());
 
     try expect(note_before.modified == note_after.modified);
+}
+
+test "clear empties upon init" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    var rt = try Runtime.init(arena.allocator(), .{
+        .basedir = tmpD.dir,
+    });
+
+    _ = try rt.writeAll(try rt.create(), "present");
+    const id = try rt.create();
+    _ = try rt.writeAll(id, "hello");
+    _ = try rt.writeAll(id, "");
+    _ = try rt.writeAll(try rt.create(), "present");
+
+    rt.deinit();
+    arena.deinit();
+
+    var arena2 = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena2.deinit();
+    var rt2 = try Runtime.init(arena2.allocator(), .{
+        .basedir = tmpD.dir,
+    });
+    defer rt2.deinit();
+
+    try expect(rt2.writeAll(id, "this should fail") == model.Error.NotFound);
 }
 
 const std = @import("std");

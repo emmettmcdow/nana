@@ -116,6 +116,21 @@ const VectorIterator = struct {
     }
 };
 
+const NoteIterator = struct {
+    stmt: sqlite.StatementType(.{}, SHOW_NOTES),
+    it: Iterator(Note),
+
+    const Self = @This();
+
+    pub fn deinit(self: *Self) void {
+        self.stmt.deinit();
+    }
+
+    pub fn next(self: *Self, allocator: std.mem.Allocator) !?Note {
+        return self.it.nextAlloc(allocator, .{});
+    }
+};
+
 pub const DBOpts = struct {
     basedir: std.fs.Dir,
     mem: bool = false,
@@ -235,6 +250,15 @@ pub const DB = struct {
             };
         }
         return Error.NotFound;
+    }
+
+    pub fn notes(self: *Self) !NoteIterator {
+        var diags = sqlite.Diagnostics{};
+        var stmt = self.db.prepareWithDiags(SHOW_NOTES, .{ .diags = &diags }) catch |err| {
+            std.log.err("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
+            return err;
+        };
+        return .{ .stmt = stmt, .it = try stmt.iterator(Note, .{}) };
     }
 
     pub fn update(self: *Self, noteID: NoteID) !void {
