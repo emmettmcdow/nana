@@ -1,6 +1,6 @@
 const PATH_MAX = 1000;
 
-const DB_LOCATION = "./db.db";
+const DB_FILENAME = "db.db";
 
 const GET_LAST_ID = "SELECT id FROM notes ORDER BY id DESC LIMIT 1;";
 
@@ -130,8 +130,13 @@ pub const DB = struct {
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator, opts: DBOpts) !Self {
+        const basedir_path = try opts.basedir.realpathAlloc(allocator, ".");
+        defer allocator.free(basedir_path);
+        const c_db_path = try std.fs.path.joinZ(allocator, &.{ basedir_path, DB_FILENAME });
+        defer allocator.free(c_db_path);
+
         var db: sqlite.Db = try sqlite.Db.init(.{
-            .mode = if (opts.mem) sqlite.Db.Mode.Memory else sqlite.Db.Mode{ .File = DB_LOCATION },
+            .mode = if (opts.mem) sqlite.Db.Mode.Memory else sqlite.Db.Mode{ .File = c_db_path },
             .open_flags = .{
                 .write = true,
                 .create = true,
@@ -353,6 +358,7 @@ pub const DB = struct {
         if (row) |id| {
             return id;
         }
+        std.log.err("Cannot find vec {d}\n", .{vectorID});
         return Error.NotFound;
     }
 

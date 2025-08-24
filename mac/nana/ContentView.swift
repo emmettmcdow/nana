@@ -91,7 +91,6 @@ struct ContentView: View {
                     VStack {
                         Spacer()
                         SearchButton(onClick: {
-                            search(q: "")
                             searchVisible.toggle()
                         })
                         CircularPlusButton(action: {
