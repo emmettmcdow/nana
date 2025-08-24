@@ -34,8 +34,7 @@ import SwiftUI
 let MAX_ITEMS = 100
 
 struct ContentView: View {
-    @State private var noteId: Int32
-    @State private var text: String = ""
+    @State private var note: Note
     @State private var queriedNotes: [Note] = []
     @State var searchVisible = false
     @State private var searchTimer: Timer?
@@ -47,15 +46,14 @@ struct ContentView: View {
     init() {
         let newId = nana_create()
         assert(newId > 0, "Failed to create new note")
-        noteId = newId
-        noteId = 1
+        note = Note(id: newId)
     }
 
     private func search(q: String) {
         searchTimer?.invalidate()
         searchTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { _ in
             var ids = [Int32](repeating: 0, count: MAX_ITEMS)
-            let n = min(Int(nana_search(q, &ids, numericCast(ids.count), noteId)), MAX_ITEMS)
+            let n = min(Int(nana_search(q, &ids, numericCast(ids.count), note.id)), MAX_ITEMS)
             if n < 0 {
                 print("Some error occurred while searching: ", n)
                 return
@@ -75,13 +73,12 @@ struct ContentView: View {
         let palette = Palette.forPreference(preference, colorScheme: colorScheme)
 
         ZStack {
-            Editor(text: $text, noteID: $noteId, palette: palette)
+            Editor(note: $note, palette: palette)
 
             if searchVisible {
                 FileList(notes: $queriedNotes,
-                         onSelect: { (note: Note) in
-                             noteId = note.id
-                             text = note.content
+                         onSelect: { (selected: Note) in
+                             note = selected
                              searchVisible.toggle()
                          }, onChange: { (q: String) in
                              search(q: q)
@@ -100,8 +97,7 @@ struct ContentView: View {
                         CircularPlusButton(action: {
                             let newId = nana_create()
                             assert(newId > 0, "Failed to create new note")
-                            noteId = newId
-                            text = ""
+                            note = Note(id: newId)
                         })
                     }
                 }.padding()
@@ -119,8 +115,7 @@ struct ContentView: View {
 }
 
 struct Editor: View {
-    @Binding var text: String
-    @Binding var noteID: Int32
+    @Binding var note: Note
 
     let palette: Palette
     @StateObject private var textObserver = TextFieldObserver()
@@ -136,7 +131,7 @@ struct Editor: View {
             .opacity(0)
             .hidden()
 
-            TextEditor(text: $text)
+            TextEditor(text: $textObserver.note.content)
                 .font(.system(size: fontSize))
                 .foregroundColor(palette.foreground)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -145,33 +140,32 @@ struct Editor: View {
                 .background(palette.background)
                 .scrollIndicators(.never)
                 .onAppear {
-                    textObserver.text = text
-                    textObserver.noteID = noteID
+                    textObserver.note = note
                 }
-                .onChange(of: text) { newValue in
-                    textObserver.text = newValue
-                }
-                .onChange(of: noteID) { newValue in
-                    textObserver.noteID = newValue
+                .onChange(of: note) { _, newValue in
+                    textObserver.note = newValue
                 }
         }
     }
 }
 
 class TextFieldObserver: ObservableObject {
-    @Published var text = ""
-    @Published var noteID: Int32 = -1
+    @Published var note: Note = .init(id: -1)
 
     private var subscriptions = Set<AnyCancellable>()
 
     init() {
-        $text
+        $note
             .debounce(for: .seconds(1), scheduler: DispatchQueue.main)
-            .sink(receiveValue: { [weak self] t in
-                guard let self = self else { return }
-                let res = nana_write_all(self.noteID, t)
+            .sink(receiveValue: { [weak self] n in
+                _ = self
+                if n.id == -1 {
+                    return
+                }
+                let res = nana_write_all(n.id, n.content)
                 assert(res == 0, "Failed to write all")
             })
+            .store(in: &subscriptions)
     }
 }
 

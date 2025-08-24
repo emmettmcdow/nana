@@ -142,10 +142,6 @@ pub const Runtime = struct {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:writeAll" });
         defer zone.end();
 
-        if (content.len == 0) {
-            return self.delete(id);
-        }
-
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
 
@@ -513,6 +509,8 @@ test "r/w-all too smol output buffer" {
 
 // TODO: is this unnecessary automatic behavior?
 test "delete empty note on empty writeAll" {
+    if (skip_test == true) return error.skip;
+
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
@@ -947,3 +945,5 @@ const Vector = types.Vector;
 const VectorID = types.VectorID;
 const NoteID = model.NoteID;
 const Note = model.Note;
+
+const skip_test = true;

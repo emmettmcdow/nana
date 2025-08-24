@@ -162,7 +162,7 @@ struct GeneralSettingsView: View {
                             allowsMultipleSelection: false
                         ) { result in
                             Task.detached(priority: .userInitiated) {
-                                await try something(result: result)
+                                try await something(result: result)
                             }
                         }
                     }

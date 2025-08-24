@@ -28,7 +28,7 @@ import Foundation
     import NanaKit
 #endif
 
-struct Note: Identifiable {
+struct Note: Identifiable, Equatable {
     var id: Int32
     var content: String
     var created: Date
@@ -39,6 +39,13 @@ struct Note: Identifiable {
 let MAX_BUF = 1_000_000
 extension Note {
     init(id: Int32) {
+        if id == -1 {
+            self.id = id
+            content = ""
+            created = Date.now
+            modified = Date.now
+            return
+        }
         let create = nana_create_time(id)
         assert(create > 0, "Failed to get create_time")
 
@@ -62,5 +69,9 @@ extension Note {
         created = Date(timeIntervalSince1970: TimeInterval(create))
         modified = Date(timeIntervalSince1970: TimeInterval(mod))
         content = String(cString: content_buf, encoding: .utf8) ?? ""
+    }
+
+    static func == (lhs: Note, rhs: Note) -> Bool {
+        return lhs.id == rhs.id
     }
 }
