@@ -382,7 +382,6 @@ pub const DB = struct {
         if (row) |id| {
             return id;
         }
-        std.log.err("Cannot find vec {d}\n", .{vectorID});
         return Error.NotFound;
     }
 
