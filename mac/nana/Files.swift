@@ -30,7 +30,7 @@ struct FileList: View {
                     .onTapGesture {
                         onChange("")
                         closeList()
-                    }
+                    }.keyboardShortcut("k")
                 VStack(spacing: 0) {
                     HStack(spacing: 0) {
                         Image(systemName: "magnifyingglass")
@@ -92,6 +92,7 @@ struct FileList: View {
                 NSCursor.pop()
             }
         }
+        .onExitCommand { closeList() }
     }
 }
 

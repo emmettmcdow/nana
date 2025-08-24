@@ -128,11 +128,32 @@ struct GeneralSettingsView: View {
                         }
                     }
                     .pickerStyle(.inline)
-                    Stepper("Font Size: \(fontSize.formatted())px", value: $fontSize, in: 1 ... 64)
+                    HStack {
+                        Stepper("Font Size: \(fontSize.formatted())px", value: $fontSize, in: 1 ... 64)
+                    }
+                    Text("Preview:")
+                    Text("The quick brown fox jumped over the lazy dog")
+                        .font(.system(size: fontSize))
                 }
-                // Section(header: Text("Shortcuts")) {
                 Tab("Shortcuts", systemImage: "keyboard") {
                     List {
+                        Section(header: Text("Control")) {
+                            HStack {
+                                Text("New Note:")
+                                Spacer()
+                                Text("⌘a").bold().monospaced()
+                            }
+                            HStack {
+                                Text("Search:")
+                                Spacer()
+                                Text("⌘k").bold().monospaced()
+                            }
+                            HStack {
+                                Text("Exit Search:")
+                                Spacer()
+                                Text("esc").bold().monospaced()
+                            }
+                        }
                         Section(header: Text("Display")) {
                             HStack {
                                 Text("Increase Font Size:")
@@ -147,7 +168,6 @@ struct GeneralSettingsView: View {
                         }
                     }
                 }
-                // Section(header: Text("Data")) {
                 Tab("Data", systemImage: "document") {
                     VStack {
                         ImportProgress(importError: importError, totalFiles: totalFiles, skippedFiles: skippedFiles, completeFiles: completeFiles)

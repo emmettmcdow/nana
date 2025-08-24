@@ -93,11 +93,13 @@ struct ContentView: View {
                         SearchButton(onClick: {
                             searchVisible.toggle()
                         })
+                        .keyboardShortcut("k")
                         CircularPlusButton(action: {
                             let newId = nana_create()
                             assert(newId > 0, "Failed to create new note")
                             note = Note(id: newId)
                         })
+                        .keyboardShortcut("a")
                     }
                 }.padding()
             }
