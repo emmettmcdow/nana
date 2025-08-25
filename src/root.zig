@@ -1,12 +1,6 @@
 pub const Error = error{ NotFound, BufferTooSmall, MalformedPath, NotNote };
 
-// TODO: this is a hack...
 const VECTOR_DB_PATH = "vecs.db";
-pub const RuntimeOpts = struct {
-    basedir: std.fs.Dir,
-    mem: bool = false,
-    skipEmbed: bool = false,
-};
 
 pub const Runtime = struct {
     basedir: std.fs.Dir,
@@ -16,7 +10,18 @@ pub const Runtime = struct {
     allocator: std.mem.Allocator,
     skipEmbed: bool = false,
 
-    pub fn init(allocator: std.mem.Allocator, opts: RuntimeOpts) !Runtime {
+    /// Optional arguments for initializing the libnana runtime.
+    pub const Opts = struct {
+        /// Storage directory for dbs and notes.
+        basedir: std.fs.Dir,
+        /// Testing only. Use memory instead of the file-system.
+        mem: bool = false,
+        /// Testing only. Don't bother embedding when writing.
+        skipEmbed: bool = false,
+    };
+
+    /// Intializes the libnana runtime.
+    pub fn init(allocator: std.mem.Allocator, opts: Runtime.Opts) !Runtime {
         const database = try model.DB.init(allocator, .{
             .basedir = opts.basedir,
             .mem = opts.mem,
@@ -49,12 +54,15 @@ pub const Runtime = struct {
         return self;
     }
 
+    /// De-initializes the libnana runtime.
     pub fn deinit(self: *Runtime) void {
         self.db.deinit();
         self.vectors.deinit();
         self.embedder.deinit();
     }
 
+    /// Create a new note.
+    /// Does not create a new file. That is done lazily in `write*`. Returns the new note id.
     pub fn create(self: *Runtime) !NoteID {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:create" });
         defer zone.end();
@@ -63,9 +71,11 @@ pub const Runtime = struct {
     }
 
     const ImportOpts = struct {
+        /// Whether to `copy` the file to the `basedir` or just use the original absolute path
         copy: bool = false,
     };
 
+    /// Create a new note, but use the contents of another file specified by `path`.
     pub fn import(self: *Runtime, path: []const u8, opts: ImportOpts) !NoteID {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:import" });
         defer zone.end();
@@ -122,6 +132,7 @@ pub const Runtime = struct {
         return id;
     }
 
+    /// Gets metadata about the note specified by `id`.
     pub fn get(self: *Runtime, id: NoteID, allocator: std.mem.Allocator) !Note {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:get" });
         defer zone.end();
@@ -129,6 +140,7 @@ pub const Runtime = struct {
         return self.db.get(id, allocator);
     }
 
+    /// Touches a note. Updates the `modified` field of a `Note`.
     pub fn update(self: *Runtime, noteID: NoteID) !void {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:update" });
         defer zone.end();
@@ -136,6 +148,7 @@ pub const Runtime = struct {
         return self.db.update(noteID);
     }
 
+    /// Deletes a note in the db, the vector db, and the filesystem.
     pub fn delete(self: *Runtime, id: NoteID) !void {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:delete" });
         defer zone.end();
@@ -152,6 +165,7 @@ pub const Runtime = struct {
         return self.db.delete(note);
     }
 
+    /// Writes the contents of `content` to the note and updates the embeddings.
     pub fn writeAll(self: *Runtime, id: NoteID, content: []const u8) !void {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:writeAll" });
         defer zone.end();
@@ -182,29 +196,7 @@ pub const Runtime = struct {
         return;
     }
 
-    fn embedText(self: *Runtime, id: NoteID, content: []const u8) !void {
-        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:embedText" });
-        defer zone.end();
-
-        var vecs = try self.db.vecsForNote(id);
-        defer vecs.deinit();
-        while (try vecs.next()) |v| {
-            try self.db.deleteVec(v.vector_id);
-            try self.vectors.rm(v.vector_id);
-        }
-
-        var it = std.mem.splitAny(u8, content, ".!?");
-        while (it.next()) |sentence| {
-            if (sentence.len < 2) continue;
-            const vec = try self.embedder.embed(sentence) orelse continue;
-            try self.db.appendVector(id, try self.vectors.put(vec));
-            self.db.debugShowTable(.Vectors);
-        }
-
-        // be more efficient - don't save all of the vectors on every write
-        try self.vectors.save(VECTOR_DB_PATH);
-    }
-
+    /// Reads all of the contents of the note.
     pub fn readAll(self: *Runtime, id: NoteID, buf: []u8) !usize {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:readAll" });
         defer zone.end();
@@ -234,8 +226,10 @@ pub const Runtime = struct {
         return n;
     }
 
-    // Search should query the database and return N written
-    // Parameter buf is really an array of NoteIDs. Need to use c_int though
+    /// Search does an embedding vector distance comparison to find the most semantically similar
+    /// notes. Takes a `query`, writes to `buf`, and returns the number of results found.
+    /// Optionally it can ignore a single `NoteID`. This is so that the current note does not show
+    /// up in the search results.
     pub fn search(self: *Runtime, query: []const u8, buf: []c_int, ignore: ?NoteID) !usize {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:search" });
         defer zone.end();
@@ -265,10 +259,34 @@ pub const Runtime = struct {
         return unique_found_n;
     }
 
+    fn embedText(self: *Runtime, id: NoteID, content: []const u8) !void {
+        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:embedText" });
+        defer zone.end();
+
+        var vecs = try self.db.vecsForNote(id);
+        defer vecs.deinit();
+        while (try vecs.next()) |v| {
+            try self.db.deleteVec(v.vector_id);
+            try self.vectors.rm(v.vector_id);
+        }
+
+        var it = std.mem.splitAny(u8, content, ".!?");
+        while (it.next()) |sentence| {
+            if (sentence.len < 2) continue;
+            const vec = try self.embedder.embed(sentence) orelse continue;
+            try self.db.appendVector(id, try self.vectors.put(vec));
+            self.db.debugShowTable(.Vectors);
+        }
+
+        // be more efficient - don't save all of the vectors on every write
+        try self.vectors.save(VECTOR_DB_PATH);
+    }
+
     fn debugSearchHeader(query: []const u8) void {
         if (!config.debug) return;
         std.debug.print("Checking similarity against '{s}':\n", .{query});
     }
+
     fn debugSearchRankedResults(self: *Runtime, ids: []VectorID) void {
         if (!config.debug) return;
         const bufsz = 50;

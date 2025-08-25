@@ -1,6 +1,7 @@
 var rt: nana.Runtime = undefined;
 var init: bool = false;
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+var mutex = std.Thread.Mutex{};
 
 const CError = enum(c_int) {
     Success = 0,
@@ -14,13 +15,13 @@ const CError = enum(c_int) {
 
 const PATH_MAX = 1000;
 
-// TODO: we need to make this thread safe - it's sketchy rn
-
-// Output: CError
+/// Output: CError
 export fn nana_init(
     basedir: [*:0]const u8,
     basedir_sz: c_uint,
 ) c_int {
+    mutex.lock();
+    defer mutex.unlock();
     if (init) {
         return @intFromEnum(CError.DoubleInit);
     }
@@ -50,8 +51,10 @@ export fn nana_init(
     return @intFromEnum(CError.Success);
 }
 
-// Output: CError
+/// Output: CError
 export fn nana_deinit() c_int {
+    mutex.lock();
+    defer mutex.unlock();
     if (!init) {
         return @intFromEnum(CError.NotInit);
     }
@@ -59,8 +62,10 @@ export fn nana_deinit() c_int {
     return 0;
 }
 
-// Output: CError on failure, NoteID if success
+/// Output: CError on failure, NoteID if success
 export fn nana_create() c_int {
+    mutex.lock();
+    defer mutex.unlock();
     if (!init) {
         return @intFromEnum(CError.NotInit);
     }
@@ -72,8 +77,10 @@ export fn nana_create() c_int {
     return @intCast(id);
 }
 
-// Output: CError on failure, NoteID if success
+/// Output: CError on failure, NoteID if success
 export fn nana_import(path: [*:0]const u8, pathlen: c_uint) c_int {
+    mutex.lock();
+    defer mutex.unlock();
     if (!init) {
         return @intFromEnum(CError.NotInit);
     }
@@ -92,9 +99,11 @@ export fn nana_import(path: [*:0]const u8, pathlen: c_uint) c_int {
     return @intCast(id);
 }
 
-// Input: NoteID
-// Output: Create/Mod Time
-export fn nana_create_time(noteID: c_int) c_int {
+/// Input: NoteID
+/// Output: Create Time
+export fn nana_create_time(noteID: c_int) c_long {
+    mutex.lock();
+    defer mutex.unlock();
     var arena = std.heap.ArenaAllocator.init(gpa.allocator());
     defer arena.deinit();
 
@@ -106,7 +115,12 @@ export fn nana_create_time(noteID: c_int) c_int {
     // micro to seconds
     return @intCast(@divTrunc(note.created, 1_000_000));
 }
-export fn nana_mod_time(noteID: c_int) c_int {
+
+/// Input: NoteID
+/// Output: Mod Time
+export fn nana_mod_time(noteID: c_int) c_long {
+    mutex.lock();
+    defer mutex.unlock();
     var arena = std.heap.ArenaAllocator.init(gpa.allocator());
     defer arena.deinit();
 
@@ -120,6 +134,8 @@ export fn nana_mod_time(noteID: c_int) c_int {
 }
 
 export fn nana_search(query: [*:0]const u8, outbuf: [*c]c_int, sz: c_uint, ignore: c_int) c_int {
+    mutex.lock();
+    defer mutex.unlock();
     const convQuery: []const u8 = std.mem.sliceTo(query, 0);
 
     const igParam: ?u64 = if (ignore == -1) null else @intCast(ignore);
@@ -132,6 +148,8 @@ export fn nana_search(query: [*:0]const u8, outbuf: [*c]c_int, sz: c_uint, ignor
 }
 
 export fn nana_write_all(noteID: c_int, content: [*:0]const u8) c_int {
+    mutex.lock();
+    defer mutex.unlock();
     const zigStyle: []const u8 = std.mem.sliceTo(content, 0);
     rt.writeAll(@intCast(noteID), zigStyle) catch |err| switch (err) {
         error.FileNotFound => {
@@ -146,7 +164,38 @@ export fn nana_write_all(noteID: c_int, content: [*:0]const u8) c_int {
     return 0;
 }
 
+/// Atomically writes and returns the modified timestamp.
+/// Input: NoteID, content
+/// Output: Modified timestamp on success, negative CError on failure
+export fn nana_write_all_with_time(noteID: c_int, content: [*:0]const u8) c_long {
+    mutex.lock();
+    defer mutex.unlock();
+    const zigStyle: []const u8 = std.mem.sliceTo(content, 0);
+    rt.writeAll(@intCast(noteID), zigStyle) catch |err| switch (err) {
+        error.FileNotFound => {
+            std.log.err("Failed to write note with id '{d}': {}\n", .{ noteID, err });
+            return @intFromEnum(CError.FileNotFound);
+        },
+        else => {
+            std.log.err("Failed to write note with id '{d}': {}\n", .{ noteID, err });
+            return @intFromEnum(CError.GenericFail);
+        },
+    };
+
+    var arena = std.heap.ArenaAllocator.init(gpa.allocator());
+    defer arena.deinit();
+
+    const note = rt.get(@intCast(noteID), arena.allocator()) catch |err| {
+        std.log.err("Failed to get note with id '{d}' after write: {}\n", .{ noteID, err });
+        return @intFromEnum(CError.GenericFail);
+    };
+
+    return @intCast(@divTrunc(note.modified, 1_000_000));
+}
+
 export fn nana_read_all(noteID: c_int, outbuf: [*c]u8, sz: c_uint) c_int {
+    mutex.lock();
+    defer mutex.unlock();
     const written = rt.readAll(@intCast(noteID), outbuf[0..sz]) catch |err| {
         std.log.err("Failed to read all of note at id '{d}': {}\n", .{ noteID, err });
         return @intFromEnum(CError.GenericFail);

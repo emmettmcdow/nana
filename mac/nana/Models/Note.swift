@@ -24,6 +24,10 @@ import Foundation
         buffer.replaceSubrange(0 ..< copyCount, with: utf8Array.prefix(copyCount))
         return Int32(copyCount - 1) // Don't count null terminator
     }
+
+    func nana_write_all_with_time(_: Int32, _: String) -> Int64 {
+        return 0 // Success
+    }
 #else
     import NanaKit
 #endif
@@ -50,7 +54,7 @@ extension Note {
         assert(create > 0, "Failed to get create_time")
 
         let mod = nana_mod_time(id)
-        assert(create > 0, "Failed to get mod_time")
+        assert(mod > 0, "Failed to get mod_time")
 
         var bufsize = 10
         var sz: Int32 = -1
@@ -73,5 +77,17 @@ extension Note {
 
     static func == (lhs: Note, rhs: Note) -> Bool {
         return lhs.id == rhs.id
+    }
+
+    mutating func writeAll() {
+        let res = nana_write_all_with_time(id, content)
+        assert(res > 0, "Failed to write-all note")
+        modified = Date(timeIntervalSince1970: TimeInterval(res))
+    }
+
+    func isStale() -> Bool {
+        let new_mod = nana_mod_time(id)
+        assert(new_mod > 0, "Failed to get mod_time")
+        return modified != Date(timeIntervalSince1970: TimeInterval(new_mod))
     }
 }
