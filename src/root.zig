@@ -45,7 +45,13 @@ pub const Runtime = struct {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         while (try notes.next(arena.allocator())) |n| {
-            const f = try self.basedir.openFile(n.path, .{});
+            const f = self.basedir.openFile(n.path, .{}) catch |e| switch (e) {
+                error.FileNotFound => {
+                    try self.delete(n.id);
+                    continue;
+                },
+                else => return e,
+            };
             defer f.close();
             const stat = try f.stat();
             if (stat.size == 0) try self.delete(n.id);
@@ -158,8 +164,9 @@ pub const Runtime = struct {
 
         const note = try self.get(id, arena.allocator());
 
-        self.basedir.access(note.path, .{}) catch {
-            return self.db.delete(note);
+        self.basedir.access(note.path, .{}) catch |e| switch (e) {
+            error.FileNotFound => return self.db.delete(note),
+            else => return e,
         };
         try self.basedir.deleteFile(note.path);
         return self.db.delete(note);
