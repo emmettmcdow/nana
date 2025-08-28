@@ -245,7 +245,9 @@ pub const Runtime = struct {
             return self.db.searchNoQuery(buf, ignore);
         }
 
-        const query_vec = (try self.embedder.embed(query)) orelse return 0;
+        const query_vec = (try self.embedder.embed(query)) orelse {
+            return 0;
+        };
 
         var vec_ids: [1000]VectorID = undefined;
 
@@ -277,7 +279,7 @@ pub const Runtime = struct {
             try self.vectors.rm(v.vector_id);
         }
 
-        var it = splitter(content);
+        var it = self.embedder.split(content);
         while (it.next()) |sentence| {
             if (sentence.len < 2) continue;
             const vec = try self.embedder.embed(sentence) orelse continue;
@@ -312,14 +314,6 @@ pub const Runtime = struct {
         }
     }
 };
-
-pub fn splitter(note: []const u8) std.mem.SplitIterator(u8, .any) {
-    return .{
-        .index = 0,
-        .buffer = note,
-        .delimiter = ".!?",
-    };
-}
 
 fn isUnchanged(f: File, new_content: []const u8) !bool {
     defer f.seekTo(0) catch unreachable;

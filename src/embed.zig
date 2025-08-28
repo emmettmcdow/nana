@@ -30,6 +30,15 @@ pub const Embedder = struct {
         _ = self;
     }
 
+    pub fn split(self: Self, note: []const u8) std.mem.SplitIterator(u8, .any) {
+        _ = self;
+        return .{
+            .index = 0,
+            .buffer = note,
+            .delimiter = ".!?\n",
+        };
+    }
+
     pub fn embed(self: *Self, str: []const u8) !?Vector {
         const zone = tracy.beginZone(@src(), .{ .name = "embed.zig:embed" });
         defer zone.end();

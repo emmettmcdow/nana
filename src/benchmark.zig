@@ -177,7 +177,7 @@ test "debug view embedding splitting" {
     defer rt.deinit();
 
     std.debug.print("--- Embedding Split ---\n", .{});
-    var it = splitter(EXAMPLE_NOTE_1);
+    var it = rt.embedder.split(EXAMPLE_NOTE_1);
     var n: f32 = 0;
     var n_split: f32 = 0;
     while (it.next()) |sentence| {
@@ -244,4 +244,3 @@ const embed = @import("embed.zig");
 
 const NoteID = model.NoteID;
 const Note = model.Note;
-const splitter = root.splitter;
