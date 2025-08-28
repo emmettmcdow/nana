@@ -157,6 +157,42 @@ test "sentence splitting - 1/3 match" {
     max_score += 100;
 }
 
+test "show results" {
+    std.debug.print("---- Search Scores ----\n", .{});
+    std.debug.print("Got {d} points out of a max of {d}.\n", .{ score, max_score });
+    std.debug.print("-----------------------\n\n", .{});
+}
+
+test "debug view embedding splitting" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    var rt = try root.Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+    });
+    defer rt.deinit();
+
+    std.debug.print("--- Embedding Split ---\n", .{});
+    var it = splitter(EXAMPLE_NOTE_1);
+    var n: f32 = 0;
+    var n_split: f32 = 0;
+    while (it.next()) |sentence| {
+        var embedded = sentence.len > 2;
+        const embedding = try rt.embedder.embed(sentence);
+        embedded = embedded and (embedding != null);
+        n_split += if (embedded) 1.0 else 0.0;
+        n += 1.0;
+        std.debug.print("({}, {s})\n", .{ embedded, sentence });
+    }
+    const percentage = (n_split / n) * 100;
+    std.debug.print("{d:.2}% Embedded\n", .{percentage});
+    std.debug.print("-----------------------\n\n", .{});
+}
+
 fn outputContains(output: []c_int, item: NoteID) bool {
     for (output) |out_item| {
         if (out_item == item) return true;
@@ -164,9 +200,40 @@ fn outputContains(output: []c_int, item: NoteID) bool {
     return false;
 }
 
-test "show results" {
-    std.debug.print("Got {d} points out of a max of {d}.\n", .{ score, max_score });
-}
+const EXAMPLE_NOTE_1 =
+    \\Web Manager
+    \\
+    \\## Functionality
+    \\- Generate NGINX config
+    \\- Start / Stop Containers
+    \\- Manage available ports
+    \\- Manage volumes / Persistent storage
+    \\- Update applications
+    \\
+    \\## Thoughts
+    \\
+    \\How do we want to configure the worker?
+    \\It would be nice to have the ingress server be its own container. The only problem I can think of is the fact that we would need to be able to access ports which may be present only on the host.
+    \\
+    \\It should be possible to create a network, then have my various containers use it.
+    \\
+    \\I need to clear out kamal stuff on my server
+    \\
+    \\## Important commands
+    \\```
+    \\# Network
+    \\docker network create -d bridge test-network
+    \\
+    \\# Server
+    \\docker run --network=test-network -p 8082:8082 --name=nginx-server -d nginx-test:1
+    \\
+    \\# Client
+    \\docker run --network=test-network -it ubuntu:latest
+    \\
+    \\# Within the client
+    \\curl nginx-server:8082
+    \\```
+;
 
 const std = @import("std");
 const testing_allocator = std.testing.allocator;
@@ -177,3 +244,4 @@ const embed = @import("embed.zig");
 
 const NoteID = model.NoteID;
 const Note = model.Note;
+const splitter = root.splitter;

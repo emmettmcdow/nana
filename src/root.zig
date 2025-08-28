@@ -277,7 +277,7 @@ pub const Runtime = struct {
             try self.vectors.rm(v.vector_id);
         }
 
-        var it = std.mem.splitAny(u8, content, ".!?");
+        var it = splitter(content);
         while (it.next()) |sentence| {
             if (sentence.len < 2) continue;
             const vec = try self.embedder.embed(sentence) orelse continue;
@@ -285,7 +285,6 @@ pub const Runtime = struct {
             self.db.debugShowTable(.Vectors);
         }
 
-        // be more efficient - don't save all of the vectors on every write
         try self.vectors.save(VECTOR_DB_PATH);
     }
 
@@ -313,6 +312,14 @@ pub const Runtime = struct {
         }
     }
 };
+
+pub fn splitter(note: []const u8) std.mem.SplitIterator(u8, .any) {
+    return .{
+        .index = 0,
+        .buffer = note,
+        .delimiter = ".!?",
+    };
+}
 
 fn isUnchanged(f: File, new_content: []const u8) !bool {
     defer f.seekTo(0) catch unreachable;

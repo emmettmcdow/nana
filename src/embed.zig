@@ -44,7 +44,7 @@ pub const Embedder = struct {
         const objc_str = NSString.msgSend(Object, fromUTF8, .{c_str.ptr});
 
         var vector: []vec_type = try self.allocator.alloc(vec_type, vec_sz);
-        if (!self.embedder.msgSend(bool, getVectorForString, .{ vector[0..vec_sz], objc_str })) {
+        if (!self.embedder.msgSend(bool, getVectorForString, .{ vector.ptr, objc_str })) {
             return null;
         }
 
