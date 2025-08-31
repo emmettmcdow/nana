@@ -128,7 +128,7 @@ struct ResultRow: View {
                 .lineLimit(3)
                 .foregroundStyle(palette.foreground)
             Spacer()
-            Text(Date.now.formatted(date: .long, time: .omitted))
+            Text(note.modified.formatted(date: .long, time: .omitted))
                 .foregroundStyle(palette.tertiary)
                 .italic()
         }
