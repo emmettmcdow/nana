@@ -242,6 +242,7 @@ pub const Runtime = struct {
         defer zone.end();
 
         if (query.len == 0) {
+            std.log.info("Searching with no query\n", .{});
             return self.db.searchNoQuery(buf, ignore);
         }
 
@@ -265,6 +266,7 @@ pub const Runtime = struct {
             buf[unique_found_n] = noteID;
             unique_found_n += 1;
         }
+        std.log.info("Found {d} results searching with {s}\n", .{ unique_found_n, query });
         return unique_found_n;
     }
 

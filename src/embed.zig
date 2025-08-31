@@ -47,13 +47,17 @@ pub const Embedder = struct {
         const fromUTF8 = objc.Sel.registerName("stringWithUTF8String:");
         const getVectorForString = objc.Sel.registerName("getVector:forString:");
 
-        if (str.len == 0) return null;
+        if (str.len == 0) {
+            std.log.info("Skipping embed of zero-length string\n", .{});
+            return null;
+        }
         const c_str = try std.fmt.allocPrintZ(self.allocator, "{s}", .{str});
         defer self.allocator.free(c_str);
         const objc_str = NSString.msgSend(Object, fromUTF8, .{c_str.ptr});
 
         var vector: []vec_type = try self.allocator.alloc(vec_type, vec_sz);
         if (!self.embedder.msgSend(bool, getVectorForString, .{ vector.ptr, objc_str })) {
+            std.log.err("Failed to embed {s}\n", .{str[0..@min(str.len, 10)]});
             return null;
         }
 

@@ -1,8 +1,6 @@
 # Requirements
 - zig 0.14.0
 - xcode
-- python3
-- cmake
 - lipo
 - libtool
 

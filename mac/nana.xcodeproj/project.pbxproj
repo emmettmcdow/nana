@@ -8,7 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		C00512CF2E562A6200696F0C /* libc++.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = C00512CE2E562A6200696F0C /* libc++.tbd */; };
-		C06E67972DAC5114000B073C /* NanaKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C06E67962DAC5114000B073C /* NanaKit.xcframework */; settings = {ATTRIBUTES = (Required, ); }; };
+		C058EF6F2E64A8F70045CF1A /* NaturalLanguage.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C058EF6B2E64A8C00045CF1A /* NaturalLanguage.framework */; };
+		C058EF722E64A8F90045CF1A /* NanaKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C06E67962DAC5114000B073C /* NanaKit.xcframework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -28,21 +29,9 @@
 		};
 /* End PBXContainerItemProxy section */
 
-/* Begin PBXCopyFilesBuildPhase section */
-		C06E672E2DAC3FE4000B073C /* Embed Frameworks */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 10;
-			files = (
-			);
-			name = "Embed Frameworks";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXCopyFilesBuildPhase section */
-
 /* Begin PBXFileReference section */
 		C00512CE2E562A6200696F0C /* libc++.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = "libc++.tbd"; path = "Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.2.sdk/usr/lib/libc++.tbd"; sourceTree = DEVELOPER_DIR; };
+		C058EF6B2E64A8C00045CF1A /* NaturalLanguage.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NaturalLanguage.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.2.sdk/System/Library/Frameworks/NaturalLanguage.framework; sourceTree = DEVELOPER_DIR; };
 		C06E67962DAC5114000B073C /* NanaKit.xcframework */ = {isa = PBXFileReference; expectedSignature = "AppleDeveloperProgram:GMAF223AB9:Emmett McDow"; lastKnownFileType = wrapper.xcframework; name = NanaKit.xcframework; path = ../macos/NanaKit.xcframework; sourceTree = SOURCE_ROOT; };
 		C0D13D852D6ED5B200D0032D /* nana.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = nana.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C0D13D962D6ED5B500D0032D /* nanaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = nanaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -86,7 +75,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				C00512CF2E562A6200696F0C /* libc++.tbd in Frameworks */,
-				C06E67972DAC5114000B073C /* NanaKit.xcframework in Frameworks */,
+				C058EF722E64A8F90045CF1A /* NanaKit.xcframework in Frameworks */,
+				C058EF6F2E64A8F70045CF1A /* NaturalLanguage.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -131,6 +121,7 @@
 		C0E6788A2DAB2D83006CC735 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				C058EF6B2E64A8C00045CF1A /* NaturalLanguage.framework */,
 				C00512CE2E562A6200696F0C /* libc++.tbd */,
 				C06E67962DAC5114000B073C /* NanaKit.xcframework */,
 			);
@@ -147,7 +138,6 @@
 				C0D13D812D6ED5B200D0032D /* Sources */,
 				C0D13D822D6ED5B200D0032D /* Frameworks */,
 				C0D13D832D6ED5B200D0032D /* Resources */,
-				C06E672E2DAC3FE4000B073C /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
@@ -394,9 +384,11 @@
 				CODE_SIGN_ENTITLEMENTS = nana/nana.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 7;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_ASSET_PATHS = "\"nana/Preview Content\"";
 				DEVELOPMENT_TEAM = GMAF223AB9;
+				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"DISABLE_NANAKIT=1",
@@ -617,9 +609,11 @@
 				CODE_SIGN_ENTITLEMENTS = nana/nana.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 7;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_ASSET_PATHS = "\"nana/Preview Content\"";
 				DEVELOPMENT_TEAM = GMAF223AB9;
+				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GCC_PREPROCESSOR_DEFINITIONS = "DEBUG=1";
 				GENERATE_INFOPLIST_FILE = YES;
@@ -671,9 +665,10 @@
 				CODE_SIGN_ENTITLEMENTS = nana/nanaRelease.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 7;
 				DEVELOPMENT_ASSET_PATHS = "\"nana/Preview Content\"";
 				DEVELOPMENT_TEAM = GMAF223AB9;
+				ENABLE_HARDENED_RUNTIME = NO;
 				ENABLE_PREVIEWS = YES;
 				GCC_PREPROCESSOR_DEFINITIONS = "";
 				GENERATE_INFOPLIST_FILE = YES;
@@ -697,7 +692,6 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.2;
 				MARKETING_VERSION = 0.0.4;
 				OTHER_LDFLAGS = "";
-				"OTHER_LDFLAGS[arch=*]" = "";
 				OTHER_SWIFT_FLAGS = "";
 				PREVIEW_BUILD = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = mcdow.nana;

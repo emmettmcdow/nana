@@ -196,8 +196,7 @@ export fn nana_write_all_with_time(noteID: c_int, content: [*:0]const u8) c_long
 export fn nana_read_all(noteID: c_int, outbuf: [*c]u8, sz: c_uint) c_int {
     mutex.lock();
     defer mutex.unlock();
-    const written = rt.readAll(@intCast(noteID), outbuf[0..sz]) catch |err| {
-        std.log.err("Failed to read all of note at id '{d}': {}\n", .{ noteID, err });
+    const written = rt.readAll(@intCast(noteID), outbuf[0..sz]) catch {
         return @intFromEnum(CError.GenericFail);
     };
 

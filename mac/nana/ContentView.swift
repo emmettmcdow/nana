@@ -33,14 +33,14 @@ class NotesManager: ObservableObject {
     @Published var currentNote: Note
     @Published var queriedNotes: [Note] = []
     @Published var searchVisible = false
-    
+
     private var cancellables = Set<AnyCancellable>()
-    
+
     init() {
         let newId = nana_create()
         assert(newId > 0, "Failed to create new note")
         currentNote = Note(id: newId)
-        
+
         // Background refresh timer
         Timer.publish(every: 5.0, on: .main, in: .common)
             .autoconnect()
@@ -48,7 +48,7 @@ class NotesManager: ObservableObject {
                 self?.checkForStaleNote()
             }
             .store(in: &cancellables)
-        
+
         // Auto-save when content changes
         $currentNote
             .map(\.content)
@@ -59,34 +59,34 @@ class NotesManager: ObservableObject {
             }
             .store(in: &cancellables)
     }
-    
+
     private func checkForStaleNote() {
         if currentNote.isStale() {
             currentNote = Note(id: currentNote.id)
         }
     }
-    
+
     private func saveCurrentNote() {
         guard currentNote.id != -1 else { return }
         var mutableNote = currentNote
         mutableNote.writeAll()
         currentNote = mutableNote
     }
-    
+
     func createNewNote() {
         let newId = nana_create()
         assert(newId > 0, "Failed to create new note")
         currentNote = Note(id: newId)
     }
-    
+
     func search(query: String) {
+        queriedNotes = []
         var ids = [Int32](repeating: 0, count: MAX_ITEMS)
         let n = min(Int(nana_search(query, &ids, numericCast(ids.count), currentNote.id)), MAX_ITEMS)
         if n < 0 {
             print("Some error occurred while searching: ", n)
             return
         }
-        queriedNotes = []
         if n > 0 {
             for i in 0 ... (n - 1) {
                 let id = ids[i]
@@ -180,7 +180,6 @@ struct Editor: View {
         }
     }
 }
-
 
 #Preview("Editor") {
     ContentView()
