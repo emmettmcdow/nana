@@ -37,7 +37,7 @@ struct FileList: View {
                             .font(.system(size: 20))
                             .foregroundColor(palette.tertiary)
                         TextField(
-                            "Query",
+                            "",
                             text: $query
                         )
                         .focused($queryFocused)

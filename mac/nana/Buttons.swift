@@ -21,14 +21,13 @@ struct CircularPlusButton: View {
         Button(action: action) {
             ZStack {
                 Circle()
-                    .fill(palette.foreground.mix(with: .black, by: hover ? 0.1 : 0.0))
+                    .fill(palette.foreground.mix(with: .black, by: hover ? 0.2 : 0.0))
                     .frame(width: size, height: size)
                     .shadow(radius: 2)
-                    .tint(hover ? .green : .clear)
 
                 Image(systemName: "plus")
+                    .foregroundColor(palette.background.mix(with: .black, by: hover ? 0.2 : 0.0))
                     .font(.system(size: size * 0.5))
-                    .foregroundColor(palette.background)
             }
         }
         .buttonStyle(PlainButtonStyle())
@@ -67,13 +66,13 @@ struct SearchButton: View {
         Button(action: onClick) {
             ZStack {
                 Circle()
-                    .fill(palette.foreground.mix(with: .black, by: hover ? 0.1 : 0.0))
+                    .fill(palette.foreground.mix(with: .black, by: hover ? 0.2 : 0.0))
                     .frame(width: size, height: size)
                     .shadow(radius: 2)
 
                 Image(systemName: "magnifyingglass")
+                    .foregroundColor(palette.background.mix(with: .black, by: hover ? 0.2 : 0.0))
                     .font(.system(size: size * 0.5))
-                    .foregroundColor(palette.background)
             }
         }
         .buttonStyle(PlainButtonStyle())
