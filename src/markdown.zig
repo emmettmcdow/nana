@@ -1,3 +1,30 @@
+//! # Design notes
+//! ## Principles
+//! 1. Be opinionated. There's one and only one way to render Markdown. We will not support all.
+//! 2. Don't try to modify the source in order to make the text renderable.
+//! 3. Favor usability over correctness.
+//!
+//! ## Tabs Instead of Spaces
+//! For code I generally lean towards spaces over tabs. However, I don't want users to have to fool
+//! around with getting indentation just right for the parser to pick up certain elements.
+//!
+//! We need a solution for this on mobile. There is no way to insert a tab on an iPhone.
+//!
+//! ## 6 is the max degree
+//! Why would you need more than 6 levels of indentation?
+//!
+//! ## Closing Code Blocks
+//! Only count the end of the block if the closing parentheses are followed by a newline.
+//! This is to make rendering more simple. So we can just tell the frontend "render
+//! as code line X through line Y". Otherwise we would have to do something funky
+//! like:
+//!     1. Kick the text following the close out to the next line. Breaking rule 2.
+//!     2. Render line X through Y as code. But then the user sees an unexpected
+//!        tail of text which is rendered as code, but is not code.
+//!     3. Hide the tail. This too is confusing to the user.
+//!
+//! This might be something we could throw errors for? If we choose to throw errors.
+
 pub const TokenType = enum {
     HEADER,
     HORZ_RULE,
@@ -26,7 +53,7 @@ pub const Token = struct {
     degree: u8 = 1,
 };
 
-pub const Lexer = struct {
+pub const Markdown = struct {
     i: usize,
     src: []const u8,
     tokens: ArrayList(Token),
@@ -34,7 +61,7 @@ pub const Lexer = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: Allocator) Lexer {
+    pub fn init(allocator: Allocator) Markdown {
         return .{
             .i = 0,
             .src = "",
@@ -43,8 +70,8 @@ pub const Lexer = struct {
         };
     }
 
-    /// Lexes the 'src'. Calling this invalidates(frees) the last returned list of tokens.
-    pub fn lex(self: *Self, src: []const u8) []Token {
+    /// Parses the 'src'. Calling this invalidates(frees) the last returned list of tokens.
+    pub fn parse(self: *Self, src: []const u8) []Token {
         self.i = 0;
         self.tokens.deinit();
         self.tokens = ArrayList(Token).init(self.allocator);
@@ -53,8 +80,23 @@ pub const Lexer = struct {
         while (self.i < self.src.len) {
             if (self.match(.HEADER)) |degree| {
                 self.pushToken(.HEADER, degree);
-                self.consumeUntil('\n');
-                self.i += 1;
+                _ = self.consumeUntil("\n", .{});
+            } else if (self.match(.BOLD)) |_| {
+                self.pushToken(.BOLD, 1);
+                const found = self.consumeUntil("**", .{ .newlineBreak = true });
+                if (!found) {
+                    self.popToken();
+                }
+            } else if (self.match(.BLOCK_CODE)) |_| {
+                self.pushToken(.BLOCK_CODE, 1);
+                const found = self.consumeUntil("```", .{});
+                if (!found or !self.startOrEndLine()) { // See #closing-code-blocks
+                    self.popToken();
+                    continue;
+                }
+            } else if (self.match(.UNORDERED_LIST)) |degree| {
+                self.pushToken(.UNORDERED_LIST, degree);
+                _ = self.consumeUntil("\n", .{ .newlineBreak = true });
             } else {
                 // Is PLAIN
                 const isEmpty = self.tokens.getLastOrNull() == null;
@@ -87,27 +129,54 @@ pub const Lexer = struct {
         }
     }
 
+    /// Removes the top element from the list without checking it.
+    fn popToken(self: *Self) void {
+        _ = self.tokens.pop();
+    }
+
     /// Determines if this is the start of a token. Returns null if not a match, degree otherwise.
     fn match(self: Self, t: TokenType) ?u8 {
         switch (t) {
             .HEADER => {
-                if (!self.isNewline()) return null;
+                if (!self.startOrEndLine()) return null;
                 var i: u8 = 0;
                 while (self.peek(i) == '#') i += 1;
                 if (i < 1 or i > 6) return null;
                 if (self.peek(i) != ' ') return null;
                 return i;
             },
+            .BOLD => {
+                if (self.peek(0) != '*') return null;
+                if (self.peek(1) != '*') return null;
+                if (self.peek(2) == '*') return null; // Emphasis, not bold
+                return 1;
+            },
+            .BLOCK_CODE => {
+                if (!self.startOrEndLine()) return null;
+                if (self.peek(0) != '`') return null;
+                if (self.peek(1) != '`') return null;
+                if (self.peek(2) != '`') return null;
+                return 1;
+            },
+            .UNORDERED_LIST => {
+                if (!self.startOrEndLine()) return null;
+                var i: u8 = 0;
+                while (self.peek(i) == '\t') i += 1;
+                if (i > 5) return null;
+                const degree = i + 1;
+
+                if (self.peek(i) != '-') return null;
+                if (self.peek(i + 1) != ' ') return null;
+                return degree;
+            },
             else => unreachable,
         }
     }
 
-    fn isNewline(self: Self) bool {
-        return self.i == 0 or self.src[self.i - 1] == '\n';
-    }
-
-    fn thisCharIs(self: Self, c: u8) bool {
-        return self.src[self.i] == c;
+    fn startOrEndLine(self: Self) bool {
+        const startOfLine = self.i == 0 or self.src[self.i - 1] == '\n';
+        const endOfLine = self.i >= self.src.len or self.src[self.i] == '\n';
+        return endOfLine or startOfLine;
     }
 
     /// Check ahead without moving the write head.
@@ -116,11 +185,25 @@ pub const Lexer = struct {
         return self.src[self.i + i];
     }
 
-    /// Moves the read-head forward until 'char' is found.
-    fn consumeUntil(self: *Self, char: u8) void {
-        while (self.i < self.src.len and self.src[self.i] != char) {
+    const ConsumeOpts = struct {
+        newlineBreak: bool = false,
+    };
+
+    /// Moves the read-head forward until 'char' is found. Returns whether it was found.
+    fn consumeUntil(self: *Self, str: []const u8, consumeOpts: ConsumeOpts) bool {
+        while (self.i + 1 + str.len <= self.src.len) {
             self.i += 1;
+            if (consumeOpts.newlineBreak and self.src[self.i] == '\n') {
+                self.i += 1;
+                return false;
+            }
+            if (std.mem.eql(u8, self.src[self.i .. self.i + str.len], str)) {
+                self.i += str.len;
+                return true;
+            }
         }
+        self.i += str.len;
+        return false;
     }
 };
 
@@ -128,30 +211,30 @@ test "header plain" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var l = Lexer.init(arena.allocator());
+    var l = Markdown.init(arena.allocator());
 
     try expectEqualDeep(&[_]Token{
         .{ .tType = .HEADER, .contents = "# Header\n", .startI = 0, .endI = 9 },
         .{ .tType = .PLAIN, .contents = "plain text.", .startI = 9, .endI = 20 },
-    }, l.lex(
+    }, l.parse(
         \\# Header
         \\plain text.
     ));
-    try expectEqualDeep(&[_]Token{
+    try expectEqualSlices(Token, &[_]Token{
         .{ .tType = .HEADER, .contents = "# Header with # in the middle", .startI = 0, .endI = 29 },
-    }, l.lex(
+    }, l.parse(
         \\# Header with # in the middle
     ));
     try expectEqualDeep(&[_]Token{
         .{ .tType = .PLAIN, .contents = "Plain with # in the middle", .startI = 0, .endI = 26 },
-    }, l.lex(
+    }, l.parse(
         \\Plain with # in the middle
     ));
     try expectEqualDeep(&[_]Token{
         .{ .tType = .HEADER, .contents = "# A\n", .startI = 0, .endI = 4 },
         .{ .tType = .PLAIN, .contents = "B\n", .startI = 4, .endI = 6 },
         .{ .tType = .HEADER, .contents = "# C", .startI = 6, .endI = 9 },
-    }, l.lex(
+    }, l.parse(
         \\# A
         \\B
         \\# C
@@ -159,35 +242,14 @@ test "header plain" {
 
     var i: usize = 0;
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .HEADER, .degree = 1, .contents = "# 1\n", .startI = i, .endI = a: {
-            i += 4;
-            break :a i;
-        } },
-        .{ .tType = .HEADER, .degree = 2, .contents = "## 2\n", .startI = i, .endI = b: {
-            i += 5;
-            break :b i;
-        } },
-        .{ .tType = .HEADER, .degree = 3, .contents = "### 3\n", .startI = i, .endI = c: {
-            i += 6;
-            break :c i;
-        } },
-        .{ .tType = .HEADER, .degree = 4, .contents = "#### 4\n", .startI = i, .endI = d: {
-            i += 7;
-            break :d i;
-        } },
-        .{ .tType = .HEADER, .degree = 5, .contents = "##### 5\n", .startI = i, .endI = e: {
-            i += 8;
-            break :e i;
-        } },
-        .{ .tType = .HEADER, .degree = 6, .contents = "###### 6\n", .startI = i, .endI = f: {
-            i += 9;
-            break :f i;
-        } },
-        .{ .tType = .PLAIN, .degree = 1, .contents = "####### plain", .startI = i, .endI = g: {
-            i += 13;
-            break :g i;
-        } },
-    }, l.lex(
+        .{ .tType = .HEADER, .degree = 1, .contents = "# 1\n", .startI = i, .endI = plusEq(&i, 4) },
+        .{ .tType = .HEADER, .degree = 2, .contents = "## 2\n", .startI = i, .endI = plusEq(&i, 5) },
+        .{ .tType = .HEADER, .degree = 3, .contents = "### 3\n", .startI = i, .endI = plusEq(&i, 6) },
+        .{ .tType = .HEADER, .degree = 4, .contents = "#### 4\n", .startI = i, .endI = plusEq(&i, 7) },
+        .{ .tType = .HEADER, .degree = 5, .contents = "##### 5\n", .startI = i, .endI = plusEq(&i, 8) },
+        .{ .tType = .HEADER, .degree = 6, .contents = "###### 6\n", .startI = i, .endI = plusEq(&i, 9) },
+        .{ .tType = .PLAIN, .degree = 1, .contents = "####### plain", .startI = i, .endI = plusEq(&i, 13) },
+    }, l.parse(
         \\# 1
         \\## 2
         \\### 3
@@ -198,13 +260,107 @@ test "header plain" {
     ));
 }
 
+test "bold" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var l = Markdown.init(arena.allocator());
+
+    var i: usize = 0;
+    var output = l.parse("a**b**c**d**e");
+    try expectEqualDeep(&[_]Token{
+        .{ .tType = .PLAIN, .contents = "a", .startI = i, .endI = plusEq(&i, 1) },
+        .{ .tType = .BOLD, .contents = "**b**", .startI = i, .endI = plusEq(&i, 5) },
+        .{ .tType = .PLAIN, .contents = "c", .startI = i, .endI = plusEq(&i, 1) },
+        .{ .tType = .BOLD, .contents = "**d**", .startI = i, .endI = plusEq(&i, 5) },
+        .{ .tType = .PLAIN, .contents = "e", .startI = i, .endI = plusEq(&i, 1) },
+    }, output);
+
+    i = 0;
+    output = l.parse("ab**cd");
+    try expectEqualDeep(&[_]Token{
+        .{ .tType = .PLAIN, .contents = "ab**cd", .startI = i, .endI = plusEq(&i, 6) },
+    }, output);
+
+    i = 0;
+    output = l.parse("ab**\ne**f**g\n");
+    try expectEqualDeep(&[_]Token{
+        .{ .tType = .PLAIN, .contents = "ab**\ne", .startI = i, .endI = plusEq(&i, 6) },
+        .{ .tType = .BOLD, .contents = "**f**", .startI = i, .endI = plusEq(&i, 5) },
+        .{ .tType = .PLAIN, .contents = "g\n", .startI = i, .endI = plusEq(&i, 2) },
+    }, output);
+}
+
+test "block code" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var l = Markdown.init(arena.allocator());
+
+    var i: usize = 0;
+    var output = l.parse("```this is code\nsecond line of code\n```");
+    try expectEqualDeep(&[_]Token{
+        .{
+            .tType = .BLOCK_CODE,
+            .contents = "```this is code\nsecond line of code\n```",
+            .startI = i,
+            .endI = plusEq(&i, 39),
+        },
+    }, output);
+
+    i = 0;
+    output = l.parse("not code\n```\ncode with **no styling**\n```\nnot code again");
+    try expectEqualDeep(&[_]Token{
+        .{ .tType = .PLAIN, .contents = "not code\n", .startI = i, .endI = plusEq(&i, 9) },
+        .{
+            .tType = .BLOCK_CODE,
+            .contents = "```\ncode with **no styling**\n```",
+            .startI = i,
+            .endI = plusEq(&i, 32),
+        },
+        .{ .tType = .PLAIN, .contents = "\nnot code again", .startI = i, .endI = plusEq(&i, 15) },
+    }, output);
+}
+
+test "unordered list" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var l = Markdown.init(arena.allocator());
+
+    var i: usize = 0;
+    var output = l.parse("- uno\n- dos");
+    try expectEqualDeep(&[_]Token{
+        .{ .tType = .UNORDERED_LIST, .contents = "- uno\n", .startI = i, .endI = plusEq(&i, 6) },
+        .{ .tType = .UNORDERED_LIST, .contents = "- dos", .startI = i, .endI = plusEq(&i, 5) },
+    }, output);
+
+    i = 0;
+    output = l.parse("- 1\n\t- 2\n\t\t- 3\n\t\t\t- 4\n\t\t\t\t- 5\n\t\t\t\t\t- 6");
+    try expectEqualDeep(&[_]Token{
+        .{ .tType = .UNORDERED_LIST, .contents = "- 1\n", .startI = i, .endI = plusEq(&i, 4), .degree = 1 },
+        .{ .tType = .UNORDERED_LIST, .contents = "\t- 2\n", .startI = i, .endI = plusEq(&i, 5), .degree = 2 },
+        .{ .tType = .UNORDERED_LIST, .contents = "\t\t- 3\n", .startI = i, .endI = plusEq(&i, 6), .degree = 3 },
+        .{ .tType = .UNORDERED_LIST, .contents = "\t\t\t- 4\n", .startI = i, .endI = plusEq(&i, 7), .degree = 4 },
+        .{ .tType = .UNORDERED_LIST, .contents = "\t\t\t\t- 5\n", .startI = i, .endI = plusEq(&i, 8), .degree = 5 },
+        .{ .tType = .UNORDERED_LIST, .contents = "\t\t\t\t\t- 6", .startI = i, .endI = plusEq(&i, 8), .degree = 6 },
+    }, output);
+}
+
+fn plusEq(a: *usize, b: usize) usize {
+    a.* += b;
+    return a.*;
+}
+
 const std = @import("std");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const expect = std.expect;
 const expectEqualDeep = std.testing.expectEqualDeep;
+const expectEqualSlices = std.testing.expectEqualSlices;
 
+// Notes
 //
 // Syntax is markdown inspired, not pure markdown.
 // No nested elements for now.
