@@ -203,5 +203,23 @@ export fn nana_read_all(noteID: c_int, outbuf: [*c]u8, sz: c_uint) c_int {
     return @intCast(written);
 }
 
+/// Parses markdown text.
+/// Successive calls to this function free the result of the previous call in memory.
+/// Input: content
+/// Output: JSON representing how the document should be styled.
+export fn nana_parse_markdown(content: [*:0]const u8) [*:0]const u8 {
+    mutex.lock();
+    defer mutex.unlock();
+    const zig_out = rt.parseMarkdown(std.mem.sliceTo(content, 0)) catch |err| switch (err) {
+        else => {
+            std.log.err("Failed to parse Markdown: {}\n", .{err});
+            return "\x00";
+        },
+    };
+    assert(zig_out[zig_out.len - 1] == 0);
+    return @ptrCast(zig_out.ptr);
+}
+
 const std = @import("std");
 const nana = @import("root.zig");
+const assert = std.debug.assert;
