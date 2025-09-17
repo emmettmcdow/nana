@@ -1,12 +1,10 @@
 import Foundation
 
-// MARK: - Markdown Parsing Data Structures
-
 struct MarkdownElement {
     let start: Int
     let end: Int
     let type: ElementType
-    
+
     enum ElementType {
         case header(level: Int)
         case paragraph
@@ -19,7 +17,7 @@ struct MarkdownStyle {
     let start: Int
     let end: Int
     let type: StyleType
-    
+
     enum StyleType {
         case bold
         case italic
@@ -32,20 +30,18 @@ struct MarkdownFormatting {
     let styles: [MarkdownStyle]
 }
 
-// MARK: - Stub Parser (Replace with Zig integration)
-
 class StubMarkdownParser {
     static func parse(_ text: String) -> MarkdownFormatting {
         var elements: [MarkdownElement] = []
         var styles: [MarkdownStyle] = []
-        
+
         let lines = text.components(separatedBy: .newlines)
         var currentPosition = 0
-        
+
         for line in lines {
             let lineStart = currentPosition
             let lineEnd = currentPosition + line.count
-            
+
             // Parse headers
             if line.hasPrefix("# ") {
                 elements.append(MarkdownElement(start: lineStart, end: lineEnd, type: .header(level: 1)))
@@ -61,19 +57,19 @@ class StubMarkdownParser {
             } else if !line.isEmpty {
                 elements.append(MarkdownElement(start: lineStart, end: lineEnd, type: .paragraph))
             }
-            
+
             // Parse inline styles
             parseInlineStyles(line, baseOffset: lineStart, styles: &styles)
-            
+
             currentPosition = lineEnd + 1 // +1 for newline character
         }
-        
+
         return MarkdownFormatting(elements: elements, styles: styles)
     }
-    
+
     private static func parseInlineStyles(_ text: String, baseOffset: Int, styles: inout [MarkdownStyle]) {
         let nsString = text as NSString
-        
+
         // Parse **bold**
         let boldPattern = "\\*\\*([^*]+)\\*\\*"
         if let boldRegex = try? NSRegularExpression(pattern: boldPattern) {
@@ -87,7 +83,7 @@ class StubMarkdownParser {
                 ))
             }
         }
-        
+
         // Parse *italic*
         let italicPattern = "(?<!\\*)\\*([^*]+)\\*(?!\\*)"
         if let italicRegex = try? NSRegularExpression(pattern: italicPattern) {
@@ -101,7 +97,7 @@ class StubMarkdownParser {
                 ))
             }
         }
-        
+
         // Parse `inline code`
         let codePattern = "`([^`]+)`"
         if let codeRegex = try? NSRegularExpression(pattern: codePattern) {
