@@ -52,8 +52,9 @@ struct MarkdownEditor: NSViewRepresentable {
         // Set initial text content
         textStorage.setAttributedString(NSAttributedString(string: text))
 
-        // Set the stored font size and typing attributes before formatting
+        // Set the stored font size and palette colors before formatting
         textView.updateBaseFontSize(font.pointSize)
+        textView.setPaletteColors(textColor: textColor, backgroundColor: backgroundColor)
         textView.typingAttributes = [
             .font: font,
             .foregroundColor: textColor,
@@ -84,6 +85,7 @@ struct MarkdownEditor: NSViewRepresentable {
 
         if textView.textColor != textColor {
             textView.textColor = textColor
+            textView.setPaletteColors(textColor: textColor, backgroundColor: backgroundColor)
             textView.refreshMarkdownFormatting()
         }
 
