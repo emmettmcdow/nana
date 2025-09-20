@@ -20,20 +20,25 @@ struct MarkdownEditor: NSViewRepresentable {
         textStorage.addLayoutManager(layoutManager)
         layoutManager.addTextContainer(textContainer)
 
-        // Configure text container - try with explicit width
+        // Configure text container to prevent horizontal scrolling
         textContainer.widthTracksTextView = true
         textContainer.heightTracksTextView = false
-        textContainer.containerSize = NSSize(width: 400, height: CGFloat.greatestFiniteMagnitude)
+        textContainer.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         textContainer.lineFragmentPadding = 0
 
-        // Create MarkdownTextView with a proper initial frame
-        let textView = MarkdownTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), textContainer: textContainer)
+        // Create MarkdownTextView with initial frame that will be auto-resized
+        let textView = MarkdownTextView(frame: .zero, textContainer: textContainer)
 
         // Create scroll view
         let scrollView = NSScrollView()
         scrollView.documentView = textView
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = false
+
+        // Ensure no horizontal scrolling
+        scrollView.contentView.postsBoundsChangedNotifications = true
+
 
         // Configure text view AFTER it has a proper frame
         textView.backgroundColor = backgroundColor
@@ -45,9 +50,11 @@ struct MarkdownEditor: NSViewRepresentable {
         textView.isHorizontallyResizable = false
         textView.textContainerInset = NSSize(width: 8, height: 8)
         textView.delegate = context.coordinator
+        textView.autoresizingMask = [.width]
 
-        // Now set container to track the properly-sized text view
-        textContainer.containerSize = NSSize(width: textView.frame.width - 16, height: CGFloat.greatestFiniteMagnitude)
+        // Ensure proper initial sizing for the text view
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
 
         // Set initial text content
         textStorage.setAttributedString(NSAttributedString(string: text))
@@ -107,6 +114,7 @@ struct MarkdownEditor: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
+
 
             // Update the binding
             DispatchQueue.main.async {

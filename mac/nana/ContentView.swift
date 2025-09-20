@@ -179,14 +179,11 @@ struct Editor: View {
             //     .padding(EdgeInsets(top: 20, leading: 20, bottom: 0, trailing: 0))
             //     .background(palette.background)
             //     .scrollIndicators(.never)
-            
-            MarkdownEditor(text: $note.content, 
-                          font: NSFont.systemFont(ofSize: fontSize),
-                          backgroundColor: NSColor(palette.background),
-                          textColor: NSColor(palette.foreground))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(EdgeInsets(top: 20, leading: 20, bottom: 0, trailing: 0))
-                .background(palette.background)
+
+            MarkdownEditor(text: $note.content,
+                           font: NSFont.systemFont(ofSize: fontSize),
+                           backgroundColor: NSColor(palette.background),
+                           textColor: NSColor(palette.foreground))
         }
     }
 }
