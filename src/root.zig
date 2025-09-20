@@ -7,8 +7,10 @@ pub const Runtime = struct {
     db: model.DB,
     vectors: vector.DB,
     embedder: embed.Embedder,
+    markdown: markdown.Markdown,
     allocator: std.mem.Allocator,
     skipEmbed: bool = false,
+    lastParsedMD: ?std.ArrayList(u8) = null,
 
     /// Optional arguments for initializing the libnana runtime.
     pub const Opts = struct {
@@ -28,6 +30,7 @@ pub const Runtime = struct {
         });
 
         const embedder = try embed.Embedder.init(allocator);
+        const markdown_parser = markdown.Markdown.init(allocator);
         var vectors = try vector.DB.init(allocator, opts.basedir, .{});
 
         var self = Runtime{
@@ -35,6 +38,7 @@ pub const Runtime = struct {
             .db = database,
             .vectors = try vectors.load(VECTOR_DB_PATH),
             .embedder = embedder,
+            .markdown = markdown_parser,
             .allocator = allocator,
             .skipEmbed = opts.skipEmbed,
         };
@@ -268,6 +272,18 @@ pub const Runtime = struct {
         }
         std.log.info("Found {d} results searching with {s}\n", .{ unique_found_n, query });
         return unique_found_n;
+    }
+
+    /// Takes the contents of a note and returns a JSON spec of how it should be formatted.
+    pub fn parseMarkdown(self: *Runtime, content: []const u8) ![]const u8 {
+        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:parseMarkdown" });
+        defer zone.end();
+
+        if (self.lastParsedMD) |ref| ref.deinit();
+        self.lastParsedMD = std.ArrayList(u8).init(self.allocator);
+        try json.stringify(self.markdown.parse(content), .{}, self.lastParsedMD.?.writer());
+        try self.lastParsedMD.?.writer().writeByte(0);
+        return self.lastParsedMD.?.items;
     }
 
     fn embedText(self: *Runtime, id: NoteID, content: []const u8) !void {
@@ -956,26 +972,52 @@ test "clear empties upon init" {
     try expect(rt2.writeAll(id, "this should fail") == model.Error.NotFound);
 }
 
+test "parse markdown" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .basedir = tmpD.dir,
+    });
+    defer rt.deinit();
+
+    try expectEqlStrings(
+        "[{\"tType\":\"PLAIN\",\"startI\":0,\"endI\":3,\"contents\":\"foo\",\"degree\":1}]\x00",
+        try rt.parseMarkdown("foo"),
+    );
+    try expectEqlStrings(
+        "[{\"tType\":\"BOLD\",\"startI\":0,\"endI\":7,\"contents\":\"**foo**\",\"degree\":1}]\x00",
+        try rt.parseMarkdown("**foo**"),
+    );
+    try expectEqlStrings(
+        "[{\"tType\":\"PLAIN\",\"startI\":0,\"endI\":1,\"contents\":\"a\",\"degree\":1},{\"tType\":\"BOLD\",\"startI\":1,\"endI\":6,\"contents\":\"**b**\",\"degree\":1}]\x00",
+        try rt.parseMarkdown("a**b**"),
+    );
+}
+
 const std = @import("std");
-const OutOfMemory = std.mem.Allocator.Error.OutOfMemory;
+const assert = std.debug.assert;
 const expect = std.testing.expect;
 const expectEqlStrings = std.testing.expectEqualStrings;
-const assert = std.debug.assert;
-const testing_allocator = std.testing.allocator;
 const File = std.fs.File;
+const json = std.json;
+const OutOfMemory = std.mem.Allocator.Error.OutOfMemory;
+const testing_allocator = std.testing.allocator;
 
 const tracy = @import("tracy");
 
-const embed = @import("embed.zig");
-const model = @import("model.zig");
-const vector = @import("vector.zig");
 const config = @import("config");
+const embed = @import("embed.zig");
+const markdown = @import("markdown.zig");
+const model = @import("model.zig");
 const types = @import("types.zig");
+const vector = @import("vector.zig");
 const vec_sz = types.vec_sz;
 const vec_type = types.vec_type;
 const Vector = types.Vector;
 const VectorID = types.VectorID;
-const NoteID = model.NoteID;
 const Note = model.Note;
+const NoteID = model.NoteID;
 
 const skip_test = true;

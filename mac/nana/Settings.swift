@@ -56,6 +56,18 @@ struct Palette {
                 Palette(foreground: light, background: dark, tertiary: gray)
         }
     }
+
+    func NSbg() -> NSColor {
+        return NSColor(background)
+    }
+
+    func NSfg() -> NSColor {
+        return NSColor(foreground)
+    }
+
+    func NStert() -> NSColor {
+        return NSColor(tertiary)
+    }
 }
 
 struct GeneralSettingsView: View {

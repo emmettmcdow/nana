@@ -21,3 +21,5 @@ int nana_search(const char *, int *, unsigned int, int);
 int nana_write_all(int, const char *);
 long nana_write_all_with_time(int, const char *);
 int nana_read_all(int, char *, unsigned int);
+
+const char * nana_parse_markdown(const char *);
