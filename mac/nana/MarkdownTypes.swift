@@ -1,4 +1,5 @@
 import Foundation
+
 #if DISABLE_NANAKIT
     func nana_search(_: String) -> String {
         return ""
@@ -27,7 +28,7 @@ struct MarkdownToken: Codable {
     let endI: Int
     let contents: String
     let degree: Int
-    
+
     enum CodingKeys: String, CodingKey {
         case tType, startI, endI, contents, degree
     }
@@ -42,17 +43,17 @@ class MarkdownParser {
         guard let cString = text.cString(using: .utf8) else {
             return MarkdownFormatting(tokens: [])
         }
-        
+
         let resultPointer = nana_parse_markdown(cString)
         guard let jsonCString = resultPointer else {
             return MarkdownFormatting(tokens: [])
         }
-        
+
         let jsonString = String(cString: jsonCString)
         guard let jsonData = jsonString.data(using: .utf8) else {
             return MarkdownFormatting(tokens: [])
         }
-        
+
         do {
             let tokens = try JSONDecoder().decode([MarkdownToken].self, from: jsonData)
             return MarkdownFormatting(tokens: tokens)

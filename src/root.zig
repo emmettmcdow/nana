@@ -997,13 +997,13 @@ test "parse markdown" {
 }
 
 const std = @import("std");
-const json = std.json;
-const OutOfMemory = std.mem.Allocator.Error.OutOfMemory;
+const assert = std.debug.assert;
 const expect = std.testing.expect;
 const expectEqlStrings = std.testing.expectEqualStrings;
-const assert = std.debug.assert;
-const testing_allocator = std.testing.allocator;
 const File = std.fs.File;
+const json = std.json;
+const OutOfMemory = std.mem.Allocator.Error.OutOfMemory;
+const testing_allocator = std.testing.allocator;
 
 const tracy = @import("tracy");
 
@@ -1017,7 +1017,7 @@ const vec_sz = types.vec_sz;
 const vec_type = types.vec_type;
 const Vector = types.Vector;
 const VectorID = types.VectorID;
-const NoteID = model.NoteID;
 const Note = model.Note;
+const NoteID = model.NoteID;
 
 const skip_test = true;

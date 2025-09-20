@@ -169,21 +169,11 @@ struct Editor: View {
             .opacity(0)
             .hidden()
 
-            // Original TextEditor - commented out for markdown editor testing
-            // TextEditor(text: $note.content)
-            //     .font(.system(size: fontSize))
-            //     .foregroundColor(palette.foreground)
-            //     .accentColor(palette.foreground)
-            //     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            //     .scrollContentBackground(.hidden)
-            //     .padding(EdgeInsets(top: 20, leading: 20, bottom: 0, trailing: 0))
-            //     .background(palette.background)
-            //     .scrollIndicators(.never)
-
-            MarkdownEditor(text: $note.content,
-                           font: NSFont.systemFont(ofSize: fontSize),
-                           backgroundColor: NSColor(palette.background),
-                           textColor: NSColor(palette.foreground))
+            MarkdownEditor(
+                text: $note.content,
+                palette: palette,
+                font: NSFont.systemFont(ofSize: fontSize)
+            )
         }
     }
 }

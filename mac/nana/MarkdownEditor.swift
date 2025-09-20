@@ -5,9 +5,8 @@ struct MarkdownEditor: NSViewRepresentable {
     @Binding var text: String
 
     // Optional configuration
+    var palette: Palette
     var font: NSFont = .systemFont(ofSize: 14)
-    var backgroundColor: NSColor = .textBackgroundColor
-    var textColor: NSColor = .textColor
     var isEditable: Bool = true
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -39,11 +38,10 @@ struct MarkdownEditor: NSViewRepresentable {
         // Ensure no horizontal scrolling
         scrollView.contentView.postsBoundsChangedNotifications = true
 
-
         // Configure text view AFTER it has a proper frame
-        textView.backgroundColor = backgroundColor
+        textView.backgroundColor = palette.NSbg()
         textView.font = font
-        textView.textColor = textColor
+        textView.textColor = palette.NSfg()
         textView.isEditable = isEditable
         textView.isSelectable = true
         textView.isVerticallyResizable = true
@@ -61,10 +59,10 @@ struct MarkdownEditor: NSViewRepresentable {
 
         // Set the stored font size and palette colors before formatting
         textView.updateBaseFontSize(font.pointSize)
-        textView.setPaletteColors(textColor: textColor, backgroundColor: backgroundColor)
+        textView.setPaletteColors(textColor: palette.NSfg(), backgroundColor: palette.NSbg())
         textView.typingAttributes = [
             .font: font,
-            .foregroundColor: textColor,
+            .foregroundColor: palette.NSfg(),
         ]
 
         textView.refreshMarkdownFormatting()
@@ -90,14 +88,14 @@ struct MarkdownEditor: NSViewRepresentable {
             textView.refreshMarkdownFormatting()
         }
 
-        if textView.textColor != textColor {
-            textView.textColor = textColor
-            textView.setPaletteColors(textColor: textColor, backgroundColor: backgroundColor)
+        if textView.textColor != palette.NSfg() {
+            textView.textColor = palette.NSfg()
+            textView.setPaletteColors(textColor: palette.NSfg(), backgroundColor: palette.NSbg())
             textView.refreshMarkdownFormatting()
         }
 
-        if textView.backgroundColor != backgroundColor {
-            textView.backgroundColor = backgroundColor
+        if textView.backgroundColor != palette.NSbg() {
+            textView.backgroundColor = palette.NSbg()
         }
     }
 
@@ -114,7 +112,6 @@ struct MarkdownEditor: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
-
 
             // Update the binding
             DispatchQueue.main.async {

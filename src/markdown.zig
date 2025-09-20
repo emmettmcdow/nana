@@ -189,7 +189,7 @@ pub const Markdown = struct {
         newlineBreak: bool = false,
     };
 
-    /// Moves the read-head forward until 'char' is found. Returns whether it was found.
+    /// Moves the read-head forward until 'str' is found. Returns whether it was found.
     fn consumeUntil(self: *Self, str: []const u8, consumeOpts: ConsumeOpts) bool {
         while (self.i + 1 + str.len <= self.src.len) {
             self.i += 1;
