@@ -46,7 +46,6 @@ class MarkdownTextView: NSTextView {
 
     override var frame: NSRect {
         didSet {
-
             // Update text container width when frame changes
             if let container = textContainer {
                 container.containerSize = NSSize(width: frame.width, height: CGFloat.greatestFiniteMagnitude)
@@ -64,7 +63,6 @@ class MarkdownTextView: NSTextView {
 
     override func didChangeText() {
         super.didChangeText()
-
 
         if !isUpdatingFormatting {
             updateMarkdownFormatting()
@@ -112,18 +110,18 @@ class MarkdownTextView: NSTextView {
 
     private func applyTokenFormatting(token: MarkdownToken, range: NSRange, to textStorage: NSTextStorage) {
         let defaultColor = textColor ?? NSColor.textColor
-        let baseFontSize = font?.pointSize ?? 14
+        let baseFontSize = storedBaseFontSize
 
         switch token.tType {
         case .HEADER:
             let fontSize: CGFloat
             switch token.degree {
-            case 1: fontSize = baseFontSize * 1.714 // 24/14 ratio
-            case 2: fontSize = baseFontSize * 1.429 // 20/14 ratio
-            case 3: fontSize = baseFontSize * 1.214 // 17/14 ratio
-            case 4: fontSize = baseFontSize * 1.143 // 16/14 ratio
-            case 5: fontSize = baseFontSize * 1.071 // 15/14 ratio
-            case 6: fontSize = baseFontSize * 1.0 // 14/14 ratio
+            case 1: fontSize = baseFontSize * (24.0 / 14.0)
+            case 2: fontSize = baseFontSize * (20.0 / 14.0)
+            case 3: fontSize = baseFontSize * (17.0 / 14.0)
+            case 4: fontSize = baseFontSize * (16.0 / 14.0)
+            case 5: fontSize = baseFontSize * (15.0 / 14.0)
+            case 6: fontSize = baseFontSize * (14.0 / 14.0)
             default: fontSize = baseFontSize
             }
 
