@@ -39,9 +39,8 @@ struct MarkdownEditor: NSViewRepresentable {
         scrollView.contentView.postsBoundsChangedNotifications = true
 
         // Configure text view AFTER it has a proper frame
-        textView.backgroundColor = palette.NSbg()
+        textView.setPalette(palette: palette)
         textView.font = font
-        textView.textColor = palette.NSfg()
         textView.isEditable = isEditable
         textView.isSelectable = true
         textView.isVerticallyResizable = true
@@ -59,7 +58,6 @@ struct MarkdownEditor: NSViewRepresentable {
 
         // Set the stored font size and palette colors before formatting
         textView.updateBaseFontSize(font.pointSize)
-        textView.setPaletteColors(textColor: palette.NSfg(), backgroundColor: palette.NSbg())
         textView.typingAttributes = [
             .font: font,
             .foregroundColor: palette.NSfg(),
@@ -74,28 +72,16 @@ struct MarkdownEditor: NSViewRepresentable {
         guard let textView = scrollView.documentView as? MarkdownTextView else { return }
 
         // Update text if it changed externally
-        if textView.string != text {
+        let textChanged = textView.string != text
+        let sizeChanged = font.pointSize != textView.baseFontSize()
+        let fgChanged = textView.textColor != palette.NSfg()
+        let bgChanged = textView.backgroundColor != palette.NSbg()
+        if textChanged || sizeChanged || fgChanged || bgChanged {
             textView.string = text
-            textView.refreshMarkdownFormatting()
-        }
-
-        // Update font, colors, and other properties if they changed
-        let currentSize = textView.font?.pointSize ?? 0
-        let newSize = font.pointSize
-        if currentSize != newSize {
             textView.font = font
-            textView.updateBaseFontSize(newSize)
+            textView.updateBaseFontSize(font.pointSize)
+            textView.setPalette(palette: palette)
             textView.refreshMarkdownFormatting()
-        }
-
-        if textView.textColor != palette.NSfg() {
-            textView.textColor = palette.NSfg()
-            textView.setPaletteColors(textColor: palette.NSfg(), backgroundColor: palette.NSbg())
-            textView.refreshMarkdownFormatting()
-        }
-
-        if textView.backgroundColor != palette.NSbg() {
-            textView.backgroundColor = palette.NSbg()
         }
     }
 

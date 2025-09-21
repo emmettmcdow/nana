@@ -71,7 +71,10 @@ class MarkdownTextView: NSTextView {
         super.didChangeText()
 
         if !isUpdatingFormatting {
-            updateMarkdownFormatting()
+            DispatchQueue.main.async { [weak self] in
+                print("updating formatting")
+                self?.updateMarkdownFormatting()
+            }
         }
     }
 
@@ -84,20 +87,7 @@ class MarkdownTextView: NSTextView {
         let text = string
         let formatting = MarkdownParser.parse(text)
 
-        // Clear existing attributes but preserve text
-        let fullRange = NSRange(location: 0, length: text.count)
-        textStorage.removeAttribute(.font, range: fullRange)
-        textStorage.removeAttribute(.foregroundColor, range: fullRange)
-        textStorage.removeAttribute(.backgroundColor, range: fullRange)
-        textStorage.removeAttribute(.paragraphStyle, range: fullRange)
-
-        // Apply default styling - use the stored font size instead of the potentially changing font property
-        let baseFontSize = storedBaseFontSize
-        let defaultFont = NSFont.systemFont(ofSize: baseFontSize)
-        let defaultColor = textColor ?? NSColor.textColor
-
-        textStorage.addAttribute(.font, value: defaultFont, range: fullRange)
-        textStorage.addAttribute(.foregroundColor, value: defaultColor, range: fullRange)
+        resetAllFormatting(textStorage: textStorage)
 
         // Apply token formatting
         for token in formatting.tokens {
@@ -106,8 +96,20 @@ class MarkdownTextView: NSTextView {
 
             applyTokenFormatting(token: token, range: range, to: textStorage)
         }
+    }
 
-        // Set typing attributes to use the correct base font and color
+    private func resetAllFormatting(textStorage: NSTextStorage) {
+        let fullRange = NSRange(location: 0, length: string.count)
+        let baseFontSize = storedBaseFontSize
+        let defaultFont = NSFont.systemFont(ofSize: baseFontSize)
+        let defaultColor = textColor ?? NSColor.textColor
+
+        textStorage.removeAttribute(.font, range: fullRange)
+        textStorage.removeAttribute(.foregroundColor, range: fullRange)
+        textStorage.removeAttribute(.backgroundColor, range: fullRange)
+        textStorage.removeAttribute(.paragraphStyle, range: fullRange)
+        textStorage.addAttribute(.font, value: defaultFont, range: fullRange)
+        textStorage.addAttribute(.foregroundColor, value: defaultColor, range: fullRange)
         typingAttributes = [
             .font: defaultFont,
             .foregroundColor: defaultColor,
@@ -219,20 +221,25 @@ class MarkdownTextView: NSTextView {
         }
     }
 
-    // Public method to force formatting update (useful for external triggers)
     func refreshMarkdownFormatting() {
         updateMarkdownFormatting()
     }
 
-    // Method to update the base font size
     func updateBaseFontSize(_ fontSize: CGFloat) {
         storedBaseFontSize = fontSize
     }
 
-    // Methods to store palette colors
-    func setPaletteColors(textColor: NSColor, backgroundColor: NSColor) {
-        paletteTextColor = textColor
-        paletteBackgroundColor = backgroundColor
-        insertionPointColor = textColor // Set cursor color to match foreground color
+    func baseFontSize() -> CGFloat {
+        return storedBaseFontSize
+    }
+
+    func setPalette(palette: Palette) {
+        textColor = palette.NSfg()
+        paletteTextColor = palette.NSfg()
+
+        backgroundColor = palette.NSbg()
+        paletteBackgroundColor = palette.NSbg()
+
+        insertionPointColor = palette.NStert()
     }
 }
