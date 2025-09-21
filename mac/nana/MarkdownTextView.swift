@@ -23,11 +23,17 @@ class MarkdownTextView: NSTextView {
     }
 
     private func setupTextView() {
-        isRichText = true
+        isRichText = false
         allowsUndo = true
         isAutomaticQuoteSubstitutionEnabled = false
         isAutomaticDashSubstitutionEnabled = false
         isAutomaticTextReplacementEnabled = false
+        isAutomaticSpellingCorrectionEnabled = false
+        isAutomaticDataDetectionEnabled = false
+        isAutomaticLinkDetectionEnabled = false
+        isContinuousSpellCheckingEnabled = false
+        isGrammarCheckingEnabled = false
+        smartInsertDeleteEnabled = false
         usesFindBar = true
         isVerticallyResizable = true
         isHorizontallyResizable = false
