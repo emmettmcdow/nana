@@ -72,6 +72,9 @@ pub const Markdown = struct {
 
     /// Parses the 'src'. Calling this invalidates(frees) the last returned list of tokens.
     pub fn parse(self: *Self, src: []const u8) []Token {
+        const parse_zone = tracy.beginZone(@src(), .{ .name = "markdown.zig:parse" });
+        defer parse_zone.end();
+
         self.i = 0;
         self.tokens.deinit();
         self.tokens = ArrayList(Token).init(self.allocator);
@@ -113,6 +116,9 @@ pub const Markdown = struct {
 
     /// Completes the token at the end of the list and optionally adds a new one of type newType.
     fn pushToken(self: *Self, newType: ?TokenType, degree: ?u8) void {
+        const push_zone = tracy.beginZone(@src(), .{ .name = "markdown.zig:pushToken" });
+        defer push_zone.end();
+
         if (self.tokens.pop()) |token| {
             var copy = token;
             copy.endI = @min(self.i, self.src.len);
@@ -131,11 +137,16 @@ pub const Markdown = struct {
 
     /// Removes the top element from the list without checking it.
     fn popToken(self: *Self) void {
+        const pop_zone = tracy.beginZone(@src(), .{ .name = "markdown.zig:popToken" });
+        defer pop_zone.end();
         _ = self.tokens.pop();
     }
 
     /// Determines if this is the start of a token. Returns null if not a match, degree otherwise.
     fn match(self: Self, t: TokenType) ?u8 {
+        const match_zone = tracy.beginZone(@src(), .{ .name = "markdown.zig:match" });
+        defer match_zone.end();
+
         switch (t) {
             .HEADER => {
                 if (!self.startOrEndLine()) return null;
@@ -174,6 +185,9 @@ pub const Markdown = struct {
     }
 
     fn startOrEndLine(self: Self) bool {
+        const nl_zone = tracy.beginZone(@src(), .{ .name = "markdown.zig:startOrEndLine" });
+        defer nl_zone.end();
+
         const startOfLine = self.i == 0 or self.src[self.i - 1] == '\n';
         const endOfLine = self.i >= self.src.len or self.src[self.i] == '\n';
         return endOfLine or startOfLine;
@@ -181,6 +195,9 @@ pub const Markdown = struct {
 
     /// Check ahead without moving the write head.
     fn peek(self: Self, i: usize) u8 {
+        const peek_zone = tracy.beginZone(@src(), .{ .name = "markdown.zig:peek" });
+        defer peek_zone.end();
+
         if (self.i + i >= self.src.len) return 0;
         return self.src[self.i + i];
     }
@@ -191,6 +208,9 @@ pub const Markdown = struct {
 
     /// Moves the read-head forward until 'str' is found. Returns whether it was found.
     fn consumeUntil(self: *Self, str: []const u8, consumeOpts: ConsumeOpts) bool {
+        const peek_zone = tracy.beginZone(@src(), .{ .name = "markdown.zig:consumeUntil" });
+        defer peek_zone.end();
+
         while (self.i + 1 + str.len <= self.src.len) {
             self.i += 1;
             if (consumeOpts.newlineBreak and self.src[self.i] == '\n') {
@@ -359,6 +379,7 @@ const ArrayList = std.ArrayList;
 const expect = std.expect;
 const expectEqualDeep = std.testing.expectEqualDeep;
 const expectEqualSlices = std.testing.expectEqualSlices;
+const tracy = @import("tracy");
 
 // Notes
 //
