@@ -79,15 +79,15 @@ extension Note {
         return lhs.id == rhs.id
     }
 
-    mutating func writeAll() {
+    func writeAll() -> Date {
         let res = nana_write_all_with_time(id, content)
         assert(res > 0, "Failed to write-all note")
-        modified = Date(timeIntervalSince1970: TimeInterval(res))
+        return Date(timeIntervalSince1970: TimeInterval(res))
     }
 
-    func isStale() -> Bool {
+    func modTime() -> Date {
         let new_mod = nana_mod_time(id)
         assert(new_mod > 0, "Failed to get mod_time")
-        return modified != Date(timeIntervalSince1970: TimeInterval(new_mod))
+        return Date(timeIntervalSince1970: TimeInterval(new_mod))
     }
 }

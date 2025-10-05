@@ -128,7 +128,7 @@
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "63"
             endingLineNumber = "63"
-            landmarkName = "checkForStaleNote()"
+            landmarkName = "createNewNote()"
             landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>

@@ -35,24 +35,19 @@ class NotesManager: ObservableObject {
     @Published var searchVisible = false
 
     private var cancellables = Set<AnyCancellable>()
+    private var modified: Date = .now
+    private var writing: Bool = false
 
     init() {
         let newId = nana_create()
         assert(newId > 0, "Failed to create new note")
         currentNote = Note(id: newId)
-
-        // Background refresh timer
-        Timer.publish(every: 5.0, on: .main, in: .common)
-            .autoconnect()
-            .sink { [weak self] _ in
-                self?.checkForStaleNote()
-            }
-            .store(in: &cancellables)
+        modified = currentNote.modified
 
         // Auto-save when content changes
         $currentNote
             .map(\.content)
-            .debounce(for: .seconds(1), scheduler: DispatchQueue.main)
+            .debounce(for: .seconds(1), scheduler: DispatchQueue.global(qos: .utility))
             .removeDuplicates()
             .sink { [weak self] _ in
                 self?.saveCurrentNote()
@@ -60,17 +55,9 @@ class NotesManager: ObservableObject {
             .store(in: &cancellables)
     }
 
-    private func checkForStaleNote() {
-        if currentNote.isStale() {
-            currentNote = Note(id: currentNote.id)
-        }
-    }
-
     private func saveCurrentNote() {
         guard currentNote.id != -1 else { return }
-        var mutableNote = currentNote
-        mutableNote.writeAll()
-        currentNote = mutableNote
+        modified = currentNote.writeAll()
     }
 
     func createNewNote() {

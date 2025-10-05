@@ -41,28 +41,18 @@ struct MarkdownEditor: NSViewRepresentable {
         // Configure text view AFTER it has a proper frame
         textView.setPalette(palette: palette)
         textView.font = font
-        textView.isEditable = isEditable
-        textView.isSelectable = true
-        textView.isVerticallyResizable = true
-        textView.isHorizontallyResizable = false
-        textView.textContainerInset = NSSize(width: 8, height: 8)
         textView.delegate = context.coordinator
         textView.autoresizingMask = [.width]
-
-        // Ensure proper initial sizing for the text view
         textView.minSize = NSSize(width: 0, height: 0)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-
-        // Set initial text content
-        textStorage.setAttributedString(NSAttributedString(string: text))
-
-        // Set the stored font size and palette colors before formatting
         textView.updateBaseFontSize(font.pointSize)
         textView.typingAttributes = [
             .font: font,
             .foregroundColor: palette.NSfg(),
         ]
 
+        // Set initial text content
+        textStorage.setAttributedString(NSAttributedString(string: text))
         textView.refreshMarkdownFormatting()
 
         return scrollView

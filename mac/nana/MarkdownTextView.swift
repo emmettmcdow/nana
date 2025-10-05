@@ -34,7 +34,8 @@ class MarkdownTextView: NSTextView {
         isContinuousSpellCheckingEnabled = false
         isGrammarCheckingEnabled = false
         smartInsertDeleteEnabled = false
-        usesFindBar = true
+        usesFindBar = false
+        usesFontPanel = false
         isVerticallyResizable = true
         isHorizontallyResizable = false
         textContainerInset = NSSize(width: 8, height: 8)
@@ -67,12 +68,22 @@ class MarkdownTextView: NSTextView {
         return super.becomeFirstResponder()
     }
 
+    override func shouldChangeText(in affectedCharRange: NSRange, replacementString: String?) -> Bool {
+        // Set typing attributes from previous character before insertion
+        if !isUpdatingFormatting, affectedCharRange.location > 0, let textStorage = textStorage {
+            let prevLocation = affectedCharRange.location - 1
+            if prevLocation < textStorage.length {
+                let attrs = textStorage.attributes(at: prevLocation, effectiveRange: nil)
+                typingAttributes = attrs
+            }
+        }
+        return super.shouldChangeText(in: affectedCharRange, replacementString: replacementString)
+    }
+
     override func didChangeText() {
         super.didChangeText()
-
         if !isUpdatingFormatting {
             DispatchQueue.main.async { [weak self] in
-                print("updating formatting")
                 self?.updateMarkdownFormatting()
             }
         }
@@ -80,20 +91,18 @@ class MarkdownTextView: NSTextView {
 
     private func updateMarkdownFormatting() {
         guard let textStorage = textStorage else { return }
-
         isUpdatingFormatting = true
         defer { isUpdatingFormatting = false }
 
         let text = string
         let formatting = MarkdownParser.parse(text)
 
+        textStorage.beginEditing()
+        defer { textStorage.endEditing() }
         resetAllFormatting(textStorage: textStorage)
-
-        // Apply token formatting
         for token in formatting.tokens {
             let range = NSRange(location: token.startI, length: token.endI - token.startI)
             guard range.location >= 0 && NSMaxRange(range) <= text.count else { continue }
-
             applyTokenFormatting(token: token, range: range, to: textStorage)
         }
     }
@@ -103,13 +112,17 @@ class MarkdownTextView: NSTextView {
         let baseFontSize = storedBaseFontSize
         let defaultFont = NSFont.systemFont(ofSize: baseFontSize)
         let defaultColor = textColor ?? NSColor.textColor
+        let defaultParagraphStyle = NSParagraphStyle.default
 
-        textStorage.removeAttribute(.font, range: fullRange)
-        textStorage.removeAttribute(.foregroundColor, range: fullRange)
-        textStorage.removeAttribute(.backgroundColor, range: fullRange)
-        textStorage.removeAttribute(.paragraphStyle, range: fullRange)
-        textStorage.addAttribute(.font, value: defaultFont, range: fullRange)
-        textStorage.addAttribute(.foregroundColor, value: defaultColor, range: fullRange)
+        // Set all default attributes in one batched operation
+        let defaultAttributes: [NSAttributedString.Key: Any] = [
+            .font: defaultFont,
+            .foregroundColor: defaultColor,
+            .backgroundColor: NSColor.clear, // Explicitly set transparent background
+            .paragraphStyle: defaultParagraphStyle,
+        ]
+
+        textStorage.setAttributes(defaultAttributes, range: fullRange)
         typingAttributes = [
             .font: defaultFont,
             .foregroundColor: defaultColor,
@@ -117,8 +130,14 @@ class MarkdownTextView: NSTextView {
     }
 
     private func applyTokenFormatting(token: MarkdownToken, range: NSRange, to textStorage: NSTextStorage) {
+        var attributes: [NSAttributedString.Key: Any] = [:]
+        var mod_range: NSRange = range
         let defaultColor = textColor ?? NSColor.textColor
         let baseFontSize = storedBaseFontSize
+
+        let codeFont = NSFont.monospacedSystemFont(ofSize: baseFontSize, weight: .regular)
+        let listFont = NSFont.systemFont(ofSize: baseFontSize)
+        let quoteFont = NSFont.systemFont(ofSize: baseFontSize)
 
         switch token.tType {
         case .HEADER:
@@ -134,15 +153,15 @@ class MarkdownTextView: NSTextView {
             }
 
             let headerFont = NSFont.boldSystemFont(ofSize: fontSize)
-            textStorage.addAttribute(.font, value: headerFont, range: range)
-            textStorage.addAttribute(.foregroundColor, value: defaultColor, range: range)
+
+            attributes[.font] = headerFont
+            attributes[.foregroundColor] = defaultColor
 
         case .PLAIN:
             // Default formatting (already applied)
-            break
+            return
 
         case .QUOTE:
-            let quoteFont = NSFont.systemFont(ofSize: baseFontSize)
             let quoteColor = NSColor.secondaryLabelColor
 
             // Create paragraph style with left indent
@@ -150,12 +169,11 @@ class MarkdownTextView: NSTextView {
             paragraphStyle.firstLineHeadIndent = 20
             paragraphStyle.headIndent = 20
 
-            textStorage.addAttribute(.font, value: quoteFont, range: range)
-            textStorage.addAttribute(.foregroundColor, value: quoteColor, range: range)
-            textStorage.addAttribute(.paragraphStyle, value: paragraphStyle, range: range)
+            attributes[.font] = quoteFont
+            attributes[.foregroundColor] = quoteColor
+            attributes[.paragraphStyle] = paragraphStyle
 
         case .BLOCK_CODE:
-            let codeFont = NSFont.monospacedSystemFont(ofSize: baseFontSize * 0.857, weight: .regular) // 12/14 ratio
             // Use palette colors but make them slightly darker
             let originalBackground = paletteBackgroundColor ?? NSColor.textBackgroundColor
             let originalForeground = paletteTextColor ?? NSColor.textColor
@@ -164,60 +182,56 @@ class MarkdownTextView: NSTextView {
             let codeBackgroundColor = originalBackground.blended(withFraction: 0.15, of: NSColor.black) ?? originalBackground
             let codeTextColor = originalForeground
 
-            // Extend background one character past the token to include any following newline
-            var backgroundRange = range
-            if NSMaxRange(range) < string.count {
-                backgroundRange = NSRange(location: range.location, length: range.length + 1)
-            }
+            attributes[.font] = codeFont
+            attributes[.foregroundColor] = codeTextColor
+            attributes[.backgroundColor] = codeBackgroundColor
 
-            textStorage.addAttribute(.font, value: codeFont, range: range)
-            textStorage.addAttribute(.backgroundColor, value: codeBackgroundColor, range: backgroundRange)
-            textStorage.addAttribute(.foregroundColor, value: codeTextColor, range: range)
+            if NSMaxRange(range) < string.count {
+                mod_range = NSRange(location: range.location, length: range.length + 1)
+            }
 
         case .BOLD:
             if let currentFont = textStorage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont {
                 let boldFont = NSFontManager.shared.convert(currentFont, toHaveTrait: .boldFontMask)
-                textStorage.addAttribute(.font, value: boldFont, range: range)
+                attributes[.font] = boldFont
             }
 
         case .ITALIC:
             if let currentFont = textStorage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont {
                 let italicFont = NSFontManager.shared.convert(currentFont, toHaveTrait: .italicFontMask)
-                textStorage.addAttribute(.font, value: italicFont, range: range)
+                attributes[.font] = italicFont
             }
 
         case .CODE:
-            let codeFont = NSFont.monospacedSystemFont(ofSize: baseFontSize * 0.929, weight: .regular) // 13/14 ratio
             let backgroundColor = NSColor.controlBackgroundColor
 
-            textStorage.addAttribute(.font, value: codeFont, range: range)
-            textStorage.addAttribute(.backgroundColor, value: backgroundColor, range: range)
+            attributes[.font] = codeFont
+            attributes[.backgroundColor] = backgroundColor
 
         case .UNORDERED_LIST:
-            // Handle list formatting - no additional indentation, tabs in content are sufficient
-            let listFont = NSFont.systemFont(ofSize: baseFontSize)
-
-            textStorage.addAttribute(.font, value: listFont, range: range)
-            textStorage.addAttribute(.foregroundColor, value: defaultColor, range: range)
+            attributes[.font] = listFont
+            attributes[.foregroundColor] = defaultColor
 
         case .ORDERED_LIST:
-            // Handle ordered list formatting - no additional indentation, tabs in content are sufficient
-            let listFont = NSFont.systemFont(ofSize: baseFontSize)
-
-            textStorage.addAttribute(.font, value: listFont, range: range)
-            textStorage.addAttribute(.foregroundColor, value: defaultColor, range: range)
+            attributes[.font] = listFont
+            attributes[.foregroundColor] = defaultColor
 
         case .EMPHASIS:
             // Triple emphasis (bold + italic)
             if let currentFont = textStorage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont {
                 let boldItalicFont = NSFontManager.shared.convert(currentFont, toHaveTrait: [.boldFontMask, .italicFontMask])
-                textStorage.addAttribute(.font, value: boldItalicFont, range: range)
+                attributes[.font] = boldItalicFont
             }
 
         case .HORZ_RULE:
             // Could add special formatting for horizontal rules
             let ruleColor = NSColor.separatorColor
-            textStorage.addAttribute(.foregroundColor, value: ruleColor, range: range)
+            attributes[.foregroundColor] = ruleColor
+        }
+
+        // Apply all attributes in a single call
+        if !attributes.isEmpty {
+            textStorage.addAttributes(attributes, range: mod_range)
         }
     }
 
