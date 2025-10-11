@@ -20,13 +20,19 @@ import Foundation
     func nana_read_all(_: Int32, _ buffer: inout [Int8], _ bufferSize: Int) -> Int32 {
         let sampleContent = "Sample note content for preview"
         let utf8Array = Array(sampleContent.utf8.map { Int8(bitPattern: $0) }) + [0]
-        let copyCount = min(utf8Array.count, bufferSize)
-        buffer.replaceSubrange(0 ..< copyCount, with: utf8Array.prefix(copyCount))
-        return Int32(copyCount - 1) // Don't count null terminator
+
+        // If buffer is too small, return -1 to signal error
+        if utf8Array.count > bufferSize {
+            return -1
+        }
+
+        // Copy entire content including null terminator
+        buffer.replaceSubrange(0 ..< utf8Array.count, with: utf8Array)
+        return Int32(utf8Array.count - 1) // Don't count null terminator in length
     }
 
     func nana_write_all_with_time(_: Int32, _: String) -> Int64 {
-        return 0 // Success
+        return Int64(Date().timeIntervalSince1970) // Return current timestamp
     }
 #else
     import NanaKit
