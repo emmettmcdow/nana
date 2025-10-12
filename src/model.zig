@@ -1,15 +1,6 @@
 const PATH_MAX = 1000;
-
+const LATEST_V = 1;
 const DB_FILENAME = "db.db";
-
-const GET_LAST_ID = "SELECT id FROM notes ORDER BY id DESC LIMIT 1;";
-
-const GET_NOTE = "SELECT id,created,modified,path FROM notes WHERE id = ?;";
-
-const INSERT_NOTE =
-    \\INSERT INTO notes(id, created, modified, path) VALUES(?, ?, ?, ?) ;
-;
-
 const DB_SETTINGS =
     \\PRAGMA foreign_keys = 1;
 ;
@@ -22,6 +13,21 @@ const NOTE_SCHEMA =
     \\    path TEXT
     \\);
 ;
+const GET_COLS = "PRAGMA table_info(notes);";
+const SHOW_NOTES = "SELECT * from notes;";
+const GET_LAST_ID = "SELECT id FROM notes ORDER BY id DESC LIMIT 1;";
+const GET_NOTE = "SELECT id,created,modified,path FROM notes WHERE id = ?;";
+const DELETE_NOTE = "DELETE FROM notes WHERE id = ?;";
+const EMPTY_NOTE = "SELECT id FROM notes WHERE created = modified LIMIT 1;";
+const SEARCH_NO_QUERY =
+    \\SELECT id FROM notes WHERE created != modified ORDER BY modified DESC LIMIT ?;
+;
+const INSERT_NOTE =
+    \\INSERT INTO notes(id, created, modified, path) VALUES(?, ?, ?, ?) ;
+;
+const UPDATE_NOTE =
+    \\UPDATE notes SET modified = ? WHERE id = ?;
+;
 
 // Making (next|last)_vec_id not a fk because it makes the logic easier - sue me
 const VECTOR_SCHEMA =
@@ -33,40 +39,20 @@ const VECTOR_SCHEMA =
     \\    FOREIGN KEY(note_id) REFERENCES notes(id)
     \\);
 ;
-
+const GET_COLS_VECTOR = "PRAGMA table_info(vectors);";
+const SHOW_VECTOR = "SELECT * from vectors;";
+const UPDATE_VECTOR = "UPDATE vectors SET next_vec_id = ? WHERE vector_id = ?;";
+const GET_NOTEID_FROM_VECID = "SELECT note_id FROM vectors WHERE vector_id = ?;";
+const DELETE_VEC = "DELETE FROM vectors WHERE vector_id = ?;";
+const GET_VECS_FROM_NOTEID =
+    \\SELECT vector_id, note_id, next_vec_id, last_vec_id FROM vectors WHERE note_id = ?;
+;
 const GET_LAST_VECTOR =
     \\SELECT vector_id,note_id,next_vec_id,last_vec_id FROM vectors WHERE next_vec_id IS NULL;
 ;
-
-const UPDATE_VECTOR =
-    \\UPDATE vectors SET next_vec_id = ? WHERE vector_id = ?;
-;
-
 const APPEND_VECTOR =
     \\INSERT INTO vectors(vector_id, note_id, next_vec_id, last_vec_id ) VALUES(?, ?, ?, ?) ;
 ;
-
-const GET_NOTEID_FROM_VECID = "SELECT note_id FROM vectors WHERE vector_id = ?;";
-
-const GET_VECS_FROM_NOTEID = "SELECT vector_id, note_id, next_vec_id, last_vec_id FROM vectors WHERE note_id = ?;";
-const DELETE_VEC = "DELETE FROM vectors WHERE vector_id = ?;";
-
-const UPDATE_NOTE =
-    \\UPDATE notes SET modified = ? WHERE id = ?;
-;
-
-const GET_COLS_VECTOR = "PRAGMA table_info(vectors);";
-const GET_COLS = "PRAGMA table_info(notes);";
-
-const DELETE_NOTE = "DELETE FROM notes WHERE id = ?;";
-
-const EMPTY_NOTE = "SELECT id FROM notes WHERE created = modified LIMIT 1;";
-
-const SEARCH_NO_QUERY = "SELECT id FROM notes WHERE created != modified ORDER BY modified DESC LIMIT ?;";
-
-const SHOW_NOTES = "SELECT * from notes;";
-const SHOW_VECTOR = "SELECT * from vectors;";
-
 pub const Error = error{ NotFound, BufferTooSmall, NotInitialized };
 
 pub const NoteID = u64;
@@ -141,6 +127,7 @@ pub const DB = struct {
     basedir: std.fs.Dir,
     next_id: NoteID,
     allocator: std.mem.Allocator,
+    ready: bool,
 
     const Self = @This();
 
@@ -150,6 +137,13 @@ pub const DB = struct {
         const c_db_path = try std.fs.path.joinZ(allocator, &.{ basedir_path, DB_FILENAME });
         defer allocator.free(c_db_path);
 
+        var we_created = opts.mem;
+        if (!opts.mem) {
+            _ = opts.basedir.access(DB_FILENAME, .{}) catch {
+                we_created = true;
+            };
+        }
+
         var db: sqlite.Db = try sqlite.Db.init(.{
             .mode = if (opts.mem) sqlite.Db.Mode.Memory else sqlite.Db.Mode{ .File = c_db_path },
             .open_flags = .{
@@ -158,6 +152,21 @@ pub const DB = struct {
             },
             .threading_mode = .MultiThread,
         });
+        if (!we_created) {
+            var next_id: usize = 1;
+            const row = try db.one(NoteID, GET_LAST_ID, .{}, .{});
+            if (row) |id| {
+                next_id = id + 1;
+            }
+            return .{
+                .allocator = allocator,
+                .basedir = opts.basedir,
+                .next_id = next_id,
+                .db = db,
+                .ready = false,
+            };
+        }
+
         var stmt = try db.prepare(DB_SETTINGS);
         defer stmt.deinit();
         try stmt.exec(.{}, .{});
@@ -175,15 +184,39 @@ pub const DB = struct {
         if (row) |id| {
             next_id = id + 1;
         }
-        return .{
+
+        var self: Self = .{
             .allocator = allocator,
             .basedir = opts.basedir,
             .next_id = next_id,
             .db = db,
+            .ready = true,
         };
+        try self.setVersion(std.fmt.comptimePrint("{d}", .{LATEST_V}));
+
+        return self;
     }
     pub fn deinit(self: *Self) void {
         self.db.deinit();
+    }
+
+    pub fn is_ready(self: *Self) bool {
+        if (self.ready) return true;
+        const v = self.version() catch return false;
+        if (v == LATEST_V) {
+            self.ready = true;
+        }
+        return self.ready;
+    }
+
+    pub fn version(self: *Self) !u32 {
+        if (try self.db.pragma(u32, .{}, "user_version", null)) |v| return v;
+        return 0;
+    }
+
+    pub fn setVersion(self: *Self, comptime vers: []const u8) !void {
+        _ = try self.db.pragma(void, .{}, "user_version", vers);
+        return;
     }
 
     const PathTypeTag = enum { path, id_based };
@@ -195,6 +228,7 @@ pub const DB = struct {
     };
 
     pub fn create(self: *Self) !NoteID {
+        assert(self.is_ready());
         // Recycle empty notes
         const row = try self.db.one(NoteID, EMPTY_NOTE, .{}, .{});
         if (row) |id| {
@@ -206,6 +240,8 @@ pub const DB = struct {
     }
 
     pub fn import(self: *Self, created: i64, modified: i64, pathOpt: PathType) !NoteID {
+        assert(self.is_ready());
+
         var diags = sqlite.Diagnostics{};
         var stmt = self.db.prepareWithDiags(INSERT_NOTE, .{ .diags = &diags }) catch |err| {
             std.debug.print("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
@@ -228,6 +264,8 @@ pub const DB = struct {
     }
 
     pub fn get(self: *Self, id: NoteID, allocator: std.mem.Allocator) !Note {
+        assert(self.is_ready());
+
         var diags = sqlite.Diagnostics{};
         var stmt = self.db.prepareWithDiags(GET_NOTE, .{ .diags = &diags }) catch |err| {
             std.log.err(
@@ -253,6 +291,8 @@ pub const DB = struct {
     }
 
     pub fn notes(self: *Self) !NoteIterator {
+        assert(self.is_ready());
+
         var diags = sqlite.Diagnostics{};
         var stmt = self.db.prepareWithDiags(SHOW_NOTES, .{ .diags = &diags }) catch |err| {
             std.log.err("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
@@ -262,6 +302,8 @@ pub const DB = struct {
     }
 
     pub fn update(self: *Self, noteID: NoteID) !void {
+        assert(self.is_ready());
+
         var diags = sqlite.Diagnostics{};
         var stmt = self.db.prepareWithDiags(UPDATE_NOTE, .{ .diags = &diags }) catch |err| {
             std.log.err(
@@ -278,7 +320,10 @@ pub const DB = struct {
             .id = noteID,
         });
     }
+
     pub fn delete(self: *Self, note: Note) !void {
+        assert(self.is_ready());
+
         var diags = sqlite.Diagnostics{};
         var stmt = self.db.prepareWithDiags(DELETE_NOTE, .{ .diags = &diags }) catch |err| {
             std.log.err(
@@ -295,6 +340,8 @@ pub const DB = struct {
     }
 
     pub fn searchNoQuery(self: *Self, buf: []c_int, ignore: ?NoteID) !usize {
+        assert(self.is_ready());
+
         const zone = tracy.beginZone(@src(), .{ .name = "model.zig:searchNoQuery" });
         defer zone.end();
 
@@ -329,6 +376,7 @@ pub const DB = struct {
     }
 
     pub fn appendVector(self: *Self, noteID: NoteID, vectorID: VectorID) !void {
+        assert(self.is_ready());
 
         // Get head of list
         const row = try self.db.one(VectorRow, GET_LAST_VECTOR, .{}, .{});
@@ -363,6 +411,8 @@ pub const DB = struct {
     }
 
     pub fn vecToNote(self: *Self, vectorID: VectorID) !NoteID {
+        assert(self.is_ready());
+
         var diags = sqlite.Diagnostics{};
         const query = GET_NOTEID_FROM_VECID;
         var stmt = self.db.prepareWithDiags(query, .{ .diags = &diags }) catch |err| {
@@ -386,6 +436,8 @@ pub const DB = struct {
     }
 
     pub fn vecsForNote(self: *Self, noteID: NoteID) !VectorIterator {
+        assert(self.is_ready());
+
         var diags = sqlite.Diagnostics{};
         var stmt = self.db.prepareWithDiags(GET_VECS_FROM_NOTEID, .{ .diags = &diags }) catch |err| {
             std.log.err("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
@@ -395,6 +447,8 @@ pub const DB = struct {
     }
 
     pub fn deleteVec(self: *Self, vID: VectorID) !void {
+        assert(self.is_ready());
+
         var diags = sqlite.Diagnostics{};
         var stmt = self.db.prepareWithDiags(DELETE_VEC, .{ .diags = &diags }) catch |err| {
             std.log.err("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
@@ -458,6 +512,7 @@ const SchemaRow = struct {
 };
 
 const expect = std.testing.expect;
+const expectEqual = std.testing.expectEqual;
 const expectError = std.testing.expectError;
 const testing_allocator = std.testing.allocator;
 const expectEqlStrings = std.testing.expectEqualStrings;
@@ -694,12 +749,43 @@ test "deleteVec" {
     try expect(n == 0);
 }
 
-test "delete note" {} // TODO
+test "version" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var db = try DB.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
+    defer db.deinit();
+
+    try expectEqual(LATEST_V, db.version());
+    try db.setVersion("69420");
+    try expectEqual(69420, db.version());
+}
+
+const iToS: [30]u8 = undefined;
+fn comptimeIntToString(comptime value: anytype) []const u8 {
+    const result_slice = comptime std.fmt.bufPrint(iToS, "{}", .{value}) catch unreachable;
+    return result_slice;
+}
+
+test "ready" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var db = try DB.init(testing_allocator, .{ .basedir = tmpD.dir });
+    db.deinit();
+    db = try DB.init(testing_allocator, .{ .basedir = tmpD.dir });
+    try db.setVersion("0");
+    db.ready = false;
+
+    try expect(!db.is_ready());
+    try db.setVersion(std.fmt.comptimePrint("{d}", .{LATEST_V}));
+    try expect(db.is_ready());
+    try expect(db.ready);
+}
 
 const std = @import("std");
+const assert = std.debug.assert;
+
 const sqlite = @import("sqlite");
 const Iterator = sqlite.Iterator;
-
 const tracy = @import("tracy");
 
 const types = @import("types.zig");
