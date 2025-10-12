@@ -128,6 +128,8 @@ pub const DB = struct {
     next_id: NoteID,
     allocator: std.mem.Allocator,
     ready: bool,
+    savepoint: ?sqlite.Savepoint = null,
+    saved_next_id: ?NoteID = null,
 
     const Self = @This();
 
@@ -459,6 +461,33 @@ pub const DB = struct {
         return stmt.exec(.{}, .{ .vector_id = vID });
     }
 
+    pub fn startTX(self: *Self) !void {
+        assert(self.savepoint == null);
+        assert(self.saved_next_id == null);
+        self.savepoint = try self.db.savepoint("TX");
+        self.saved_next_id = self.next_id;
+        return;
+    }
+
+    pub fn commitTX(self: *Self) void {
+        assert(self.savepoint != null);
+        assert(self.saved_next_id != null);
+        self.savepoint.?.commit();
+        self.saved_next_id = null;
+        self.savepoint = null;
+        return;
+    }
+
+    pub fn dropTX(self: *Self) void {
+        assert(self.savepoint != null);
+        assert(self.saved_next_id != null);
+        self.savepoint.?.rollback();
+        self.next_id = self.saved_next_id.?;
+        self.saved_next_id = null;
+        self.savepoint = null;
+        return;
+    }
+
     const Table = enum { Notes, Vectors };
 
     pub fn debugShowTable(self: *Self, comptime table: Table) void {
@@ -760,12 +789,6 @@ test "version" {
     try expectEqual(69420, db.version());
 }
 
-const iToS: [30]u8 = undefined;
-fn comptimeIntToString(comptime value: anytype) []const u8 {
-    const result_slice = comptime std.fmt.bufPrint(iToS, "{}", .{value}) catch unreachable;
-    return result_slice;
-}
-
 test "ready" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
@@ -779,6 +802,29 @@ test "ready" {
     try db.setVersion(std.fmt.comptimePrint("{d}", .{LATEST_V}));
     try expect(db.is_ready());
     try expect(db.ready);
+}
+
+test "transactions" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var db = try DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer db.deinit();
+
+    try db.startTX();
+    const noteID = try db.create();
+    try db.update(noteID);
+    db.commitTX();
+    _ = try db.get(noteID, arena.allocator());
+
+    const old_next_id = db.next_id;
+    try db.startTX();
+    const noteID2 = try db.create();
+    try db.update(noteID);
+    db.dropTX();
+    try expectError(Error.NotFound, db.get(noteID2, arena.allocator()));
+    try expectEqual(old_next_id, db.next_id);
 }
 
 const std = @import("std");
