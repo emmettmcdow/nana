@@ -1,4 +1,4 @@
-pub const LATEST_V = 1;
+pub const LATEST_V = 2;
 const PATH_MAX = 1000;
 const DB_FILENAME = "db.db";
 const DB_SETTINGS =
@@ -36,8 +36,14 @@ const VECTOR_SCHEMA =
     \\    note_id INTEGER,
     \\    next_vec_id INTEGER,
     \\    last_vec_id INTEGER,
+    \\    start_i INTEGER,
+    \\    end_i INTEGER,
     \\    FOREIGN KEY(note_id) REFERENCES notes(id)
     \\);
+;
+const VECTOR_ADD_IDX =
+    \\ALTER TABLE vectors ADD COLUMN start_i INTEGER DEFAULT -1;
+    \\ALTER TABLE vectors ADD COLUMN end_i INTEGER DEFAULT -1;
 ;
 const GET_COLS_VECTOR = "PRAGMA table_info(vectors);";
 const SHOW_VECTOR = "SELECT * from vectors;";
@@ -560,6 +566,14 @@ pub const DB = struct {
         try self.setVersion("1");
         return;
     }
+
+    pub fn upgrade_one(self: *Self) !void {
+        var stmt = try self.db.prepare(VECTOR_ADD_IDX);
+        defer stmt.deinit();
+        try stmt.exec(.{}, .{});
+        try self.setVersion("2");
+        return;
+    }
 };
 
 const SchemaRow = struct {
@@ -625,6 +639,8 @@ test "init DB - vector" {
         .{ .name = "note_id", .type = "INTEGER" },
         .{ .name = "next_vec_id", .type = "INTEGER" },
         .{ .name = "last_vec_id", .type = "INTEGER" },
+        .{ .name = "start_i", .type = "INTEGER" },
+        .{ .name = "end_i", .type = "INTEGER" },
     };
 
     var buffer: [1000]u8 = undefined;
@@ -647,18 +663,13 @@ test "re-init DB" {
     var arena1 = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena1.deinit();
 
-    const cwd = std.fs.cwd();
-    // TODO: fix this - sqlite library can't curently use tmpD... ugh
-    _ = cwd.deleteFile("db.db") catch void; // Start fresh!
-    defer _ = cwd.deleteFile("db.db") catch void; // Leave no trace!
-
-    var db = try DB.init(arena1.allocator(), .{ .basedir = tmpD.parent_dir });
+    var db = try DB.init(arena1.allocator(), .{ .basedir = tmpD.dir });
 
     const id1 = try db.create();
     try db.update(id1);
 
     db.deinit();
-    db = try DB.init(arena1.allocator(), .{ .basedir = tmpD.parent_dir });
+    db = try DB.init(arena1.allocator(), .{ .basedir = tmpD.dir });
 
     const id2 = try db.create();
     try expect(id2 == id1 + 1);

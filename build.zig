@@ -260,7 +260,7 @@ pub fn build(b: *std.Build) !void {
         // Uncomment this if lib_unit_tests needs lldb args or test args
         // "--",
     });
-    lldb.addArtifactArg(root_unit_tests);
+    lldb.addArtifactArg(model_unit_tests);
     const lldb_step = b.step("debug", "run the tests under lldb");
     lldb_step.dependOn(&lldb.step);
 }

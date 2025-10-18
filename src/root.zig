@@ -300,6 +300,7 @@ pub const Runtime = struct {
         for (from..to) |v| {
             switch (v) {
                 0 => try self.db.upgrade_zero(),
+                1 => try self.db.upgrade_one(),
                 model.LATEST_V => {},
                 else => unreachable,
             }
