@@ -488,6 +488,32 @@ pub const DB = struct {
         return;
     }
 
+    pub fn backup(self: *Self) !void {
+        var buf: [PATH_MAX]u8 = undefined;
+        const backup_name = try std.fmt.bufPrint(
+            &buf,
+            "{s}.bak.{d}",
+            .{ DB_FILENAME, try self.version() },
+        );
+
+        var src_f = try self.basedir.openFile(DB_FILENAME, .{ .mode = .read_only });
+        defer src_f.close();
+        var src = src_f.reader();
+
+        var dest_f = try self.basedir.createFile(backup_name, .{});
+        defer dest_f.close();
+        var dest = dest_f.writer();
+
+        var buffer: [4096]u8 = undefined;
+        while (true) {
+            const bytes_read = try src.readAll(buffer[0..]);
+            if (bytes_read == 0) break;
+            try dest.writeAll(buffer[0..bytes_read]);
+        }
+
+        return;
+    }
+
     const Table = enum { Notes, Vectors };
 
     pub fn debugShowTable(self: *Self, comptime table: Table) void {
@@ -825,6 +851,49 @@ test "transactions" {
     db.dropTX();
     try expectError(Error.NotFound, db.get(noteID2, arena.allocator()));
     try expectEqual(old_next_id, db.next_id);
+}
+
+fn equalData(d: *std.fs.Dir, file_path_1: []const u8, file_path_2: []const u8) !bool {
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    const file1 = try d.openFile(file_path_1, .{ .mode = .read_only });
+    defer file1.close();
+    const file2 = try d.openFile(file_path_2, .{ .mode = .read_only });
+    defer file2.close();
+
+    const buffer_size = 4096;
+    var buffer1 = try arena.allocator().alloc(u8, buffer_size);
+    var buffer2 = try arena.allocator().alloc(u8, buffer_size);
+
+    while (true) {
+        const bytes_read1 = try file1.read(buffer1);
+        const bytes_read2 = try file2.read(buffer2);
+
+        if (bytes_read1 != bytes_read2) return false;
+        if (bytes_read1 == 0) return true;
+
+        if (!std.mem.eql(u8, buffer1[0..bytes_read1], buffer2[0..bytes_read2])) return false;
+    }
+}
+
+test "backup" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var db = try DB.init(arena.allocator(), .{ .basedir = tmpD.dir });
+    defer db.deinit();
+
+    try db.backup();
+    var buf: [PATH_MAX]u8 = undefined;
+    const backup_name = try std.fmt.bufPrint(
+        &buf,
+        "{s}.bak.{d}",
+        .{ DB_FILENAME, try db.version() },
+    );
+    try tmpD.dir.access(backup_name, .{});
+    try expect(try equalData(&tmpD.dir, DB_FILENAME, backup_name));
 }
 
 const std = @import("std");
