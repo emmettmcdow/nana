@@ -10,6 +10,7 @@ import SwiftUI
 
 #if DISABLE_NANAKIT
     func nana_init(_: UnsafePointer<Int8>, _: UInt32) -> Int {
+        Thread.sleep(forTimeInterval: 5.0)
         return 0
     }
 #else
@@ -18,7 +19,14 @@ import SwiftUI
 
 @main
 struct nanaApp: App {
-    init() {
+    @State private var startupRun: Bool = false
+
+    @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
+    @Environment(\.colorScheme) private var colorScheme
+
+    private nonisolated func onStartup() async {
+        guard !(await startupRun) else { return }
+
         guard let containerIdentifier = Bundle.main.object(forInfoDictionaryKey:
             "CloudKitContainerIdentifier") as? String
         else {
@@ -37,16 +45,39 @@ struct nanaApp: App {
             return
         }
         let basedir = url.path()
-
         let err = nana_init(basedir, UInt32(basedir.count))
         if err != 0 {
             fatalError("Failed to init libnana! With error:\(err)")
         }
+        await MainActor.run {
+            self.startupRun = true
+        }
     }
 
     var body: some Scene {
+        let palette = Palette.forPreference(preference, colorScheme: colorScheme)
+
         WindowGroup {
-            ContentView()
+            ZStack {
+                if !startupRun {
+                    HStack {
+                        VStack {
+                            Spacer()
+                            LoadingBanana()
+                        }
+                        Spacer()
+                    }
+                    .background(palette.background)
+                } else {
+                    ContentView()
+                        .disabled(!startupRun)
+                }
+            }
+            .onAppear {
+                Task.detached {
+                    await onStartup()
+                }
+            }
         }.windowStyle(HiddenTitleBarWindowStyle())
 
         #if os(macOS)

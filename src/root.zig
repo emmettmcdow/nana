@@ -43,6 +43,8 @@ pub const Runtime = struct {
             .skipEmbed = opts.skipEmbed,
         };
 
+        try self.migrate();
+
         var notes = try self.db.notes();
         defer notes.deinit();
 
@@ -284,6 +286,27 @@ pub const Runtime = struct {
         try json.stringify(self.markdown.parse(content), .{}, self.lastParsedMD.?.writer());
         try self.lastParsedMD.?.writer().writeByte(0);
         return self.lastParsedMD.?.items;
+    }
+
+    fn migrate(self: *Runtime) !void {
+        const from = try self.db.version();
+        const to = model.LATEST_V;
+
+        if (from == to) return;
+        try self.db.backup();
+
+        try self.db.startTX();
+        errdefer self.db.dropTX();
+        for (from..to) |v| {
+            switch (v) {
+                0 => try self.db.upgrade_zero(),
+                model.LATEST_V => {},
+                else => unreachable,
+            }
+        }
+
+        self.db.commitTX();
+        return;
     }
 
     fn embedText(self: *Runtime, id: NoteID, content: []const u8) !void {

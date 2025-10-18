@@ -11,7 +11,7 @@ enum NanaError {
 };
 
 int nana_init(const char *, unsigned int);
-int nana_deinit();
+int nana_deinit(void);
 int nana_create(void);
 int nana_import(const char *, unsigned int);
 long nana_create_time(int);

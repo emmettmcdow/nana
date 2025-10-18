@@ -1,5 +1,5 @@
+pub const LATEST_V = 1;
 const PATH_MAX = 1000;
-const LATEST_V = 1;
 const DB_FILENAME = "db.db";
 const DB_SETTINGS =
     \\PRAGMA foreign_keys = 1;
@@ -554,6 +554,11 @@ pub const DB = struct {
                 }
             },
         }
+    }
+
+    pub fn upgrade_zero(self: *Self) !void {
+        try self.setVersion("1");
+        return;
     }
 };
 
