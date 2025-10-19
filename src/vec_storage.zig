@@ -59,7 +59,7 @@ pub inline fn writeVec(v: Vector, w: *FileWriter, endian: std.builtin.Endian) !v
     }
 }
 
-// ********************************************************************************************* DB
+// **************************************************************************************** Storage
 pub const BinaryTypeRepresentation = enum(u8) {
     float32,
     uint8,
@@ -120,7 +120,7 @@ pub const StorageMetadata = packed struct {
 //
 //  Each index corresponds to a single index within the vector array.
 //  The integer will be non-zero if that vector index is occupied, zero otherwise.
-pub const DB = struct {
+pub const Storage = struct {
     meta: StorageMetadata = v1_meta,
     index: []u8,
     vectors: []Vector,
@@ -139,7 +139,7 @@ pub const DB = struct {
         @memset(vecs, std.mem.zeroes(Vector));
         const idx = try allocator.alloc(u8, opts.sz);
         @memset(idx, 0);
-        return DB{
+        return Storage{
             .vectors = vecs,
             .index = idx,
             .capacity = opts.sz,
@@ -312,7 +312,7 @@ test "test put / get" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    var inst = try DB.init(arena.allocator(), tmpD.dir, .{});
+    var inst = try Storage.init(arena.allocator(), tmpD.dir, .{});
     try expect(inst.meta.vec_n == 0);
     const vec1 = Vector{ 1, 1, 1 };
     const id = try inst.put(vec1);
@@ -322,13 +322,13 @@ test "test put / get" {
     try expect(@reduce(.And, vec1 == vec2));
 }
 
-test "re-init DB" {
+test "re Storage" {
     var tmpD = tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    var inst = try DB.init(arena.allocator(), tmpD.dir, .{});
+    var inst = try Storage.init(arena.allocator(), tmpD.dir, .{});
     try expect(inst.meta.vec_n == 0);
     const vec1 = Vector{ 1, 1, 1 };
     const id = try inst.put(vec1);
@@ -336,7 +336,7 @@ test "re-init DB" {
     try inst.save("temp.db");
     inst.deinit();
 
-    var inst2 = try DB.init(arena.allocator(), tmpD.dir, .{});
+    var inst2 = try Storage.init(arena.allocator(), tmpD.dir, .{});
     inst2 = try inst2.load("temp.db");
     try expect(inst2.meta.vec_n == 1);
     const vec2 = inst2.get(id);
@@ -344,7 +344,7 @@ test "re-init DB" {
     inst2.deinit();
 }
 
-test "re-init DB multiple" {
+test "re Storage multiple" {
     var tmpD = tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
@@ -357,7 +357,7 @@ test "re-init DB multiple" {
         .{ -0.5, -0.5, -0.5 },
     };
 
-    var inst = try DB.init(arena.allocator(), tmpD.dir, .{});
+    var inst = try Storage.init(arena.allocator(), tmpD.dir, .{});
     try expect(inst.meta.vec_n == 0);
     for (vecs) |vec| {
         _ = try inst.put(vec);
@@ -366,7 +366,7 @@ test "re-init DB multiple" {
     try inst.save("temp.db");
     inst.deinit();
 
-    var inst2 = try DB.init(arena.allocator(), tmpD.dir, .{});
+    var inst2 = try Storage.init(arena.allocator(), tmpD.dir, .{});
     inst2 = try inst2.load("temp.db");
     try expect(inst2.meta.vec_n == vecs.len);
     for (0..vecs.len - 1) |i| {
@@ -375,7 +375,7 @@ test "re-init DB multiple" {
     inst2.deinit();
 }
 
-test "re-init DB index" {
+test "re Storage index" {
     var tmpD = tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
@@ -389,7 +389,7 @@ test "re-init DB index" {
     };
     var ids: [4]VectorID = undefined;
 
-    var inst = try DB.init(arena.allocator(), tmpD.dir, .{});
+    var inst = try Storage.init(arena.allocator(), tmpD.dir, .{});
     try expect(inst.meta.vec_n == 0);
     for (vecs, 0..) |vec, i| {
         ids[i] = try inst.put(vec);
@@ -408,7 +408,7 @@ test "re-init DB index" {
     try inst.save("temp.db");
     inst.deinit();
 
-    var inst2 = try DB.init(arena.allocator(), tmpD.dir, .{});
+    var inst2 = try Storage.init(arena.allocator(), tmpD.dir, .{});
     inst2 = try inst2.load("temp.db");
     try expect(inst2.meta.vec_n == vecs.len - 2);
     try expect(inst2.index[0] == 0);
@@ -424,7 +424,7 @@ test "test put resize" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    var inst = try DB.init(arena.allocator(), tmpD.dir, .{});
+    var inst = try Storage.init(arena.allocator(), tmpD.dir, .{});
     try expect(inst.meta.vec_n == 0);
     try expect(inst.capacity == 32);
 
@@ -445,7 +445,7 @@ test "no failure on loading non-existent db" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    var inst = try DB.init(arena.allocator(), tmpD.dir, .{});
+    var inst = try Storage.init(arena.allocator(), tmpD.dir, .{});
     _ = try inst.load("vecs.db");
     inst.deinit();
 }
@@ -456,7 +456,7 @@ test "grow" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    var inst = try DB.init(arena.allocator(), tmpD.dir, .{ .sz = 1 });
+    var inst = try Storage.init(arena.allocator(), tmpD.dir, .{ .sz = 1 });
     try inst.grow();
     try expect(inst.capacity == 1);
     try expect(inst.vectors.len == 1);

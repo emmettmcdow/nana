@@ -5,7 +5,7 @@ const VECTOR_DB_PATH = "vecs.db";
 pub const Runtime = struct {
     basedir: std.fs.Dir,
     db: model.DB,
-    vectors: vector.DB,
+    vectors: vector.Storage,
     embedder: embed.Embedder,
     markdown: markdown.Markdown,
     allocator: std.mem.Allocator,
@@ -31,7 +31,7 @@ pub const Runtime = struct {
 
         const embedder = try embed.Embedder.init(allocator);
         const markdown_parser = markdown.Markdown.init(allocator);
-        var vectors = try vector.DB.init(allocator, opts.basedir, .{});
+        var vectors = try vector.Storage.init(allocator, opts.basedir, .{});
 
         var self = Runtime{
             .basedir = opts.basedir,
