@@ -322,10 +322,10 @@ pub const Runtime = struct {
         }
 
         var it = self.embedder.split(content);
-        while (it.next()) |sentence| {
-            if (sentence.len < 2) continue;
-            const vec = try self.embedder.embed(sentence) orelse continue;
-            try self.db.appendVector(id, try self.vectors.put(vec));
+        while (it.next()) |chunk| {
+            if (chunk.contents.len < 2) continue;
+            const vec = try self.embedder.embed(chunk.contents) orelse continue;
+            try self.db.appendVector(id, try self.vectors.put(vec), chunk.start_i, chunk.end_i);
             self.db.debugShowTable(.Vectors);
         }
 

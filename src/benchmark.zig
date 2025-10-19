@@ -180,13 +180,13 @@ test "debug view embedding splitting" {
     var it = rt.embedder.split(EXAMPLE_NOTE_1);
     var n: f32 = 0;
     var n_split: f32 = 0;
-    while (it.next()) |sentence| {
-        var embedded = sentence.len > 2;
-        const embedding = try rt.embedder.embed(sentence);
+    while (it.next()) |chunk| {
+        var embedded = chunk.contents.len > 2;
+        const embedding = try rt.embedder.embed(chunk.contents);
         embedded = embedded and (embedding != null);
         n_split += if (embedded) 1.0 else 0.0;
         n += 1.0;
-        std.debug.print("({}, {s})\n", .{ embedded, sentence });
+        std.debug.print("({}, {s})\n", .{ embedded, chunk.contents });
     }
     const percentage = (n_split / n) * 100;
     std.debug.print("{d:.2}% Embedded\n", .{percentage});

@@ -42,8 +42,8 @@ const VECTOR_SCHEMA =
     \\);
 ;
 const VECTOR_ADD_IDX =
-    \\ALTER TABLE vectors ADD COLUMN start_i INTEGER DEFAULT -1;
-    \\ALTER TABLE vectors ADD COLUMN end_i INTEGER DEFAULT -1;
+    \\ALTER TABLE vectors ADD COLUMN start_i INTEGER DEFAULT 0;
+    \\ALTER TABLE vectors ADD COLUMN end_i INTEGER DEFAULT 0;
 ;
 const GET_COLS_VECTOR = "PRAGMA table_info(vectors);";
 const SHOW_VECTOR = "SELECT * from vectors;";
@@ -57,7 +57,7 @@ const GET_LAST_VECTOR =
     \\SELECT vector_id,note_id,next_vec_id,last_vec_id FROM vectors WHERE next_vec_id IS NULL;
 ;
 const APPEND_VECTOR =
-    \\INSERT INTO vectors(vector_id, note_id, next_vec_id, last_vec_id ) VALUES(?, ?, ?, ?) ;
+    \\INSERT INTO vectors(vector_id, note_id, next_vec_id, last_vec_id, start_i, end_i) VALUES(?, ?, ?, ?, ?, ?) ;
 ;
 pub const Error = error{ NotFound, BufferTooSmall, NotInitialized };
 
@@ -383,7 +383,13 @@ pub const DB = struct {
         return written;
     }
 
-    pub fn appendVector(self: *Self, noteID: NoteID, vectorID: VectorID) !void {
+    pub fn appendVector(
+        self: *Self,
+        noteID: NoteID,
+        vectorID: VectorID,
+        start_i: u32,
+        end_i: u32,
+    ) !void {
         assert(self.is_ready());
 
         // Get head of list
@@ -415,6 +421,8 @@ pub const DB = struct {
             .noteid = noteID,
             .nextid = null,
             .lastid = prev_head_id,
+            .start_i = start_i,
+            .end_i = end_i,
         });
     }
 
@@ -732,9 +740,9 @@ test "appendVector + vec2note simple" {
     defer db.deinit();
 
     const noteID = try db.create();
-    try db.appendVector(noteID, 420);
-    try db.appendVector(noteID, 69);
-    try db.appendVector(noteID, 42);
+    try db.appendVector(noteID, 420, 0, 0);
+    try db.appendVector(noteID, 69, 0, 0);
+    try db.appendVector(noteID, 42, 0, 0);
 
     try expect(noteID == try db.vecToNote(420));
     try expect(noteID == try db.vecToNote(69));
@@ -750,9 +758,9 @@ test "appending is consecutive" {
     defer db.deinit();
 
     const noteID = try db.create();
-    try db.appendVector(noteID, 1);
-    try db.appendVector(noteID, 2);
-    try db.appendVector(noteID, 3);
+    try db.appendVector(noteID, 1, 0, 0);
+    try db.appendVector(noteID, 2, 0, 0);
+    try db.appendVector(noteID, 3, 0, 0);
 
     const buf: [3]VectorRow = .{
         .{ .note_id = noteID, .vector_id = 1, .next_vec_id = 2, .last_vec_id = null },
@@ -801,9 +809,9 @@ test "deleteVec" {
     defer db.deinit();
 
     const noteID = try db.create();
-    try db.appendVector(noteID, 1);
-    try db.appendVector(noteID, 2);
-    try db.appendVector(noteID, 3);
+    try db.appendVector(noteID, 1, 0, 0);
+    try db.appendVector(noteID, 2, 0, 0);
+    try db.appendVector(noteID, 3, 0, 0);
 
     var it = try db.vecsForNote(noteID);
     while (try it.next()) |row| {

@@ -30,13 +30,9 @@ pub const Embedder = struct {
         _ = self;
     }
 
-    pub fn split(self: Self, note: []const u8) std.mem.SplitIterator(u8, .any) {
+    pub fn split(self: Self, note: []const u8) EmbedIterator {
         _ = self;
-        return .{
-            .index = 0,
-            .buffer = note,
-            .delimiter = ".!?\n",
-        };
+        return EmbedIterator.init(note);
     }
 
     pub fn embed(self: *Self, str: []const u8) !?Vector {
@@ -62,6 +58,44 @@ pub const Embedder = struct {
         }
 
         return vector[0..vec_sz].*;
+    }
+};
+
+pub const Sentence = struct {
+    contents: []const u8,
+    start_i: u32,
+    end_i: u32,
+};
+
+pub const EmbedIterator = struct {
+    const Self = @This();
+
+    splitter: std.mem.SplitIterator(u8, .any),
+    curr_i: u32,
+
+    pub fn init(buffer: []const u8) Self {
+        return .{
+            .splitter = std.mem.SplitIterator(u8, .any){
+                .index = 0,
+                .buffer = buffer,
+                .delimiter = ".!?\n",
+            },
+            .curr_i = 0,
+        };
+    }
+
+    pub fn next(self: *Self) ?Sentence {
+        if (self.splitter.next()) |sentence| {
+            const out = Sentence{
+                .contents = sentence,
+                .start_i = self.curr_i,
+                .end_i = self.curr_i + @as(u32, @intCast(sentence.len)),
+            };
+            self.curr_i += @intCast(sentence.len + 1);
+            return out;
+        } else {
+            return null;
+        }
     }
 };
 
@@ -113,9 +147,35 @@ test "embed skip failures" {
     _ = try e.embed("(*^(*&(# 4327897493287498*&)(FKJDHDHLKDJHLKFHKLFHD") orelse assert(false);
 }
 
+test "split" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var e = try Embedder.init(allocator);
+
+    const input_str = "foo.bar.baz";
+    var splitter = e.split(input_str);
+    while (splitter.next()) |chunk| {
+        try expectEqualStrings(input_str[chunk.start_i..chunk.end_i], chunk.contents);
+    }
+
+    const input_str_2 = "foo..bar";
+    splitter = e.split(input_str_2);
+    while (splitter.next()) |chunk| {
+        try expectEqualStrings(input_str_2[chunk.start_i..chunk.end_i], chunk.contents);
+    }
+
+    const input_str_3 = "foo.";
+    splitter = e.split(input_str_3);
+    while (splitter.next()) |chunk| {
+        try expectEqualStrings(input_str_3[chunk.start_i..chunk.end_i], chunk.contents);
+    }
+}
+
 const std = @import("std");
 const assert = std.debug.assert;
 const expectEqual = std.testing.expectEqual;
+const expectEqualStrings = std.testing.expectEqualStrings;
 const parseFromSliceLeaky = std.json.parseFromSliceLeaky;
 
 const objc = @import("objc");

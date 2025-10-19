@@ -249,7 +249,8 @@ pub fn build(b: *std.Build) !void {
     test_step.dependOn(test_model);
     test_step.dependOn(test_embed);
     test_step.dependOn(test_vector);
-    test_step.dependOn(test_benchmark);
+    // Enable this to see benchmark output
+    // test_step.dependOn(test_benchmark);
 
     ////////////////////
     // Test Debugging //
