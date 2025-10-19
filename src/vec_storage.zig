@@ -179,7 +179,7 @@ pub const DB = struct {
     }
 
     pub fn search(self: Self, query: Vector, buf: []VectorID) !usize {
-        const zone = tracy.beginZone(@src(), .{ .name = "vector.zig:search" });
+        const zone = tracy.beginZone(@src(), .{ .name = "vec_storage.zig:search" });
         defer zone.end();
         // This scores best on the benchmark but vibes-wise it's way off
         const THRESHOLD = 0.35;

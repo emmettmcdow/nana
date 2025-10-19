@@ -43,7 +43,7 @@ pub fn build(b: *std.Build) !void {
     const root_file = b.path("src/root.zig");
     const model_file = b.path("src/model.zig");
     const embed_file = b.path("src/embed.zig");
-    const vector_file = b.path("src/vector.zig");
+    const vector_file = b.path("src/vec_storage.zig");
     const benchmark_file = b.path("src/benchmark.zig");
     const profile_file = b.path("src/profile.zig");
 
@@ -175,7 +175,7 @@ pub fn build(b: *std.Build) !void {
     });
     vector_unit_tests.root_module.addOptions("config", vector_options);
     const run_vector_unit_tests = b.addRunArtifact(vector_unit_tests);
-    const test_vector = b.step("test-vector", "run the tests for src/vector.zig");
+    const test_vector = b.step("test-vector", "run the tests for src/vec_storage.zig");
     test_vector.dependOn(&run_vector_unit_tests.step);
 
     // Benchmark
