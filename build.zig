@@ -43,7 +43,8 @@ pub fn build(b: *std.Build) !void {
     const root_file = b.path("src/root.zig");
     const model_file = b.path("src/model.zig");
     const embed_file = b.path("src/embed.zig");
-    const vector_file = b.path("src/vec_storage.zig");
+    const vec_storage_file = b.path("src/vec_storage.zig");
+    const vector_file = b.path("src/vector.zig");
     const benchmark_file = b.path("src/benchmark.zig");
     const profile_file = b.path("src/profile.zig");
 
@@ -162,21 +163,53 @@ pub fn build(b: *std.Build) !void {
     const test_embed = b.step("test-embed", "run the tests for src/embed.zig");
     test_embed.dependOn(&run_embed_unit_tests.step);
 
-    // Vector
-    const vector_options = b.addOptions();
-    // vector_options.addOption(type, "vec_type", f32);
-    vector_options.addOption(usize, "vec_sz", 3);
-    vector_options.addOption(bool, "debug", debug);
-    const vector_unit_tests = b.addTest(.{
+    // Vector Storage
+    const vec_storage_options = b.addOptions();
+    vec_storage_options.addOption(usize, "vec_sz", 3);
+    vec_storage_options.addOption(bool, "debug", debug);
+    const vec_storage_unit_tests = b.addTest(.{
+        .root_source_file = vec_storage_file,
+        .target = x86_target,
+        .optimize = optimize,
+        .filters = &.{"vec_storage"},
+    });
+    vec_storage_unit_tests.root_module.addOptions("config", vec_storage_options);
+    const run_vec_storage_unit_tests = b.addRunArtifact(vec_storage_unit_tests);
+    const test_vec_storage = b.step("test-vec_storage", "run the tests for src/vec_storage.zig");
+    test_vec_storage.dependOn(&run_vec_storage_unit_tests.step);
+
+    // Vector DB
+    const vec_options = b.addOptions();
+    vec_options.addOption(usize, "vec_sz", VEC_SZ);
+    vec_options.addOption(bool, "debug", debug);
+    const vec_unit_tests = b.addTest(.{
         .root_source_file = vector_file,
         .target = x86_target,
         .optimize = optimize,
         .filters = &.{"vector"},
     });
-    vector_unit_tests.root_module.addOptions("config", vector_options);
-    const run_vector_unit_tests = b.addRunArtifact(vector_unit_tests);
-    const test_vector = b.step("test-vector", "run the tests for src/vec_storage.zig");
-    test_vector.dependOn(&run_vector_unit_tests.step);
+    _ = SQLite.create(.{
+        .b = b,
+        .dest = vec_unit_tests,
+        .target = x86_target,
+        .optimize = optimize,
+    });
+    _ = ObjC.create(.{
+        .b = b,
+        .dest = vec_unit_tests,
+        .target = x86_target,
+        .optimize = optimize,
+    });
+    _ = Tracy.create(.{
+        .b = b,
+        .dest = vec_unit_tests,
+        .target = x86_target,
+        .optimize = optimize,
+    });
+    vec_unit_tests.root_module.addOptions("config", vec_options);
+    const run_vec_unit_tests = b.addRunArtifact(vec_unit_tests);
+    const test_vec = b.step("test-vector", "run the tests for src/vector.zig");
+    test_vec.dependOn(&run_vec_unit_tests.step);
 
     // Benchmark
     const benchmark_options = b.addOptions();
@@ -248,7 +281,8 @@ pub fn build(b: *std.Build) !void {
     test_step.dependOn(test_root);
     test_step.dependOn(test_model);
     test_step.dependOn(test_embed);
-    test_step.dependOn(test_vector);
+    test_step.dependOn(test_vec_storage);
+    test_step.dependOn(test_vec);
     // Enable this to see benchmark output
     // test_step.dependOn(test_benchmark);
 
@@ -261,7 +295,7 @@ pub fn build(b: *std.Build) !void {
         // Uncomment this if lib_unit_tests needs lldb args or test args
         // "--",
     });
-    lldb.addArtifactArg(model_unit_tests);
+    lldb.addArtifactArg(root_unit_tests);
     const lldb_step = b.step("debug", "run the tests under lldb");
     lldb_step.dependOn(&lldb.step);
 }

@@ -35,7 +35,7 @@ pub const Embedder = struct {
         return EmbedIterator.init(note);
     }
 
-    pub fn embed(self: *Self, str: []const u8) !?Vector {
+    pub fn embed(self: *Self, str: []const u8) !?[]vec_type {
         const zone = tracy.beginZone(@src(), .{ .name = "embed.zig:embed" });
         defer zone.end();
 
@@ -51,13 +51,13 @@ pub const Embedder = struct {
         defer self.allocator.free(c_str);
         const objc_str = NSString.msgSend(Object, fromUTF8, .{c_str.ptr});
 
-        var vector: []vec_type = try self.allocator.alloc(vec_type, vec_sz);
+        const vector: []vec_type = try self.allocator.alloc(vec_type, vec_sz);
         if (!self.embedder.msgSend(bool, getVectorForString, .{ vector.ptr, objc_str })) {
             std.log.err("Failed to embed {s}\n", .{str[0..@min(str.len, 10)]});
             return null;
         }
 
-        return vector[0..vec_sz].*;
+        return vector;
     }
 };
 
@@ -115,15 +115,19 @@ test "embed - embed" {
     var e = try Embedder.init(allocator);
 
     var output = try e.embed("Hello world");
+    defer if (output) |o| allocator.free(o);
     // We don't check this too hard because the work to save vectors is not worth the reward.
     // Better to check at the interface level. i.e. we don't care what the specific embedding is
     // as long as the output is what we desire. This test is just to verify that the embedder
     // doesn't do anything FUBAR.
-    var sum = @reduce(.Add, output.?);
+    var vec: Vector = output.?[0..vec_sz].*;
+    var sum = @reduce(.Add, vec);
     try expectEqual(1.009312, sum);
 
     output = try e.embed("Hello again world");
-    sum = @reduce(.Add, output.?);
+    defer if (output) |o| allocator.free(o);
+    vec = output.?[0..vec_sz].*;
+    sum = @reduce(.Add, vec);
     try expectEqual(7.870239, sum);
 }
 
@@ -134,7 +138,8 @@ test "embed skip empty" {
 
     var e = try Embedder.init(allocator);
 
-    _ = try e.embed("Hello world") orelse assert(false);
+    const vec_slice = try e.embed("Hello world") orelse unreachable;
+    defer allocator.free(vec_slice);
 }
 
 test "embed skip failures" {
@@ -144,7 +149,8 @@ test "embed skip failures" {
 
     var e = try Embedder.init(allocator);
 
-    _ = try e.embed("(*^(*&(# 4327897493287498*&)(FKJDHDHLKDJHLKFHKLFHD") orelse assert(false);
+    const vec_slice = try e.embed("(*^(*&(# 4327897493287498*&)(FKJDHDHLKDJHLKFHKLFHD") orelse unreachable;
+    defer allocator.free(vec_slice);
 }
 
 test "split" {

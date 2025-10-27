@@ -218,8 +218,12 @@ pub const DB = struct {
     }
 
     pub fn version(self: *Self) !u32 {
-        if (try self.db.pragma(u32, .{}, "user_version", null)) |v| return v;
-        return 0;
+        if (try self.db.pragma(u32, .{}, "user_version", null)) |v| {
+            return v;
+        } else {
+            std.debug.print("Could not get user version\n", .{});
+        }
+        unreachable;
     }
 
     pub fn setVersion(self: *Self, comptime vers: []const u8) !void {

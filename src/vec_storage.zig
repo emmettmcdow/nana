@@ -149,6 +149,7 @@ pub const Storage = struct {
     }
     pub fn deinit(self: *Self) void {
         self.allocator.free(self.vectors);
+        self.allocator.free(self.index);
     }
 
     pub fn get(self: Self, id: VectorID) Vector {
@@ -240,7 +241,7 @@ pub const Storage = struct {
         return;
     }
 
-    pub fn load(self: *Self, path: []const u8) !Self {
+    pub fn load(self: *Self, path: []const u8) !void {
         // We take the naiive approach to reading for now. We only have one version of the file,
         // but we have future proofed ourselves to be able to use multiple. We don't yet need
         // multiple so we can just read the file in a "dumb" way.
@@ -248,7 +249,7 @@ pub const Storage = struct {
         // Dumb = not reading metadata before reading the whole file.
         var f = self.dir.openFile(path, .{ .mode = .read_only }) catch |err| switch (err) {
             // Don't do anything if there is no file to load: file is created on save
-            std.fs.File.OpenError.FileNotFound => return self.*,
+            std.fs.File.OpenError.FileNotFound => return,
             else => return err,
         };
         defer f.close();
@@ -274,8 +275,6 @@ pub const Storage = struct {
             try readVec(&v, &reader, endian);
             self.putAt(v, i);
         }
-
-        return self.*;
     }
 
     /// Locates the next empty index for a vector. Prioritizes filling holes in the arrays.
@@ -311,8 +310,9 @@ test "test put / get" {
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
-
     var inst = try Storage.init(arena.allocator(), tmpD.dir, .{});
+    defer inst.deinit();
+
     try expect(inst.meta.vec_n == 0);
     const vec1 = Vector{ 1, 1, 1 };
     const id = try inst.put(vec1);
@@ -327,8 +327,9 @@ test "re Storage" {
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
-
     var inst = try Storage.init(arena.allocator(), tmpD.dir, .{});
+    defer inst.deinit();
+
     try expect(inst.meta.vec_n == 0);
     const vec1 = Vector{ 1, 1, 1 };
     const id = try inst.put(vec1);
@@ -337,11 +338,11 @@ test "re Storage" {
     inst.deinit();
 
     var inst2 = try Storage.init(arena.allocator(), tmpD.dir, .{});
-    inst2 = try inst2.load("temp.db");
+    defer inst2.deinit();
+    try inst2.load("temp.db");
     try expect(inst2.meta.vec_n == 1);
     const vec2 = inst2.get(id);
     try expect(@reduce(.And, vec1 == vec2));
-    inst2.deinit();
 }
 
 test "re Storage multiple" {
@@ -367,12 +368,12 @@ test "re Storage multiple" {
     inst.deinit();
 
     var inst2 = try Storage.init(arena.allocator(), tmpD.dir, .{});
-    inst2 = try inst2.load("temp.db");
+    defer inst2.deinit();
+    try inst2.load("temp.db");
     try expect(inst2.meta.vec_n == vecs.len);
     for (0..vecs.len - 1) |i| {
         try expect(@reduce(.And, vecs[i] == inst2.get(i)));
     }
-    inst2.deinit();
 }
 
 test "re Storage index" {
@@ -409,13 +410,13 @@ test "re Storage index" {
     inst.deinit();
 
     var inst2 = try Storage.init(arena.allocator(), tmpD.dir, .{});
-    inst2 = try inst2.load("temp.db");
+    defer inst2.deinit();
+    try inst2.load("temp.db");
     try expect(inst2.meta.vec_n == vecs.len - 2);
     try expect(inst2.index[0] == 0);
     try expect(inst2.index[1] == 1);
     try expect(inst2.index[2] == 0);
     try expect(inst2.index[3] == 1);
-    inst2.deinit();
 }
 
 test "test put resize" {
@@ -425,6 +426,7 @@ test "test put resize" {
     defer arena.deinit();
 
     var inst = try Storage.init(arena.allocator(), tmpD.dir, .{});
+    defer inst.deinit();
     try expect(inst.meta.vec_n == 0);
     try expect(inst.capacity == 32);
 
@@ -446,8 +448,8 @@ test "no failure on loading non-existent db" {
     defer arena.deinit();
 
     var inst = try Storage.init(arena.allocator(), tmpD.dir, .{});
-    _ = try inst.load("vecs.db");
-    inst.deinit();
+    defer inst.deinit();
+    try inst.load("vecs.db");
 }
 
 test "grow" {
@@ -457,6 +459,7 @@ test "grow" {
     defer arena.deinit();
 
     var inst = try Storage.init(arena.allocator(), tmpD.dir, .{ .sz = 1 });
+    defer inst.deinit();
     try inst.grow();
     try expect(inst.capacity == 1);
     try expect(inst.vectors.len == 1);

@@ -1,12 +1,9 @@
 pub const Error = error{ NotFound, BufferTooSmall, MalformedPath, NotNote };
 
-const VECTOR_DB_PATH = "vecs.db";
-
 pub const Runtime = struct {
     basedir: std.fs.Dir,
-    db: model.DB,
-    vectors: vector.Storage,
-    embedder: embed.Embedder,
+    db: *model.DB,
+    vectors: vector.DB,
     markdown: markdown.Markdown,
     allocator: std.mem.Allocator,
     skipEmbed: bool = false,
@@ -24,20 +21,15 @@ pub const Runtime = struct {
 
     /// Intializes the libnana runtime.
     pub fn init(allocator: std.mem.Allocator, opts: Runtime.Opts) !Runtime {
-        const database = try model.DB.init(allocator, .{
-            .basedir = opts.basedir,
-            .mem = opts.mem,
-        });
-
-        const embedder = try embed.Embedder.init(allocator);
         const markdown_parser = markdown.Markdown.init(allocator);
-        var vectors = try vector.Storage.init(allocator, opts.basedir, .{});
 
+        const db = try allocator.create(model.DB);
+        errdefer allocator.destroy(db);
+        db.* = try model.DB.init(allocator, .{ .basedir = opts.basedir, .mem = opts.mem });
         var self = Runtime{
             .basedir = opts.basedir,
-            .db = database,
-            .vectors = try vectors.load(VECTOR_DB_PATH),
-            .embedder = embedder,
+            .db = db,
+            .vectors = try vector.DB.init(allocator, opts.basedir, db),
             .markdown = markdown_parser,
             .allocator = allocator,
             .skipEmbed = opts.skipEmbed,
@@ -68,9 +60,9 @@ pub const Runtime = struct {
 
     /// De-initializes the libnana runtime.
     pub fn deinit(self: *Runtime) void {
-        self.db.deinit();
         self.vectors.deinit();
-        self.embedder.deinit();
+        self.db.deinit();
+        self.allocator.destroy(self.db);
     }
 
     /// Create a new note.
@@ -137,7 +129,7 @@ pub const Runtime = struct {
                 },
                 else => |leftover_err| return leftover_err,
             };
-            try self.embedText(id, buf[0..sz]);
+            try self.vectors.embedText(id, buf[0..sz]);
             break;
         }
 
@@ -203,7 +195,7 @@ pub const Runtime = struct {
             return;
         }
 
-        try self.embedText(id, content);
+        try self.vectors.embedText(id, content);
         try self.update(id);
 
         return;
@@ -252,28 +244,7 @@ pub const Runtime = struct {
             return self.db.searchNoQuery(buf, ignore);
         }
 
-        const query_vec = (try self.embedder.embed(query)) orelse {
-            return 0;
-        };
-
-        var vec_ids: [1000]VectorID = undefined;
-
-        debugSearchHeader(query);
-        const found_n = try self.vectors.search(query_vec, &vec_ids);
-        self.debugSearchRankedResults(vec_ids[0..found_n]);
-
-        var unique_found_n: usize = 0;
-        outer: for (0..@min(found_n, buf.len)) |i| {
-            // TODO: create scoring system for multiple results in one note
-            const noteID = @as(c_int, @intCast(try self.db.vecToNote(vec_ids[i])));
-            for (0..unique_found_n) |j| {
-                if (buf[j] == noteID) continue :outer;
-            }
-            buf[unique_found_n] = noteID;
-            unique_found_n += 1;
-        }
-        std.log.info("Found {d} results searching with {s}\n", .{ unique_found_n, query });
-        return unique_found_n;
+        return self.vectors.search(query, buf);
     }
 
     /// Takes the contents of a note and returns a JSON spec of how it should be formatted.
@@ -308,52 +279,6 @@ pub const Runtime = struct {
 
         self.db.commitTX();
         return;
-    }
-
-    fn embedText(self: *Runtime, id: NoteID, content: []const u8) !void {
-        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:embedText" });
-        defer zone.end();
-
-        var vecs = try self.db.vecsForNote(id);
-        defer vecs.deinit();
-        while (try vecs.next()) |v| {
-            try self.db.deleteVec(v.vector_id);
-            try self.vectors.rm(v.vector_id);
-        }
-
-        var it = self.embedder.split(content);
-        while (it.next()) |chunk| {
-            if (chunk.contents.len < 2) continue;
-            const vec = try self.embedder.embed(chunk.contents) orelse continue;
-            try self.db.appendVector(id, try self.vectors.put(vec), chunk.start_i, chunk.end_i);
-            self.db.debugShowTable(.Vectors);
-        }
-
-        try self.vectors.save(VECTOR_DB_PATH);
-    }
-
-    fn debugSearchHeader(query: []const u8) void {
-        if (!config.debug) return;
-        std.debug.print("Checking similarity against '{s}':\n", .{query});
-    }
-
-    fn debugSearchRankedResults(self: *Runtime, ids: []VectorID) void {
-        if (!config.debug) return;
-        const bufsz = 50;
-        for (ids, 1..) |id, i| {
-            var buf: [bufsz]u8 = undefined;
-            const noteID = self.db.vecToNote(id) catch unreachable;
-            const sz = self.readAll(
-                noteID,
-                &buf,
-            ) catch unreachable;
-            if (sz < 0) continue;
-            std.debug.print("    {d}. ID({d})'{s}' \n", .{
-                i,
-                noteID,
-                buf[0..@min(sz, bufsz)],
-            });
-        }
     }
 };
 
@@ -634,7 +559,6 @@ test "search no query" {
     }
 }
 
-// TODO: do we want to move no-query searching testing to the model file? It's really just a DB op.
 test "search no query orderby modified" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
@@ -665,26 +589,6 @@ test "search no query orderby modified" {
     try expect(written2 == 2);
     try expect(buffer2[0] == @as(c_int, @intCast(noteID1)));
     try expect(buffer2[1] == @as(c_int, @intCast(noteID2)));
-}
-
-test "search remove duplicates" {
-    var tmpD = std.testing.tmpDir(.{ .iterate = true });
-    defer tmpD.cleanup();
-    var arena = std.heap.ArenaAllocator.init(testing_allocator);
-    defer arena.deinit();
-    var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
-        .basedir = tmpD.dir,
-    });
-    defer rt.deinit();
-
-    const noteID1 = try rt.create();
-    _ = try rt.writeAll(noteID1, "pizza. pizza. pizza.");
-
-    var buffer: [10]c_int = undefined;
-    const n = try rt.search("pizza", &buffer, null);
-    try expect(n == 1);
-    try expect(buffer[0] == @as(c_int, @intCast(noteID1)));
 }
 
 test "exclude param 'empty search'" {
@@ -887,68 +791,6 @@ test "import skip unrecognized file extensions" {
     }
 }
 
-test "embedText hello" {
-    var tmpD = std.testing.tmpDir(.{ .iterate = true });
-    defer tmpD.cleanup();
-    var arena = std.heap.ArenaAllocator.init(testing_allocator);
-    defer arena.deinit();
-    var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
-        .basedir = tmpD.dir,
-    });
-    defer rt.deinit();
-
-    const id = try rt.create();
-
-    const text = "hello";
-    try rt.embedText(id, text);
-
-    var buf: [1]c_int = undefined;
-    const results = try rt.search(text, &buf, null);
-
-    try expect(results == 1);
-    try expect(buf[0] == id);
-}
-
-test "embedText skip empties" {
-    var tmpD = std.testing.tmpDir(.{ .iterate = true });
-    defer tmpD.cleanup();
-    var arena = std.heap.ArenaAllocator.init(testing_allocator);
-    defer arena.deinit();
-    var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
-        .basedir = tmpD.dir,
-    });
-    defer rt.deinit();
-
-    const id = try rt.create();
-
-    const text = "/hello/";
-    try rt.embedText(id, text);
-}
-
-test "embedText clear previous" {
-    var tmpD = std.testing.tmpDir(.{ .iterate = true });
-    defer tmpD.cleanup();
-    var arena = std.heap.ArenaAllocator.init(testing_allocator);
-    defer arena.deinit();
-    var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
-        .basedir = tmpD.dir,
-    });
-    defer rt.deinit();
-
-    const id = try rt.create();
-
-    try rt.embedText(id, "hello");
-
-    var buf: [1]c_int = undefined;
-    try expect(try rt.search("hello", &buf, null) == 1);
-
-    try rt.embedText(id, "flatiron");
-    try expect(try rt.search("hello", &buf, null) == 0);
-}
-
 test "writeAll unchanged" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
@@ -1031,12 +873,10 @@ const testing_allocator = std.testing.allocator;
 
 const tracy = @import("tracy");
 
-const config = @import("config");
-const embed = @import("embed.zig");
 const markdown = @import("markdown.zig");
 const model = @import("model.zig");
 const types = @import("types.zig");
-const vector = @import("vec_storage.zig");
+const vector = @import("vector.zig");
 const vec_sz = types.vec_sz;
 const vec_type = types.vec_type;
 const Vector = types.Vector;
