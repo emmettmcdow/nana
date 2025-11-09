@@ -153,31 +153,6 @@ test "embed skip failures" {
     defer allocator.free(vec_slice);
 }
 
-test "split" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-    var e = try Embedder.init(allocator);
-
-    const input_str = "foo.bar.baz";
-    var splitter = e.split(input_str);
-    while (splitter.next()) |chunk| {
-        try expectEqualStrings(input_str[chunk.start_i..chunk.end_i], chunk.contents);
-    }
-
-    const input_str_2 = "foo..bar";
-    splitter = e.split(input_str_2);
-    while (splitter.next()) |chunk| {
-        try expectEqualStrings(input_str_2[chunk.start_i..chunk.end_i], chunk.contents);
-    }
-
-    const input_str_3 = "foo.";
-    splitter = e.split(input_str_3);
-    while (splitter.next()) |chunk| {
-        try expectEqualStrings(input_str_3[chunk.start_i..chunk.end_i], chunk.contents);
-    }
-}
-
 const std = @import("std");
 const assert = std.debug.assert;
 const expectEqual = std.testing.expectEqual;

@@ -1,5 +1,7 @@
 const VECTOR_DB_PATH = "vecs.db";
 
+const MAX_NOTE_LEN: usize = std.math.maxInt(u32);
+
 pub const DB = struct {
     const Self = @This();
 
@@ -27,9 +29,7 @@ pub const DB = struct {
     }
 
     pub fn search(self: *Self, query: []const u8, buf: []c_int) !usize {
-        const query_vec_slice = (try self.embedder.embed(query)) orelse {
-            return 0;
-        };
+        const query_vec_slice = (try self.embedder.embed(query)) orelse return 0;
         defer self.allocator.free(query_vec_slice);
         const query_vec: Vector = query_vec_slice[0..vec_sz].*;
 
@@ -53,39 +53,74 @@ pub const DB = struct {
         return unique_found_n;
     }
 
-    // Uses vec_storage.Storage, Embedder, and model
-    pub fn embedText(self: *Self, id: NoteID, content: []const u8) !void {
+    pub fn embedText(
+        self: *Self,
+        note_id: NoteID,
+        old_contents: []const u8,
+        new_contents: []const u8,
+    ) !void {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:embedText" });
         defer zone.end();
 
-        try self.clearVecsForNote(id);
+        assert(new_contents.len < MAX_NOTE_LEN);
+        assert(old_contents.len < MAX_NOTE_LEN);
 
-        var it = self.embedder.split(content);
-        while (it.next()) |chunk| {
-            if (chunk.contents.len < 2) continue;
-            const vec_slice = try self.embedder.embed(chunk.contents) orelse continue;
-            defer self.allocator.free(vec_slice);
-            const vec: Vector = vec_slice[0..vec_sz].*;
-            try self.append(id, vec, chunk);
-            self.relational.debugShowTable(.Vectors);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+
+        const old_vecs = try self.relational.vecsForNote(arena.allocator(), note_id);
+        var new_vecs = std.ArrayList(VectorRow).init(arena.allocator());
+        var old_vecs_idx: usize = 0;
+
+        for ((try diffSplit(old_contents, new_contents, arena.allocator())).items) |sentence| {
+            if (sentence.mod) {
+                if (sentence.contents.len < 2) continue;
+                const vec_slice = try self.embedder.embed(sentence.contents) orelse unreachable;
+                const new_vec: Vector = vec_slice[0..vec_sz].*;
+                try new_vecs.append(.{
+                    .vector_id = try self.vecs.put(new_vec),
+                    .note_id = note_id,
+                    .start_i = sentence.off,
+                    .end_i = sentence.off + sentence.contents.len,
+                });
+            } else {
+                var found = false;
+                while (old_vecs_idx < old_vecs.len) : (old_vecs_idx += 1) {
+                    const old_v = old_vecs[old_vecs_idx];
+                    const old_v_contents = old_contents[old_v.start_i..old_v.end_i];
+                    assert(old_v_contents.len > 1);
+                    if (!std.mem.eql(u8, sentence.contents, old_v_contents)) continue;
+                    try new_vecs.append(VectorRow{
+                        .vector_id = try self.vecs.copy(old_v.vector_id),
+                        .note_id = note_id,
+                        .start_i = sentence.off,
+                        .end_i = sentence.off + sentence.contents.len,
+                    });
+                    found = true;
+                    old_vecs_idx += 1;
+                    break;
+                }
+                assert(found);
+            }
         }
-
+        try self.clearVecsForNote(note_id);
+        for (new_vecs.items) |v| {
+            try self.relational.appendVector(v.note_id, v.vector_id, v.start_i, v.end_i);
+        }
         try self.vecs.save(VECTOR_DB_PATH);
+
+        return;
     }
 
     fn clearVecsForNote(self: *Self, id: NoteID) !void {
-        var vecs = try self.relational.vecsForNote(id);
-        defer vecs.deinit();
-        while (try vecs.next()) |v| try self.delete(v.vector_id);
+        const vecs = try self.relational.vecsForNote(self.allocator, id);
+        defer self.allocator.free(vecs);
+        for (vecs) |v| try self.delete(v.vector_id);
     }
 
     fn delete(self: *Self, id: VectorID) !void {
         try self.relational.deleteVec(id);
         try self.vecs.rm(id);
-    }
-
-    fn append(self: *Self, id: NoteID, vec: Vector, chunk: embed.Sentence) !void {
-        try self.relational.appendVector(id, try self.vecs.put(vec), chunk.start_i, chunk.end_i);
     }
 
     fn debugSearchHeader(query: []const u8) void {
@@ -126,7 +161,7 @@ test "embedText hello" {
     const id = try rel.create();
 
     const text = "hello";
-    try db.embedText(id, text);
+    try db.embedText(id, "", text);
 
     var buf: [1]c_int = undefined;
     const results = try db.search(text, &buf);
@@ -148,7 +183,7 @@ test "embedText skip empties" {
     const id = try rel.create();
 
     const text = "/hello/";
-    try db.embedText(id, text);
+    try db.embedText(id, "", text);
 }
 
 test "embedText clear previous" {
@@ -163,12 +198,12 @@ test "embedText clear previous" {
 
     const id = try rel.create();
 
-    try db.embedText(id, "hello");
+    try db.embedText(id, "", "hello");
 
     var buf: [1]c_int = undefined;
     try expectEqual(1, try db.search("hello", &buf));
 
-    try db.embedText(id, "flatiron");
+    try db.embedText(id, "hello", "flatiron");
     try expectEqual(0, try db.search("hello", &buf));
 }
 
@@ -183,12 +218,127 @@ test "search remove duplicates" {
     defer db.deinit();
 
     const noteID1 = try rel.create();
-    _ = try db.embedText(noteID1, "pizza. pizza. pizza.");
+    _ = try db.embedText(noteID1, "", "pizza. pizza. pizza.");
 
     var buffer: [10]c_int = undefined;
     const n = try db.search("pizza", &buffer);
     try expectEqual(1, n);
     try expectEqual(@as(c_int, @intCast(noteID1)), buffer[0]);
+}
+
+fn getVectorsForNote(db: *DB, rel: *model.DB, noteID: NoteID, vecs: []Vector) !usize {
+    const vec_rows = try rel.vecsForNote(testing_allocator, noteID);
+    defer testing_allocator.free(vec_rows);
+    for (vec_rows, 0..) |v, i| {
+        vecs[i] = db.vecs.get(v.vector_id);
+    }
+    return vec_rows.len;
+}
+
+test "embedText no update" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer rel.deinit();
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    defer db.deinit();
+
+    const noteID = try rel.create();
+
+    try db.embedText(noteID, "", "apple");
+    var initial_vecs: [1]Vector = undefined;
+    try expectEqual(1, try getVectorsForNote(&db, &rel, noteID, &initial_vecs));
+
+    try db.embedText(noteID, "apple", "apple");
+    var updated_vecs: [1]Vector = undefined;
+    try expectEqual(1, try getVectorsForNote(&db, &rel, noteID, &updated_vecs));
+
+    // Vector should be different (apple != banana)
+    try std.testing.expect(@reduce(.And, initial_vecs[0] == updated_vecs[0]));
+}
+
+test "embedText updates single word sentence" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer rel.deinit();
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    defer db.deinit();
+
+    const noteID = try rel.create();
+
+    try db.embedText(noteID, "", "apple");
+    var initial_vecs: [1]Vector = undefined;
+    try expectEqual(1, try getVectorsForNote(&db, &rel, noteID, &initial_vecs));
+
+    try db.embedText(noteID, "apple", "banana");
+    var updated_vecs: [1]Vector = undefined;
+    try expectEqual(1, try getVectorsForNote(&db, &rel, noteID, &updated_vecs));
+
+    // Vector should be different (apple != banana)
+    try std.testing.expect(!@reduce(.And, initial_vecs[0] == updated_vecs[0]));
+}
+
+test "embedText updates last sentence" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer rel.deinit();
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    defer db.deinit();
+
+    const noteID = try rel.create();
+
+    try db.embedText(noteID, "", "apple. banana.");
+    var initial_vecs: [2]Vector = undefined;
+    try expectEqual(2, try getVectorsForNote(&db, &rel, noteID, &initial_vecs));
+
+    try db.embedText(noteID, "apple. banana.", "apple. orange.");
+    var updated_vecs: [2]Vector = undefined;
+    try expectEqual(2, try getVectorsForNote(&db, &rel, noteID, &updated_vecs));
+
+    // First vector should be the same (apple == apple)
+    try std.testing.expect(@reduce(.And, initial_vecs[0] == updated_vecs[0]));
+
+    // Last vector should be different (banana != orange)
+    try std.testing.expect(!@reduce(.And, initial_vecs[1] == updated_vecs[1]));
+}
+
+test "embedText updates only changed sentences" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer rel.deinit();
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    defer db.deinit();
+
+    const noteID = try rel.create();
+
+    // Initial content: three one-word sentences
+    const initial_content = "apple. banana. cherry.";
+    try db.embedText(noteID, "", initial_content);
+
+    var initial_vecs: [3]Vector = undefined;
+    try expectEqual(3, try getVectorsForNote(&db, &rel, noteID, &initial_vecs));
+
+    // Updated content: same first and last words, different middle word
+    const updated_content = "apple. dragonfruit. cherry.";
+    try db.embedText(noteID, initial_content, updated_content);
+
+    var updated_vecs: [3]Vector = undefined;
+    try expectEqual(3, try getVectorsForNote(&db, &rel, noteID, &updated_vecs));
+
+    try std.testing.expect(@reduce(.And, initial_vecs[0] == updated_vecs[0]));
+    try std.testing.expect(!@reduce(.And, initial_vecs[1] == updated_vecs[1]));
+    try std.testing.expect(@reduce(.And, initial_vecs[2] == updated_vecs[2]));
 }
 
 const std = @import("std");
@@ -203,8 +353,16 @@ const storage = @import("vec_storage.zig");
 const model = @import("model.zig");
 const types = @import("types.zig");
 const vec_storage = @import("vec_storage.zig");
+const util = @import("util.zig");
+const root = @import("root.zig");
+const diff = @import("dmp.zig");
+const diffSplit = diff.diffSplit;
+const assert = std.debug.assert;
+const OutOfMemory = std.mem.Allocator.Error.OutOfMemory;
+
 const Vector = types.Vector;
 const VectorID = types.VectorID;
 const vec_sz = types.vec_sz;
 const Note = model.Note;
+const VectorRow = model.VectorRow;
 const NoteID = model.NoteID;

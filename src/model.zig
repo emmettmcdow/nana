@@ -47,17 +47,12 @@ const VECTOR_ADD_IDX =
 ;
 const GET_COLS_VECTOR = "PRAGMA table_info(vectors);";
 const SHOW_VECTOR = "SELECT * from vectors;";
-const UPDATE_VECTOR = "UPDATE vectors SET next_vec_id = ? WHERE vector_id = ?;";
 const GET_NOTEID_FROM_VECID = "SELECT note_id FROM vectors WHERE vector_id = ?;";
 const DELETE_VEC = "DELETE FROM vectors WHERE vector_id = ?;";
 const GET_VECS_FROM_NOTEID =
-    \\SELECT vector_id, note_id, next_vec_id, last_vec_id FROM vectors WHERE note_id = ?;
-;
-const GET_LAST_VECTOR =
-    \\SELECT vector_id,note_id,next_vec_id,last_vec_id FROM vectors WHERE next_vec_id IS NULL;
-;
-const APPEND_VECTOR =
-    \\INSERT INTO vectors(vector_id, note_id, next_vec_id, last_vec_id, start_i, end_i) VALUES(?, ?, ?, ?, ?, ?) ;
+    \\SELECT vector_id, note_id, next_vec_id, last_vec_id, start_i, end_i
+    \\FROM vectors WHERE note_id = ?
+    \\ORDER BY start_i;
 ;
 pub const Error = error{ NotFound, BufferTooSmall, NotInitialized };
 
@@ -79,17 +74,21 @@ pub fn genPath(noteID: NoteID, buf: []u8) []const u8 {
     return out;
 }
 
-const VectorRow = struct {
+pub const VectorRow = struct {
     vector_id: VectorID,
     note_id: NoteID,
-    next_vec_id: ?VectorID,
-    last_vec_id: ?VectorID,
+    next_vec_id: ?VectorID = null,
+    last_vec_id: ?VectorID = null,
+    start_i: usize,
+    end_i: usize,
 
     fn equal(self: VectorRow, other: VectorRow) bool {
         return self.note_id == other.note_id and
             self.vector_id == other.vector_id and
             self.next_vec_id == other.next_vec_id and
-            self.last_vec_id == self.last_vec_id;
+            self.last_vec_id == self.last_vec_id and
+            self.start_i == other.start_i and
+            self.end_i == self.end_i;
     }
 };
 
@@ -387,17 +386,26 @@ pub const DB = struct {
         return written;
     }
 
+    const GET_LAST_VECTOR =
+        \\SELECT vector_id, note_id, next_vec_id, last_vec_id, start_i, end_i
+        \\FROM vectors WHERE next_vec_id IS NULL AND note_id = ?;
+    ;
+    const UPDATE_VECTOR = "UPDATE vectors SET next_vec_id = ? WHERE vector_id = ?;";
+    const APPEND_VECTOR =
+        \\INSERT INTO vectors(vector_id, note_id, next_vec_id, last_vec_id, start_i, end_i)
+        \\VALUES(?, ?, ?, ?, ?, ?);
+    ;
     pub fn appendVector(
         self: *Self,
         noteID: NoteID,
         vectorID: VectorID,
-        start_i: u32,
-        end_i: u32,
+        start_i: usize,
+        end_i: usize,
     ) !void {
         assert(self.is_ready());
 
         // Get head of list
-        const row = try self.db.one(VectorRow, GET_LAST_VECTOR, .{}, .{});
+        const row = try self.db.one(VectorRow, GET_LAST_VECTOR, .{}, .{ .note_id = noteID });
         var prev_head_id: ?VectorID = null;
         if (row) |prev_head| {
             prev_head_id = prev_head.vector_id;
@@ -409,8 +417,8 @@ pub const DB = struct {
             };
             defer stmt.deinit();
             try stmt.exec(.{}, .{
-                .next = vectorID,
-                .target = prev_head.vector_id,
+                .next_vec_id = vectorID,
+                .vector_id = prev_head.vector_id,
             });
         }
         // Add new head
@@ -421,10 +429,10 @@ pub const DB = struct {
         };
         defer stmt.deinit();
         try stmt.exec(.{}, .{
-            .vecid = vectorID,
-            .noteid = noteID,
-            .nextid = null,
-            .lastid = prev_head_id,
+            .vector_id = vectorID,
+            .note_id = noteID,
+            .next_vec_id = null,
+            .last_vec_id = prev_head_id,
             .start_i = start_i,
             .end_i = end_i,
         });
@@ -455,7 +463,7 @@ pub const DB = struct {
         return Error.NotFound;
     }
 
-    pub fn vecsForNote(self: *Self, noteID: NoteID) !VectorIterator {
+    pub fn vecsForNote(self: *Self, allocator: std.mem.Allocator, noteID: NoteID) ![]VectorRow {
         assert(self.is_ready());
 
         var diags = sqlite.Diagnostics{};
@@ -463,7 +471,9 @@ pub const DB = struct {
             std.log.err("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
             return err;
         };
-        return .{ .stmt = stmt, .it = try stmt.iterator(VectorRow, .{ .note_id = noteID }) };
+        defer stmt.deinit();
+
+        return try stmt.all(VectorRow, allocator, .{}, .{ .note_id = noteID });
     }
 
     pub fn deleteVec(self: *Self, vID: VectorID) !void {
@@ -597,12 +607,6 @@ const SchemaRow = struct {
     unk3: u8 = 0,
 };
 
-const expect = std.testing.expect;
-const expectEqual = std.testing.expectEqual;
-const expectError = std.testing.expectError;
-const testing_allocator = std.testing.allocator;
-const expectEqlStrings = std.testing.expectEqualStrings;
-
 test "init DB - notes" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
@@ -627,8 +631,8 @@ test "init DB - notes" {
     var i: usize = 0;
     var iter = try stmt.iterator(SchemaRow, .{});
     while (try iter.nextAlloc(allocator, .{})) |row| {
-        try expectEqlStrings(expectedSchema[i].name, row.name);
-        try expectEqlStrings(expectedSchema[i].type, row.type);
+        try expectEqualStrings(expectedSchema[i].name, row.name);
+        try expectEqualStrings(expectedSchema[i].type, row.type);
         i += 1;
     }
     try expect(i == expectedSchema.len);
@@ -662,8 +666,8 @@ test "init DB - vector" {
     var i: usize = 0;
     while (true) {
         const row = (try iter.nextAlloc(allocator, .{})) orelse break;
-        try expectEqlStrings(expectedSchema[i].name, row.name);
-        try expectEqlStrings(expectedSchema[i].type, row.type);
+        try expectEqualStrings(expectedSchema[i].name, row.name);
+        try expectEqualStrings(expectedSchema[i].type, row.type);
         i += 1;
     }
     try expect(i == expectedSchema.len);
@@ -762,30 +766,40 @@ test "appending is consecutive" {
     defer db.deinit();
 
     const noteID = try db.create();
-    try db.appendVector(noteID, 1, 0, 0);
-    try db.appendVector(noteID, 2, 0, 0);
-    try db.appendVector(noteID, 3, 0, 0);
+    try db.appendVector(noteID, 1, 0, 2);
+    try db.appendVector(noteID, 2, 2, 4);
+    try db.appendVector(noteID, 3, 4, 6);
 
-    const buf: [3]VectorRow = .{
-        .{ .note_id = noteID, .vector_id = 1, .next_vec_id = 2, .last_vec_id = null },
-        .{ .note_id = noteID, .vector_id = 2, .next_vec_id = 3, .last_vec_id = 1 },
-        .{ .note_id = noteID, .vector_id = 3, .next_vec_id = null, .last_vec_id = 2 },
+    const want: [3]VectorRow = .{
+        .{
+            .note_id = noteID,
+            .vector_id = 1,
+            .next_vec_id = 2,
+            .last_vec_id = null,
+            .start_i = 0,
+            .end_i = 2,
+        },
+        .{
+            .note_id = noteID,
+            .vector_id = 2,
+            .next_vec_id = 3,
+            .last_vec_id = 1,
+            .start_i = 2,
+            .end_i = 4,
+        },
+        .{
+            .note_id = noteID,
+            .vector_id = 3,
+            .next_vec_id = null,
+            .last_vec_id = 2,
+            .start_i = 4,
+            .end_i = 6,
+        },
     };
 
-    var n: usize = 0;
-    var it = try db.vecsForNote(noteID);
-    defer it.deinit();
-    outer: while (try it.next()) |row| {
-        n += 1;
-        for (buf) |vr| {
-            if (row.vector_id == vr.vector_id) {
-                try expect(row.equal(vr));
-                continue :outer;
-            }
-        }
-        try expect(false);
-    }
-    try expect(n == 3);
+    const got = try db.vecsForNote(testing_allocator, noteID);
+    defer testing_allocator.free(got);
+    try expectEqualSlices(VectorRow, &want, got);
 }
 
 test "import note" {
@@ -803,7 +817,7 @@ test "import note" {
     const note = try db.get(noteID, arena.allocator());
     try expect(note.created == now);
     try expect(note.modified == later);
-    try expectEqlStrings(note.path, "/foo/bar/path");
+    try expectEqualStrings(note.path, "/foo/bar/path");
 }
 
 test "deleteVec" {
@@ -817,19 +831,15 @@ test "deleteVec" {
     try db.appendVector(noteID, 2, 0, 0);
     try db.appendVector(noteID, 3, 0, 0);
 
-    var it = try db.vecsForNote(noteID);
-    while (try it.next()) |row| {
+    const vecs = try db.vecsForNote(testing_allocator, noteID);
+    defer testing_allocator.free(vecs);
+    for (vecs) |row| {
         try db.deleteVec(row.vector_id);
     }
-    it.deinit();
 
-    var n: usize = 0;
-    it = try db.vecsForNote(noteID);
-    while (try it.next()) |_| {
-        n += 1;
-    }
-    it.deinit();
-    try expect(n == 0);
+    const vecs_after = try db.vecsForNote(testing_allocator, noteID);
+    defer testing_allocator.free(vecs_after);
+    try expect(vecs_after.len == 0);
 }
 
 test "version" {
@@ -926,6 +936,12 @@ test "backup" {
 
 const std = @import("std");
 const assert = std.debug.assert;
+const expect = std.testing.expect;
+const expectEqual = std.testing.expectEqual;
+const expectError = std.testing.expectError;
+const testing_allocator = std.testing.allocator;
+const expectEqualStrings = std.testing.expectEqualStrings;
+const expectEqualSlices = std.testing.expectEqualSlices;
 
 const sqlite = @import("sqlite");
 const Iterator = sqlite.Iterator;

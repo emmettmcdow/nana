@@ -16,6 +16,12 @@ pub const DMP = struct {
     }
 
     pub fn diff(old: []const u8, new: []const u8, allocator: std.mem.Allocator) ![]Change {
+        if (old.len == 0 and new.len != 0) {
+            const changes = try allocator.alloc(Change, 1);
+            changes[0] = .{ .i = 0, .mod = .add };
+            return changes;
+        }
+
         const max_depth = old.len + new.len;
         if (max_depth >= U_TO_I_MAX) {
             return Error.TooBig;
@@ -63,6 +69,7 @@ pub const DMP = struct {
 
     fn diffBwd(old: []const u8, new: []const u8, trace: *Trace, changes: []Change) ![]Change {
         if (changes.len == 0) return changes;
+
         var x: usize = old.len;
         var y: usize = new.len;
         var d: usize = undefined;
@@ -109,7 +116,7 @@ pub const DMP = struct {
     }
 };
 
-const U_TO_I_MAX = (@divExact(@sizeOf(usize), 2) * 8) - 1;
+const U_TO_I_MAX: usize = std.math.maxInt(isize);
 
 pub const Error = error{TooBig};
 
@@ -212,6 +219,7 @@ test "all diff" {
     const cases = [_]struct { []const u8, []const u8, []const Change }{
         .{ "a", "a", &.{} },
         .{ "a", "", &[_]Change{.{ .i = 0, .mod = .del }} },
+        .{ "", "a", &[_]Change{.{ .i = 0, .mod = .add }} },
         .{ "a", "b", &[_]Change{ .{ .i = 0, .mod = .del }, .{ .i = 0, .mod = .add } } },
         .{ "abcabba", "cbabac", &[_]Change{
             .{ .i = 0, .mod = .del },

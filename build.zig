@@ -42,6 +42,7 @@ pub fn build(b: *std.Build) !void {
     // Sources
     const root_file = b.path("src/root.zig");
     const model_file = b.path("src/model.zig");
+    const diff_file = b.path("src/dmp.zig");
     const embed_file = b.path("src/embed.zig");
     const vec_storage_file = b.path("src/vec_storage.zig");
     const vector_file = b.path("src/vector.zig");
@@ -211,6 +212,21 @@ pub fn build(b: *std.Build) !void {
     const test_vec = b.step("test-vector", "run the tests for src/vector.zig");
     test_vec.dependOn(&run_vec_unit_tests.step);
 
+    // Vector Storage
+    const diff_options = b.addOptions();
+    diff_options.addOption(usize, "vec_sz", 3);
+    diff_options.addOption(bool, "debug", debug);
+    const diff_unit_tests = b.addTest(.{
+        .root_source_file = diff_file,
+        .target = x86_target,
+        .optimize = optimize,
+        .filters = &.{"diff"},
+    });
+    diff_unit_tests.root_module.addOptions("config", diff_options);
+    const run_diff_unit_tests = b.addRunArtifact(diff_unit_tests);
+    const test_diff = b.step("test-diff", "run the tests for src/diff.zig");
+    test_diff.dependOn(&run_diff_unit_tests.step);
+
     // Benchmark
     const benchmark_options = b.addOptions();
     benchmark_options.addOption(usize, "vec_sz", VEC_SZ);
@@ -283,6 +299,7 @@ pub fn build(b: *std.Build) !void {
     test_step.dependOn(test_embed);
     test_step.dependOn(test_vec_storage);
     test_step.dependOn(test_vec);
+    test_step.dependOn(test_diff);
     // Enable this to see benchmark output
     // test_step.dependOn(test_benchmark);
 
@@ -295,7 +312,7 @@ pub fn build(b: *std.Build) !void {
         // Uncomment this if lib_unit_tests needs lldb args or test args
         // "--",
     });
-    lldb.addArtifactArg(root_unit_tests);
+    lldb.addArtifactArg(vec_unit_tests);
     const lldb_step = b.step("debug", "run the tests under lldb");
     lldb_step.dependOn(&lldb.step);
 }

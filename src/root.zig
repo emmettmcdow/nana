@@ -129,7 +129,7 @@ pub const Runtime = struct {
                 },
                 else => |leftover_err| return leftover_err,
             };
-            try self.vectors.embedText(id, buf[0..sz]);
+            try self.vectors.embedText(id, "", buf[0..sz]);
             break;
         }
 
@@ -185,6 +185,19 @@ pub const Runtime = struct {
 
         if (try isUnchanged(f, content)) return;
 
+        // Read old contents before truncating
+        const stat = try f.stat();
+        var old_contents: []u8 = undefined;
+        const needs_free = stat.size > 0;
+        if (needs_free) {
+            old_contents = try self.allocator.alloc(u8, stat.size);
+            try f.seekTo(0);
+            _ = try f.readAll(old_contents);
+        } else {
+            old_contents = "";
+        }
+        defer if (needs_free) self.allocator.free(old_contents);
+
         try f.seekTo(0);
         try f.setEndPos(0);
         try f.writeAll(content);
@@ -195,7 +208,7 @@ pub const Runtime = struct {
             return;
         }
 
-        try self.vectors.embedText(id, content);
+        try self.vectors.embedText(id, old_contents, content);
         try self.update(id);
 
         return;
@@ -205,30 +218,11 @@ pub const Runtime = struct {
     pub fn readAll(self: *Runtime, id: NoteID, buf: []u8) !usize {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:readAll" });
         defer zone.end();
-
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const note = try self.get(id, arena.allocator());
 
-        const f = self.basedir.openFile(note.path, .{}) catch |err| switch (err) {
-            error.FileNotFound => {
-                return 0; // Lazy creation
-            },
-            else => {
-                return err;
-            },
-        };
-        defer f.close();
-
-        const n = try f.readAll(buf);
-
-        // Save space for the null-terminator
-        if (n >= buf.len - 1) {
-            return Error.BufferTooSmall;
-        }
-        buf[n] = 0;
-
-        return n;
+        return util.readAllZ(self.basedir, note.path, buf);
     }
 
     /// Search does an embedding vector distance comparison to find the most semantically similar
@@ -876,6 +870,7 @@ const tracy = @import("tracy");
 const markdown = @import("markdown.zig");
 const model = @import("model.zig");
 const types = @import("types.zig");
+const util = @import("util.zig");
 const vector = @import("vector.zig");
 const vec_sz = types.vec_sz;
 const vec_type = types.vec_type;

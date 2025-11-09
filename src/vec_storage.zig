@@ -277,6 +277,18 @@ pub const Storage = struct {
         }
     }
 
+    /// Generates a new ID for an existing Vector
+    pub fn copy(self: *Self, id: VectorID) !VectorID {
+        const new_id = self.nextIndex();
+        assert(self.index[new_id] == 0);
+        self.meta.vec_n += 1;
+
+        try self.grow();
+
+        self.putAt(self.get(id), new_id);
+        return new_id;
+    }
+
     /// Locates the next empty index for a vector. Prioritizes filling holes in the arrays.
     fn nextIndex(self: *Self) usize {
         for (self.index, 0..) |v, i| {
@@ -480,6 +492,21 @@ test "grow" {
     try expect(inst.index[1] == 1);
     try expect(inst.index[2] == 1);
     try expect(inst.index[3] == 0);
+}
+
+test "copy" {
+    var tmpD = tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var inst = try Storage.init(arena.allocator(), tmpD.dir, .{ .sz = 2 });
+
+    const vec1 = Vector{ 1, 1, 1 };
+    const old_id = try inst.put(vec1);
+    const new_id = try inst.copy(old_id);
+    try expect(old_id != new_id);
+    const vec2 = inst.get(new_id);
+    try expect(@reduce(.And, vec1 == vec2));
 }
 
 // **************************************************************************************** Vectors
