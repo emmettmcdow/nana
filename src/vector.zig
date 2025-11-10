@@ -363,5 +363,4 @@ const types = @import("types.zig");
 const Vector = types.Vector;
 const VectorID = types.VectorID;
 const vec_sz = types.vec_sz;
-const util = @import("util.zig");
 const vec_storage = @import("vec_storage.zig");
