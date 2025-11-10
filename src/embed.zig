@@ -13,11 +13,11 @@ pub const Embedder = struct {
         var NLEmbedding = objc.getClass("NLEmbedding").?;
         const fromUTF8 = objc.Sel.registerName("stringWithUTF8String:");
 
-        const sentenceEmbeddingForLanguage = objc.Sel.registerName("sentenceEmbeddingForLanguage:");
+        const sentenceEmbeddingForLang = objc.Sel.registerName("sentenceEmbeddingForLanguage:");
         const language = "en";
         const ns_lang = NSString.msgSend(Object, fromUTF8, .{language});
 
-        const embedder = NLEmbedding.msgSend(Object, sentenceEmbeddingForLanguage, .{ns_lang});
+        const embedder = NLEmbedding.msgSend(Object, sentenceEmbeddingForLang, .{ns_lang});
         assert(embedder.getProperty(c_int, "dimension") == vec_sz);
 
         return Embedder{
@@ -148,7 +148,7 @@ test "embed skip failures" {
 
     var e = try Embedder.init(allocator);
 
-    const vec_slice = try e.embed("(*^(*&(# 4327897493287498*&)(FKJDHDHLKDJHLKFHKLFHD") orelse unreachable;
+    const vec_slice = try e.embed("(*^(*&(# 4327897493287498*&)(FKJDHDHLKDJHL") orelse unreachable;
     defer allocator.free(vec_slice);
 }
 

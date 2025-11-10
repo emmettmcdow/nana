@@ -241,7 +241,12 @@ test "header plain" {
         \\plain text.
     ));
     try expectEqualSlices(Token, &[_]Token{
-        .{ .tType = .HEADER, .contents = "# Header with # in the middle", .startI = 0, .endI = 29 },
+        .{
+            .tType = .HEADER,
+            .contents = "# Header with # in the middle",
+            .startI = 0,
+            .endI = 29,
+        },
     }, l.parse(
         \\# Header with # in the middle
     ));

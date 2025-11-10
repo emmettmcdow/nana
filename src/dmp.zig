@@ -173,9 +173,9 @@ const Trace = struct {
 
     fn debug_print_v(self: Trace) void {
         if (true) return;
-        const fr_start = self.curr_d * self.m;
-        const writable_start = fr_start + @as(usize, @intCast(self.negative_shift)) - self.curr_d;
-        const writable_end = fr_start + @as(usize, @intCast(self.negative_shift)) + self.curr_d + 1;
+        const start = self.curr_d * self.m;
+        const writable_start = start + @as(usize, @intCast(self.negative_shift)) - self.curr_d;
+        const writable_end = start + @as(usize, @intCast(self.negative_shift)) + self.curr_d + 1;
         std.debug.print("Pushing: {any}\n", .{
             self.entries[writable_start..writable_end],
         });
