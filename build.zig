@@ -212,7 +212,7 @@ pub fn build(b: *std.Build) !void {
     const test_vec = b.step("test-vector", "run the tests for src/vector.zig");
     test_vec.dependOn(&run_vec_unit_tests.step);
 
-    // Vector Storage
+    // Diff
     const diff_options = b.addOptions();
     diff_options.addOption(usize, "vec_sz", 3);
     diff_options.addOption(bool, "debug", debug);
