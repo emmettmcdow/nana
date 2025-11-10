@@ -41,7 +41,7 @@ const std = @import("std");
 const Allocator = std.mem.allocator;
 const OutOfMemory = std.mem.Allocator.Error.OutOfMemory;
 
-const root = @import("root.zig");
 const model = @import("model.zig");
 const Note = model.Note;
 const NoteID = model.NoteID;
+const root = @import("root.zig");

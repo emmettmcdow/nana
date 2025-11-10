@@ -943,10 +943,10 @@ const testing_allocator = std.testing.allocator;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const expectEqualSlices = std.testing.expectEqualSlices;
 
+const config = @import("config");
 const sqlite = @import("sqlite");
 const Iterator = sqlite.Iterator;
 const tracy = @import("tracy");
 
 const types = @import("types.zig");
 const VectorID = types.VectorID;
-const config = @import("config");

@@ -372,15 +372,6 @@ fn plusEq(a: *usize, b: usize) usize {
     return a.*;
 }
 
-const std = @import("std");
-const assert = std.debug.assert;
-const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
-const expect = std.expect;
-const expectEqualDeep = std.testing.expectEqualDeep;
-const expectEqualSlices = std.testing.expectEqualSlices;
-const tracy = @import("tracy");
-
 // Notes
 //
 // Syntax is markdown inspired, not pure markdown.
@@ -413,3 +404,13 @@ const tracy = @import("tracy");
 //
 // Maybe we break the rule for the quote? Seems like we might want to enforce a double newline for
 // quote. Seems a little odd.
+
+const std = @import("std");
+const assert = std.debug.assert;
+const Allocator = std.mem.Allocator;
+const ArrayList = std.ArrayList;
+const expect = std.expect;
+const expectEqualDeep = std.testing.expectEqualDeep;
+const expectEqualSlices = std.testing.expectEqualSlices;
+
+const tracy = @import("tracy");

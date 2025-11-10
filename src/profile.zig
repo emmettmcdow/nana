@@ -84,6 +84,6 @@ const rand_inst = xosh.random();
 const std = @import("std");
 const rand = std.Random.Xoshiro256;
 
-const root = @import("root.zig");
 const model = @import("model.zig");
 const NoteID = model.NoteID;
+const root = @import("root.zig");

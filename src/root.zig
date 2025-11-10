@@ -296,7 +296,6 @@ fn isUnchanged(f: File, new_content: []const u8) !bool {
     return true;
 }
 
-const expectError = std.testing.expectError;
 test "no create on read" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
@@ -856,6 +855,8 @@ test "parse markdown" {
     );
 }
 
+const skip_test = true;
+
 const std = @import("std");
 const assert = std.debug.assert;
 const expect = std.testing.expect;
@@ -864,19 +865,18 @@ const File = std.fs.File;
 const json = std.json;
 const OutOfMemory = std.mem.Allocator.Error.OutOfMemory;
 const testing_allocator = std.testing.allocator;
+const expectError = std.testing.expectError;
 
 const tracy = @import("tracy");
 
 const markdown = @import("markdown.zig");
 const model = @import("model.zig");
+const Note = model.Note;
+const NoteID = model.NoteID;
 const types = @import("types.zig");
-const util = @import("util.zig");
-const vector = @import("vector.zig");
 const vec_sz = types.vec_sz;
 const vec_type = types.vec_type;
 const Vector = types.Vector;
 const VectorID = types.VectorID;
-const Note = model.Note;
-const NoteID = model.NoteID;
-
-const skip_test = true;
+const util = @import("util.zig");
+const vector = @import("vector.zig");

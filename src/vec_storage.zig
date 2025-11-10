@@ -313,10 +313,6 @@ pub const Storage = struct {
     }
 };
 
-const tmpDir = std.testing.tmpDir;
-const testing_allocator = std.testing.allocator;
-const expect = std.testing.expect;
-
 test "test put / get" {
     var tmpD = tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
@@ -582,15 +578,19 @@ test "cosine zero-vec" {
     try expect(output == 0);
 }
 
+const native_endian = std.builtin.cpu.arch.endian();
+
 const std = @import("std");
 const assert = std.debug.assert;
 const FileWriter = std.fs.File.Writer;
 const FileReader = std.fs.File.Reader;
-const native_endian = std.builtin.cpu.arch.endian();
-
-const tracy = @import("tracy");
+const tmpDir = std.testing.tmpDir;
+const testing_allocator = std.testing.allocator;
+const expect = std.testing.expect;
 
 const config = @import("config");
+const tracy = @import("tracy");
+
 const types = @import("types.zig");
 const Vector = types.Vector;
 const VectorID = types.VectorID;

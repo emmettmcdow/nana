@@ -221,5 +221,6 @@ export fn nana_parse_markdown(content: [*:0]const u8) [*:0]const u8 {
 }
 
 const std = @import("std");
-const nana = @import("root.zig");
 const assert = std.debug.assert;
+
+const nana = @import("root.zig");

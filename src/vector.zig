@@ -342,27 +342,26 @@ test "embedText updates only changed sentences" {
 }
 
 const std = @import("std");
-
-const tracy = @import("tracy");
-
 const testing_allocator = std.testing.allocator;
 const expectEqual = std.testing.expectEqual;
-const embed = @import("embed.zig");
-const config = @import("config");
-const storage = @import("vec_storage.zig");
-const model = @import("model.zig");
-const types = @import("types.zig");
-const vec_storage = @import("vec_storage.zig");
-const util = @import("util.zig");
-const root = @import("root.zig");
-const diff = @import("dmp.zig");
-const diffSplit = diff.diffSplit;
 const assert = std.debug.assert;
 const OutOfMemory = std.mem.Allocator.Error.OutOfMemory;
 
-const Vector = types.Vector;
-const VectorID = types.VectorID;
-const vec_sz = types.vec_sz;
+const config = @import("config");
+const tracy = @import("tracy");
+
+const diff = @import("dmp.zig");
+const diffSplit = diff.diffSplit;
+const embed = @import("embed.zig");
+const model = @import("model.zig");
 const Note = model.Note;
 const VectorRow = model.VectorRow;
 const NoteID = model.NoteID;
+const root = @import("root.zig");
+const storage = @import("vec_storage.zig");
+const types = @import("types.zig");
+const Vector = types.Vector;
+const VectorID = types.VectorID;
+const vec_sz = types.vec_sz;
+const util = @import("util.zig");
+const vec_storage = @import("vec_storage.zig");
