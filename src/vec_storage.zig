@@ -40,7 +40,7 @@ pub inline fn end_i(s: []u8) usize {
 pub inline fn readVec(v: *Vector, r: *FileReader, endian: std.builtin.Endian) !void {
     for (0..v1_meta.vec_sz) |j| {
         const elem = r.readInt(v1_meta.vec_type.stored_as(), endian) catch |err| {
-            std.debug.print("Error: {}\n", .{err});
+            std.log.err("Error: {}\n", .{err});
             return err;
         };
         const converted = @as(v1_meta.vec_type.to_type(), @bitCast(elem));

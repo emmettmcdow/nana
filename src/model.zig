@@ -220,7 +220,7 @@ pub const DB = struct {
         if (try self.db.pragma(u32, .{}, "user_version", null)) |v| {
             return v;
         } else {
-            std.debug.print("Could not get user version\n", .{});
+            std.log.err("Could not get user version\n", .{});
         }
         unreachable;
     }
@@ -255,7 +255,7 @@ pub const DB = struct {
 
         var diags = sqlite.Diagnostics{};
         var stmt = self.db.prepareWithDiags(INSERT_NOTE, .{ .diags = &diags }) catch |err| {
-            std.debug.print("unable to prepare statement. Error: {}. Diag.: {s}", .{ err, diags });
+            std.log.err("unable to prepare statement. Error: {}. Diag.: {s}", .{ err, diags });
             return err;
         };
         defer stmt.deinit();
@@ -306,7 +306,7 @@ pub const DB = struct {
 
         var diags = sqlite.Diagnostics{};
         var stmt = self.db.prepareWithDiags(SHOW_NOTES, .{ .diags = &diags }) catch |err| {
-            std.debug.print("unable to prepare statement. Error: {}. Diag.: {s}", .{ err, diags });
+            std.log.err("unable to prepare statement. Error: {}. Diag.: {s}", .{ err, diags });
             return err;
         };
         return .{ .stmt = stmt, .it = try stmt.iterator(Note, .{}) };
@@ -358,7 +358,7 @@ pub const DB = struct {
 
         var diags = sqlite.Diagnostics{};
         var stmt = self.db.prepareWithDiags(SEARCH_NO_QUERY, .{ .diags = &diags }) catch |err| {
-            std.debug.print("unable to prepare statement. Error: {}. Diag.: {s}", .{ err, diags });
+            std.log.err("unable to prepare statement. Error: {}. Diag.: {s}", .{ err, diags });
             return err;
         };
 
@@ -412,7 +412,7 @@ pub const DB = struct {
             // Update head
             var diags = sqlite.Diagnostics{};
             var stmt = self.db.prepareWithDiags(UPDATE_VECTOR, .{ .diags = &diags }) catch |err| {
-                std.debug.print("unable to prepare statement. Error: {}. Diag.: {s}", .{ err, diags });
+                std.log.err("unable to prepare statement. Error: {}. Diag.: {s}", .{ err, diags });
                 return err;
             };
             defer stmt.deinit();
@@ -424,7 +424,7 @@ pub const DB = struct {
         // Add new head
         var diags = sqlite.Diagnostics{};
         var stmt = self.db.prepareWithDiags(APPEND_VECTOR, .{ .diags = &diags }) catch |err| {
-            std.debug.print("unable to prepare statement. Error: {}. Diag.: {s}", .{ err, diags });
+            std.log.err("unable to prepare statement. Error: {}. Diag.: {s}", .{ err, diags });
             return err;
         };
         defer stmt.deinit();
@@ -444,7 +444,7 @@ pub const DB = struct {
         var diags = sqlite.Diagnostics{};
         const query = GET_NOTEID_FROM_VECID;
         var stmt = self.db.prepareWithDiags(query, .{ .diags = &diags }) catch |err| {
-            std.debug.print("unable to prepare statement. Error: {}. Diag.: {s}", .{ err, diags });
+            std.log.err("unable to prepare statement. Error: {}. Diag.: {s}", .{ err, diags });
             return err;
         };
 
@@ -465,7 +465,7 @@ pub const DB = struct {
 
         var diags = sqlite.Diagnostics{};
         var stmt = self.db.prepareWithDiags(GET_VECS_FROM_NOTEID, .{ .diags = &diags }) catch |err| {
-            std.debug.print("unable to prepare statement. Error: {}. Diag.: {s}", .{ err, diags });
+            std.log.err("unable to prepare statement. Error: {}. Diag.: {s}", .{ err, diags });
             return err;
         };
         defer stmt.deinit();
@@ -478,7 +478,7 @@ pub const DB = struct {
 
         var diags = sqlite.Diagnostics{};
         var stmt = self.db.prepareWithDiags(DELETE_VEC, .{ .diags = &diags }) catch |err| {
-            std.debug.print("unable to prepare statement. Error: {}. Diag.: {s}", .{ err, diags });
+            std.log.err("unable to prepare statement. Error: {}. Diag.: {s}", .{ err, diags });
             return err;
         };
         defer stmt.deinit();
@@ -548,7 +548,7 @@ pub const DB = struct {
             .Notes => SHOW_NOTES,
             .Vectors => SHOW_VECTOR,
         }, .{ .diags = &diags }) catch |err| {
-            std.debug.print("unable to prepare statement. Error: {}. Diag.: {s}", .{ err, diags });
+            std.log.err("unable to prepare statement. Error: {}. Diag.: {s}", .{ err, diags });
             return;
         };
 
