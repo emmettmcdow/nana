@@ -20,13 +20,19 @@ pub const Embedder = struct {
         const embedder = NLEmbedding.msgSend(Object, sentenceEmbeddingForLang, .{ns_lang});
         assert(embedder.getProperty(c_int, "dimension") == vec_sz);
 
+        // Retain the Objective-C object to prevent it from being deallocated
+        const retain_sel = objc.Sel.registerName("retain");
+        _ = embedder.msgSend(Object, retain_sel, .{});
+
         return Embedder{
             .allocator = allocator,
             .embedder = embedder,
         };
     }
     pub fn deinit(self: *Self) void {
-        _ = self;
+        // Release the retained Objective-C object
+        const release_sel = objc.Sel.registerName("release");
+        _ = self.embedder.msgSend(void, release_sel, .{});
     }
 
     pub fn split(self: Self, note: []const u8) EmbedIterator {

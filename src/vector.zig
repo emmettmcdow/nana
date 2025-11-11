@@ -76,6 +76,7 @@ pub const DB = struct {
             if (sentence.mod) {
                 if (sentence.contents.len < 2) continue;
                 const vec_slice = try self.embedder.embed(sentence.contents) orelse unreachable;
+                defer self.allocator.free(vec_slice);
                 const new_vec: Vector = vec_slice[0..vec_sz].*;
                 try new_vecs.append(.{
                     .vector_id = try self.vecs.put(new_vec),
