@@ -593,6 +593,85 @@ pub const DB = struct {
         try self.setVersion("2");
         return;
     }
+
+    fn sqliteTypeFor(zigType: type) []const u8 {
+        return switch (zigType) {
+            i64, u8, NoteID, VectorID, ?i64, ?u8, ?NoteID, ?VectorID => "INTEGER",
+            []const u8 => "TEXT",
+            else => unreachable,
+        };
+    }
+
+    pub fn integrityCheck(self: *Self) !bool {
+        const models = comptime [_]struct { name: []const u8, table: []const u8, type: type }{
+            .{
+                .name = "notes",
+                .table = "PRAGMA table_info(notes);",
+                .type = Note,
+            },
+            .{
+                .name = "vectors",
+                .table = "PRAGMA table_info(vectors);",
+                .type = VectorRow,
+            },
+        };
+        var correct = true;
+        inline for (models) |model| {
+            const fields = switch (@typeInfo(model.type)) {
+                .@"struct" => |s| s.fields,
+                else => unreachable,
+            };
+            var stmt = try self.db.prepare(model.table);
+            defer stmt.deinit();
+
+            var iter = try stmt.iterator(SchemaRow, .{});
+
+            var buffer: [1000]u8 = undefined;
+            var fba = std.heap.FixedBufferAllocator.init(&buffer);
+            const allocator = fba.allocator();
+
+            var field_count: usize = 0;
+            inline for (fields) |field| {
+                const row = (try iter.nextAlloc(allocator, .{})) orelse break;
+                field_count += 1;
+
+                const name_matches = std.mem.eql(u8, field.name, row.name);
+                if (!name_matches) {
+                    correct = false;
+                    std.log.err(
+                        "Incorrect schema for {s}. Wanted field '{s}', got '{s}'.\n",
+                        .{ model.name, field.name, row.name },
+                    );
+                }
+
+                const type_matches = std.mem.eql(
+                    u8,
+                    sqliteTypeFor(field.type),
+                    row.type,
+                );
+                if (!type_matches) {
+                    correct = false;
+                    std.log.err(
+                        "Incorrect schema for {s}. Wanted type '{s}' for field '{s}', got '{s}'.\n",
+                        .{
+                            model.name,
+                            sqliteTypeFor(field.type),
+                            field.name,
+                            row.type,
+                        },
+                    );
+                }
+            }
+            if (field_count != fields.len) {
+                std.log.err(
+                    "Incorrect schema for {s}. Expected {d} fields, got {d} fields.\n",
+                    .{ model.name, fields.len, field_count },
+                );
+                correct = false;
+            }
+        }
+        return correct;
+    }
 };
 
 const SchemaRow = struct {
@@ -604,70 +683,12 @@ const SchemaRow = struct {
     unk3: u8 = 0,
 };
 
-test "init DB - notes" {
-    var tmpD = std.testing.tmpDir(.{ .iterate = true });
-    defer tmpD.cleanup();
-
-    var db = try DB.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
-    defer db.deinit();
-    // Check if initialized
-    var stmt = try db.db.prepare(GET_COLS);
-    defer stmt.deinit();
-
-    const expectedSchema = [_]SchemaRow{
-        .{ .name = "id", .type = "INTEGER" },
-        .{ .name = "created", .type = "INTEGER" },
-        .{ .name = "modified", .type = "INTEGER" },
-        .{ .name = "path", .type = "TEXT" },
-    };
-
-    var buffer: [1000]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buffer);
-    const allocator = fba.allocator();
-
-    var i: usize = 0;
-    var iter = try stmt.iterator(SchemaRow, .{});
-    while (try iter.nextAlloc(allocator, .{})) |row| {
-        try expectEqualStrings(expectedSchema[i].name, row.name);
-        try expectEqualStrings(expectedSchema[i].type, row.type);
-        i += 1;
-    }
-    try expect(i == expectedSchema.len);
-}
-
-test "init DB - vector" {
+test "integrityCheck" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var db = try DB.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
     defer db.deinit();
-
-    // Check if initialized
-    var stmt = try db.db.prepare(GET_COLS_VECTOR);
-    defer stmt.deinit();
-
-    var iter = try stmt.iterator(SchemaRow, .{});
-
-    const expectedSchema = [_]SchemaRow{
-        .{ .name = "vector_id", .type = "INTEGER" },
-        .{ .name = "note_id", .type = "INTEGER" },
-        .{ .name = "next_vec_id", .type = "INTEGER" },
-        .{ .name = "last_vec_id", .type = "INTEGER" },
-        .{ .name = "start_i", .type = "INTEGER" },
-        .{ .name = "end_i", .type = "INTEGER" },
-    };
-
-    var buffer: [1000]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buffer);
-    const allocator = fba.allocator();
-
-    var i: usize = 0;
-    while (true) {
-        const row = (try iter.nextAlloc(allocator, .{})) orelse break;
-        try expectEqualStrings(expectedSchema[i].name, row.name);
-        try expectEqualStrings(expectedSchema[i].type, row.type);
-        i += 1;
-    }
-    try expect(i == expectedSchema.len);
+    try expect(try db.integrityCheck());
 }
 
 test "re-init DB" {
