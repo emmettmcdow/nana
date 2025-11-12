@@ -296,36 +296,64 @@ pub const Spliterator = struct {
     }
 
     pub fn next(self: *Self) ?Sentence {
-        if (self.splitter.next()) |sentence| {
+        while (self.splitter.next()) |sentence| {
+            if (sentence.len < 1) {
+                self.curr_i += 1;
+                continue;
+            }
             const out = Sentence{
                 .contents = sentence,
                 .off = self.curr_i,
             };
             self.curr_i += sentence.len + 1;
             return out;
-        } else {
-            return null;
         }
+        return null;
     }
 };
 
 test "split" {
-    const input_str = "foo.bar.baz";
-    var splitter = Spliterator.init(input_str);
-    while (splitter.next()) |s| {
-        try expectEqualStrings(input_str[s.off .. s.off + s.contents.len], s.contents);
+    {
+        const input_str = "foo.bar.baz";
+        var splitter = Spliterator.init(input_str);
+        var i: usize = 0;
+        const expected = [_]Sentence{
+            .{ .contents = "foo", .off = 0, .mod = false },
+            .{ .contents = "bar", .off = 4, .mod = false },
+            .{ .contents = "baz", .off = 8, .mod = false },
+        };
+        while (splitter.next()) |s| {
+            try expectEqual(expected[i].off, s.off);
+            try expectEqualStrings(expected[i].contents, s.contents);
+            i += 1;
+        }
     }
 
-    const input_str_2 = "foo..bar";
-    splitter = Spliterator.init(input_str_2);
-    while (splitter.next()) |s| {
-        try expectEqualStrings(input_str_2[s.off .. s.off + s.contents.len], s.contents);
+    {
+        const input_str = "foo.\nbar";
+        var splitter = Spliterator.init(input_str);
+        var i: usize = 0;
+        const expected = [_]Sentence{
+            .{ .contents = "foo", .off = 0, .mod = false },
+            .{ .contents = "bar", .off = 5, .mod = false },
+        };
+        while (splitter.next()) |s| {
+            try expectEqual(expected[i].off, s.off);
+            try expectEqualStrings(expected[i].contents, s.contents);
+            i += 1;
+        }
     }
 
-    const input_str_3 = "foo.";
-    splitter = Spliterator.init(input_str_3);
-    while (splitter.next()) |s| {
-        try expectEqualStrings(input_str_3[s.off .. s.off + s.contents.len], s.contents);
+    {
+        const input_str = "foo.";
+        var splitter = Spliterator.init(input_str);
+        const expected = [_]Sentence{.{ .contents = "foo", .off = 0, .mod = false }};
+        var i: usize = 0;
+        while (splitter.next()) |s| {
+            try expectEqual(expected[i].off, s.off);
+            try expectEqualStrings(expected[i].contents, s.contents);
+            i += 1;
+        }
     }
 }
 
@@ -338,94 +366,63 @@ pub fn diffSplit(
     defer allocator.free(changes);
 
     var output = std.ArrayList(Sentence).init(allocator);
-    var split_old = Spliterator.init(old);
     var split_new = Spliterator.init(new);
-    var curr_off: usize = 0;
+
+    // If no changes, all sentences are unmodified
     if (changes.len == 0) {
-        while (split_old.next()) |old_s| {
+        while (split_new.next()) |new_s| {
             try output.append(Sentence{
-                .contents = old_s.contents,
+                .contents = new_s.contents,
                 .mod = false,
-                .off = curr_off,
+                .off = new_s.off,
             });
-            curr_off += old_s.contents.len + 1;
         }
         return output;
     }
 
-    var _old_s = split_old.next();
-    var _new_s = split_new.next();
-    var change_idx: usize = 0;
+    // For each sentence in the new text, check if it was modified
+    while (split_new.next()) |new_s| {
+        var has_change = false;
 
-    while (_old_s != null or _new_s != null) {
-        if (_old_s != null and _new_s != null) {
-            const old_s = _old_s.?;
-            const new_s = _new_s.?;
+        // First check if this sentence appears verbatim in the old text
+        // If it does, it's just moved, not modified
+        const sentence_in_old = std.mem.indexOf(u8, old, new_s.contents) != null;
 
-            // Check if any change affects this sentence pair
-            // Since changes are sorted by index, we can skip changes that are before this sentence
-            var has_change = false;
-            while (change_idx < changes.len) {
-                const change = changes[change_idx];
+        if (!sentence_in_old) {
+            // Sentence doesn't exist in old text, so it's definitely modified
+            has_change = true;
+        } else {
+            // Sentence exists in old text, check if any additions fall within its range
+            // that would indicate it was actually modified (not just moved)
+            for (changes) |change| {
+                if (change.mod == .add and new_s.inRange(change.i)) {
+                    // There's an addition in this sentence's range
+                    // But it might just be from insertions before it that shifted its position
+                    // Check if ALL characters in the sentence are additions
+                    var all_additions = true;
+                    var additions_in_range: usize = 0;
+                    for (changes) |c| {
+                        if (c.mod == .add and new_s.inRange(c.i)) {
+                            additions_in_range += 1;
+                        }
+                    }
 
-                const beyond_new = change.i >= old_s.off + old_s.contents.len + 1;
-                const beyond_old = change.i >= new_s.off + new_s.contents.len + 1;
-                if (beyond_new and beyond_old) {
+                    // If not all characters are additions, the sentence was just shifted
+                    if (additions_in_range < new_s.contents.len) {
+                        all_additions = false;
+                    }
+
+                    has_change = all_additions;
                     break;
                 }
-
-                const was_deleted = change.mod == .del and old_s.inRange(change.i);
-                const was_added = change.mod == .add and new_s.inRange(change.i);
-                has_change = was_deleted or was_added;
-
-                change_idx += 1;
-
-                const in_old_range = change.i < old_s.off + old_s.contents.len + 1;
-                const in_new_range = change.i < new_s.off + new_s.contents.len + 1;
-                if (!in_old_range or !in_new_range) break;
             }
-
-            if (has_change) {
-                // Skip empty sentences
-                if (new_s.contents.len > 0) {
-                    try output.append(Sentence{
-                        .contents = new_s.contents,
-                        .mod = true,
-                        .off = curr_off,
-                    });
-                    curr_off += new_s.contents.len + 1;
-                }
-            } else {
-                // Skip empty sentences
-                if (old_s.contents.len > 0) {
-                    try output.append(Sentence{
-                        .contents = old_s.contents,
-                        .mod = false,
-                        .off = curr_off,
-                    });
-                    curr_off += old_s.contents.len + 1;
-                }
-            }
-
-            _old_s = split_old.next();
-            _new_s = split_new.next();
-        } else if (_old_s != null) {
-            // Old sentence with no corresponding new sentence (deletion)
-            _old_s = split_old.next();
-        } else if (_new_s != null) {
-            // New sentence with no corresponding old sentence (addition)
-            const new_s = _new_s.?;
-            // Skip empty sentences
-            if (new_s.contents.len > 0) {
-                try output.append(Sentence{
-                    .contents = new_s.contents,
-                    .mod = true,
-                    .off = curr_off,
-                });
-                curr_off += new_s.contents.len + 1;
-            }
-            _new_s = split_new.next();
         }
+
+        try output.append(Sentence{
+            .contents = new_s.contents,
+            .mod = has_change,
+            .off = new_s.off,
+        });
     }
 
     return output;
@@ -530,6 +527,64 @@ test "diffSplit" {
         try expectEqual(true, result.items[1].mod);
         try expectEqualStrings("third", result.items[2].contents);
         try expectEqual(false, result.items[2].mod);
+    }
+
+    // Test case 8: Empty sentences
+    {
+        const old = "first.second.";
+        const new = "first.\nsecond.";
+        const result = try diffSplit(old, new, std.testing.allocator);
+        defer result.deinit();
+
+        try expectEqual(2, result.items.len);
+        try expectEqualStrings("first", result.items[0].contents);
+        try expectEqual(false, result.items[0].mod);
+        try expectEqualStrings("second", result.items[1].contents);
+        try expectEqual(false, result.items[1].mod);
+    }
+
+    // Test case 9: Consecutive delimiters - verify correct offsets
+    {
+        const old = "apple.\nbanana.\ngrape.";
+        const new = "apple.\norange.\ngrape.";
+        const result = try diffSplit(old, new, std.testing.allocator);
+        defer result.deinit();
+
+        try expectEqual(3, result.items.len);
+
+        try expectEqualStrings("apple", result.items[0].contents);
+        try expectEqual(false, result.items[0].mod);
+        try expectEqual(@as(usize, 0), result.items[0].off);
+
+        try expectEqualStrings("orange", result.items[1].contents);
+        try expectEqual(true, result.items[1].mod);
+        try expectEqual(@as(usize, 7), result.items[1].off);
+
+        try expectEqualStrings("grape", result.items[2].contents);
+        try expectEqual(false, result.items[2].mod);
+        try expectEqual(@as(usize, 15), result.items[2].off);
+    }
+
+    // Test case 10: Inserted sentence
+    {
+        const old = "apple.grape.";
+        const new = "apple.orange.grape.";
+        const result = try diffSplit(old, new, std.testing.allocator);
+        defer result.deinit();
+
+        try expectEqual(3, result.items.len);
+
+        try expectEqualStrings("apple", result.items[0].contents);
+        try expectEqual(false, result.items[0].mod);
+        try expectEqual(@as(usize, 0), result.items[0].off);
+
+        try expectEqualStrings("orange", result.items[1].contents);
+        try expectEqual(true, result.items[1].mod);
+        try expectEqual(@as(usize, 6), result.items[1].off);
+
+        try expectEqualStrings("grape", result.items[2].contents);
+        try expectEqual(false, result.items[2].mod);
+        try expectEqual(@as(usize, 13), result.items[2].off);
     }
 }
 

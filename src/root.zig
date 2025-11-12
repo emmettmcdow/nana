@@ -1,4 +1,4 @@
-pub const Error = error{ NotFound, BufferTooSmall, MalformedPath, NotNote };
+pub const Error = error{ NotFound, BufferTooSmall, MalformedPath, NotNote, IncoherentDB };
 
 pub const Runtime = struct {
     basedir: std.fs.Dir,
@@ -272,6 +272,11 @@ pub const Runtime = struct {
         }
 
         self.db.commitTX();
+
+        if (!self.db.integrityCheck()) {
+            std.log.err("Relational DB failed integrity check, exiting.", .{});
+            return Error.IncoherentDB;
+        }
         return;
     }
 };

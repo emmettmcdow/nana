@@ -73,11 +73,15 @@ pub const DB = struct {
         var old_vecs_idx: usize = 0;
 
         for ((try diffSplit(old_contents, new_contents, arena.allocator())).items) |sentence| {
+            // std.debug.print("Sentence: {any}\n", .{sentence});
             if (sentence.mod) {
-                if (sentence.contents.len < 2) continue;
+                // TODO: How to handle the unembeddable. If we don't embed fresh blocks, we get an
+                // assertion failure below.
+                if (sentence.contents.len < 1) continue;
                 const vec_slice = try self.embedder.embed(sentence.contents) orelse unreachable;
                 defer self.allocator.free(vec_slice);
                 const new_vec: Vector = vec_slice[0..vec_sz].*;
+                // std.debug.print("Placing: '{s}' or '{s}'\n", .{ sentence.contents, new_contents[sentence.off .. sentence.off + sentence.contents.len] });
                 try new_vecs.append(.{
                     .vector_id = try self.vecs.put(new_vec),
                     .note_id = note_id,
@@ -90,6 +94,7 @@ pub const DB = struct {
                     const old_v = old_vecs[old_vecs_idx];
                     const old_v_contents = old_contents[old_v.start_i..old_v.end_i];
                     assert(old_v_contents.len > 1);
+                    // std.debug.print("Comparing '{s}' and '{s}'\n", .{ sentence.contents, old_v_contents });
                     if (!std.mem.eql(u8, sentence.contents, old_v_contents)) continue;
                     try new_vecs.append(VectorRow{
                         .vector_id = try self.vecs.copy(old_v.vector_id),
@@ -98,7 +103,6 @@ pub const DB = struct {
                         .end_i = sentence.off + sentence.contents.len,
                     });
                     found = true;
-                    old_vecs_idx += 1;
                     break;
                 }
                 assert(found);
@@ -332,6 +336,35 @@ test "embedText updates only changed sentences" {
 
     // Updated content: same first and last words, different middle word
     const updated_content = "apple. dragonfruit. cherry.";
+    try db.embedText(noteID, initial_content, updated_content);
+
+    var updated_vecs: [3]Vector = undefined;
+    try expectEqual(3, try getVectorsForNote(&db, &rel, noteID, &updated_vecs));
+
+    try std.testing.expect(@reduce(.And, initial_vecs[0] == updated_vecs[0]));
+    try std.testing.expect(!@reduce(.And, initial_vecs[1] == updated_vecs[1]));
+    try std.testing.expect(@reduce(.And, initial_vecs[2] == updated_vecs[2]));
+}
+
+test "embedText handle newlines" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer rel.deinit();
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    defer db.deinit();
+
+    const noteID = try rel.create();
+
+    const initial_content = "apple.\nbanana.\ngrape.";
+    try db.embedText(noteID, "", initial_content);
+
+    var initial_vecs: [3]Vector = undefined;
+    try expectEqual(3, try getVectorsForNote(&db, &rel, noteID, &initial_vecs));
+
+    const updated_content = "apple.\norange.\ngrape.";
     try db.embedText(noteID, initial_content, updated_content);
 
     var updated_vecs: [3]Vector = undefined;

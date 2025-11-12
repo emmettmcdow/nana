@@ -602,7 +602,7 @@ pub const DB = struct {
         };
     }
 
-    pub fn integrityCheck(self: *Self) !bool {
+    pub fn integrityCheck(self: *Self) bool {
         const models = comptime [_]struct { name: []const u8, table: []const u8, type: type }{
             .{
                 .name = "notes",
@@ -621,10 +621,17 @@ pub const DB = struct {
                 .@"struct" => |s| s.fields,
                 else => unreachable,
             };
-            var stmt = try self.db.prepare(model.table);
+            var diags = sqlite.Diagnostics{};
+            var stmt = self.db.prepareWithDiags(model.table, .{ .diags = &diags }) catch |err| {
+                std.log.err("Unable to prepare statement. Error: {}. Diag.: {s}", .{ err, diags });
+                return false;
+            };
             defer stmt.deinit();
 
-            var iter = try stmt.iterator(SchemaRow, .{});
+            var iter = stmt.iterator(SchemaRow, .{}) catch |err| {
+                std.log.err("Failed to initialize schema iterator with err: {}", .{err});
+                return false;
+            };
 
             var buffer: [1000]u8 = undefined;
             var fba = std.heap.FixedBufferAllocator.init(&buffer);
@@ -632,7 +639,10 @@ pub const DB = struct {
 
             var field_count: usize = 0;
             inline for (fields) |field| {
-                const row = (try iter.nextAlloc(allocator, .{})) orelse break;
+                const row = iter.nextAlloc(allocator, .{}) catch |err| {
+                    std.log.err("Failed to get next row of schema with err: {}", .{err});
+                    return false;
+                } orelse break;
                 field_count += 1;
 
                 const name_matches = std.mem.eql(u8, field.name, row.name);
@@ -688,7 +698,7 @@ test "integrityCheck" {
     defer tmpD.cleanup();
     var db = try DB.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
     defer db.deinit();
-    try expect(try db.integrityCheck());
+    try expect(db.integrityCheck());
 }
 
 test "re-init DB" {
