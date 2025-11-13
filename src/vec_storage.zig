@@ -9,6 +9,8 @@ const v1_meta: StorageMetadata = .{
     .vec_n = 0,
 };
 
+const NULL_VEC_ID: VectorID = std.math.maxInt(VectorID);
+
 // **************************************************************************************** Helpers
 // Endianness doesn't matter since we only check whether the value is 0 or not... for now
 pub inline fn writeSlice(
@@ -153,6 +155,7 @@ pub const Storage = struct {
     }
 
     pub fn get(self: Self, id: VectorID) Vector {
+        assert(id != self.nullVec());
         return self.vectors[id];
     }
 
@@ -168,12 +171,14 @@ pub const Storage = struct {
     }
 
     fn putAt(self: *Self, v: Vector, id: usize) void {
+        assert(id != self.nullVec());
         self.vectors[id] = v;
         self.index[id] = 1;
     }
 
     pub fn rm(self: *Self, id: VectorID) !void {
         if (self.index[id] == 0) return Error.MultipleRemove;
+        assert(id != self.nullVec());
         assert(self.meta.vec_n > 0);
         self.index[id] = 0;
         self.meta.vec_n -= 1;
@@ -289,10 +294,17 @@ pub const Storage = struct {
         return new_id;
     }
 
+    pub fn nullVec(_: Self) VectorID {
+        return NULL_VEC_ID;
+    }
+
     /// Locates the next empty index for a vector. Prioritizes filling holes in the arrays.
     fn nextIndex(self: *Self) usize {
         for (self.index, 0..) |v, i| {
-            if (v == 0) return i;
+            if (v == 0) {
+                assert(self.nullVec() != i);
+                return i;
+            }
         }
         unreachable;
     }
