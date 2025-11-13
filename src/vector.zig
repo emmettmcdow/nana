@@ -75,15 +75,15 @@ pub const DB = struct {
         for ((try diffSplit(old_contents, new_contents, arena.allocator())).items) |sentence| {
             // std.debug.print("Sentence: {any}\n", .{sentence});
             if (sentence.mod) {
-                // TODO: How to handle the unembeddable. If we don't embed fresh blocks, we get an
-                // assertion failure below.
-                if (sentence.contents.len < 1) continue;
-                const vec_slice = try self.embedder.embed(sentence.contents) orelse unreachable;
-                defer self.allocator.free(vec_slice);
-                const new_vec: Vector = vec_slice[0..vec_sz].*;
+                const vec_id = if (try self.embedder.embed(sentence.contents)) |vec_slice| block: {
+                    defer self.allocator.free(vec_slice);
+                    const new_vec: Vector = vec_slice[0..vec_sz].*;
+                    break :block try self.vecs.put(new_vec);
+                } else self.vecs.nullVec();
+
                 // std.debug.print("Placing: '{s}' or '{s}'\n", .{ sentence.contents, new_contents[sentence.off .. sentence.off + sentence.contents.len] });
                 try new_vecs.append(.{
-                    .vector_id = try self.vecs.put(new_vec),
+                    .vector_id = vec_id,
                     .note_id = note_id,
                     .start_i = sentence.off,
                     .end_i = sentence.off + sentence.contents.len,
@@ -93,7 +93,6 @@ pub const DB = struct {
                 while (old_vecs_idx < old_vecs.len) : (old_vecs_idx += 1) {
                     const old_v = old_vecs[old_vecs_idx];
                     const old_v_contents = old_contents[old_v.start_i..old_v.end_i];
-                    assert(old_v_contents.len > 1);
                     // std.debug.print("Comparing '{s}' and '{s}'\n", .{ sentence.contents, old_v_contents });
                     if (!std.mem.eql(u8, sentence.contents, old_v_contents)) continue;
                     try new_vecs.append(VectorRow{

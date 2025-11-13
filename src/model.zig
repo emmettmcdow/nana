@@ -74,6 +74,22 @@ pub fn genPath(noteID: NoteID, buf: []u8) []const u8 {
     return out;
 }
 
+fn castVecID(vecID: ?VectorID) ?i64 {
+    if (vecID) |vec_id| {
+        return @bitCast(vec_id);
+    } else {
+        return null;
+    }
+}
+
+fn unCastVecID(vecID: ?i64) ?VectorID {
+    if (vecID) |vec_id| {
+        return @bitCast(vec_id);
+    } else {
+        return null;
+    }
+}
+
 pub const VectorRow = struct {
     vector_id: VectorID,
     note_id: NoteID,
@@ -89,6 +105,27 @@ pub const VectorRow = struct {
             self.last_vec_id == self.last_vec_id and
             self.start_i == other.start_i and
             self.end_i == self.end_i;
+    }
+};
+
+// Intermediate struct for reading from database with i64 fields
+const VectorRowDB = struct {
+    vector_id: i64,
+    note_id: NoteID,
+    next_vec_id: ?i64 = null,
+    last_vec_id: ?i64 = null,
+    start_i: usize,
+    end_i: usize,
+
+    fn toVectorRow(self: VectorRowDB) VectorRow {
+        return .{
+            .vector_id = unCastVecID(self.vector_id).?,
+            .note_id = self.note_id,
+            .next_vec_id = unCastVecID(self.next_vec_id),
+            .last_vec_id = unCastVecID(self.last_vec_id),
+            .start_i = self.start_i,
+            .end_i = self.end_i,
+        };
     }
 };
 
@@ -405,9 +442,10 @@ pub const DB = struct {
         assert(self.is_ready());
 
         // Get head of list
-        const row = try self.db.one(VectorRow, GET_LAST_VECTOR, .{}, .{ .note_id = noteID });
+        const row_db = try self.db.one(VectorRowDB, GET_LAST_VECTOR, .{}, .{ .note_id = noteID });
         var prev_head_id: ?VectorID = null;
-        if (row) |prev_head| {
+        if (row_db) |prev_head_db| {
+            const prev_head = prev_head_db.toVectorRow();
             prev_head_id = prev_head.vector_id;
             // Update head
             var diags = sqlite.Diagnostics{};
@@ -417,8 +455,8 @@ pub const DB = struct {
             };
             defer stmt.deinit();
             try stmt.exec(.{}, .{
-                .next_vec_id = vectorID,
-                .vector_id = prev_head.vector_id,
+                .next_vec_id = castVecID(vectorID),
+                .vector_id = castVecID(prev_head.vector_id),
             });
         }
         // Add new head
@@ -429,10 +467,10 @@ pub const DB = struct {
         };
         defer stmt.deinit();
         try stmt.exec(.{}, .{
-            .vector_id = vectorID,
+            .vector_id = castVecID(vectorID),
             .note_id = noteID,
             .next_vec_id = null,
-            .last_vec_id = prev_head_id,
+            .last_vec_id = castVecID(prev_head_id),
             .start_i = start_i,
             .end_i = end_i,
         });
@@ -451,7 +489,7 @@ pub const DB = struct {
         defer stmt.deinit();
 
         const row = try stmt.one(NoteID, .{}, .{
-            .id = vectorID,
+            .id = castVecID(vectorID),
         });
 
         if (row) |id| {
@@ -470,7 +508,15 @@ pub const DB = struct {
         };
         defer stmt.deinit();
 
-        return try stmt.all(VectorRow, allocator, .{}, .{ .note_id = noteID });
+        const rows_db = try stmt.all(VectorRowDB, allocator, .{}, .{ .note_id = noteID });
+        defer allocator.free(rows_db);
+
+        const rows = try allocator.alloc(VectorRow, rows_db.len);
+        for (rows_db, 0..) |row_db, i| {
+            rows[i] = row_db.toVectorRow();
+        }
+
+        return rows;
     }
 
     pub fn deleteVec(self: *Self, vID: VectorID) !void {
@@ -483,7 +529,7 @@ pub const DB = struct {
         };
         defer stmt.deinit();
 
-        return stmt.exec(.{}, .{ .vector_id = vID });
+        return stmt.exec(.{}, .{ .vector_id = castVecID(vID) });
     }
 
     pub fn startTX(self: *Self) !void {
@@ -562,14 +608,15 @@ pub const DB = struct {
                 }
             },
             .Vectors => {
-                const rows = stmt.all(VectorRow, arena.allocator(), .{}, .{}) catch undefined;
+                const rows_db = stmt.all(VectorRowDB, arena.allocator(), .{}, .{}) catch undefined;
                 std.debug.print("{s}, {s}, {s}, {s}\n", .{
                     "vec. ID",
                     "note ID",
                     "next ID",
                     "last ID",
                 });
-                for (rows) |vector| {
+                for (rows_db) |row_db| {
+                    const vector = row_db.toVectorRow();
                     std.debug.print("{d: ^7}| {d: ^7}| {d: ^7}| {d: ^7}\n", .{
                         vector.vector_id,
                         vector.note_id,
@@ -917,6 +964,39 @@ test "transactions" {
     db.dropTX();
     try expectError(Error.NotFound, db.get(noteID2, arena.allocator()));
     try expectEqual(old_next_id, db.next_id);
+}
+
+test "handle 64-bit unsigned ints" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var db = try DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer db.deinit();
+
+    const note_id = try db.create();
+
+    // Test with large u64 values near the max
+    const max_vec_id: VectorID = std.math.maxInt(VectorID);
+    const vec_id_1 = max_vec_id - 2;
+    const vec_id_2 = max_vec_id - 1;
+    const vec_id_3 = max_vec_id;
+
+    try db.appendVector(note_id, vec_id_1, 0, 2);
+    try db.appendVector(note_id, vec_id_2, 2, 4);
+    try db.appendVector(note_id, vec_id_3, 4, 6);
+
+    const got = try db.vecsForNote(arena.allocator(), note_id);
+    try expectEqual(3, got.len);
+    try expectEqual(vec_id_1, got[0].vector_id);
+    try expectEqual(vec_id_2, got[0].next_vec_id.?);
+
+    try expectEqual(vec_id_2, got[1].vector_id);
+    try expectEqual(vec_id_1, got[1].last_vec_id.?);
+    try expectEqual(vec_id_3, got[1].next_vec_id.?);
+
+    try expectEqual(vec_id_3, got[2].vector_id);
+    try expectEqual(vec_id_2, got[2].last_vec_id.?);
 }
 
 fn equalData(d: *std.fs.Dir, file_path_1: []const u8, file_path_2: []const u8) !bool {

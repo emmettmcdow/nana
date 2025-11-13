@@ -284,6 +284,7 @@ pub const Storage = struct {
 
     /// Generates a new ID for an existing Vector
     pub fn copy(self: *Self, id: VectorID) !VectorID {
+        if (id == self.nullVec()) return self.nullVec();
         const new_id = self.nextIndex();
         assert(self.index[new_id] == 0);
         self.meta.vec_n += 1;
