@@ -269,7 +269,7 @@ test "all diff" {
 pub const Sentence = struct {
     contents: []const u8,
     off: usize,
-    mod: bool = false,
+    new: bool = false,
 
     const Self = @This();
 
@@ -318,9 +318,9 @@ test "split" {
         var splitter = Spliterator.init(input_str);
         var i: usize = 0;
         const expected = [_]Sentence{
-            .{ .contents = "foo", .off = 0, .mod = false },
-            .{ .contents = "bar", .off = 4, .mod = false },
-            .{ .contents = "baz", .off = 8, .mod = false },
+            .{ .contents = "foo", .off = 0, .new = false },
+            .{ .contents = "bar", .off = 4, .new = false },
+            .{ .contents = "baz", .off = 8, .new = false },
         };
         while (splitter.next()) |s| {
             try expectEqual(expected[i].off, s.off);
@@ -334,8 +334,8 @@ test "split" {
         var splitter = Spliterator.init(input_str);
         var i: usize = 0;
         const expected = [_]Sentence{
-            .{ .contents = "foo", .off = 0, .mod = false },
-            .{ .contents = "bar", .off = 5, .mod = false },
+            .{ .contents = "foo", .off = 0, .new = false },
+            .{ .contents = "bar", .off = 5, .new = false },
         };
         while (splitter.next()) |s| {
             try expectEqual(expected[i].off, s.off);
@@ -347,7 +347,7 @@ test "split" {
     {
         const input_str = "foo.";
         var splitter = Spliterator.init(input_str);
-        const expected = [_]Sentence{.{ .contents = "foo", .off = 0, .mod = false }};
+        const expected = [_]Sentence{.{ .contents = "foo", .off = 0, .new = false }};
         var i: usize = 0;
         while (splitter.next()) |s| {
             try expectEqual(expected[i].off, s.off);
@@ -362,65 +362,24 @@ pub fn diffSplit(
     new: []const u8,
     allocator: std.mem.Allocator,
 ) !std.ArrayList(Sentence) {
-    const changes = try diff(old, new, allocator);
-    defer allocator.free(changes);
-
     var output = std.ArrayList(Sentence).init(allocator);
     var split_new = Spliterator.init(new);
 
-    // If no changes, all sentences are unmodified
-    if (changes.len == 0) {
-        while (split_new.next()) |new_s| {
-            try output.append(Sentence{
-                .contents = new_s.contents,
-                .mod = false,
-                .off = new_s.off,
-            });
-        }
-        return output;
-    }
-
-    // For each sentence in the new text, check if it was modified
-    while (split_new.next()) |new_s| {
-        var has_change = false;
-
-        // First check if this sentence appears verbatim in the old text
-        // If it does, it's just moved, not modified
-        const sentence_in_old = std.mem.indexOf(u8, old, new_s.contents) != null;
-
-        if (!sentence_in_old) {
-            // Sentence doesn't exist in old text, so it's definitely modified
-            has_change = true;
-        } else {
-            // Sentence exists in old text, check if any additions fall within its range
-            // that would indicate it was actually modified (not just moved)
-            for (changes) |change| {
-                if (change.mod == .add and new_s.inRange(change.i)) {
-                    // There's an addition in this sentence's range
-                    // But it might just be from insertions before it that shifted its position
-                    // Check if ALL characters in the sentence are additions
-                    var all_additions = true;
-                    var additions_in_range: usize = 0;
-                    for (changes) |c| {
-                        if (c.mod == .add and new_s.inRange(c.i)) {
-                            additions_in_range += 1;
-                        }
-                    }
-
-                    // If not all characters are additions, the sentence was just shifted
-                    if (additions_in_range < new_s.contents.len) {
-                        all_additions = false;
-                    }
-
-                    has_change = all_additions;
-                    break;
-                }
+    new: while (split_new.next()) |new_s| {
+        var split_old = Spliterator.init(old);
+        while (split_old.next()) |old_s| {
+            if (std.mem.eql(u8, old_s.contents, new_s.contents)) {
+                try output.append(Sentence{
+                    .contents = new_s.contents,
+                    .new = false,
+                    .off = new_s.off,
+                });
+                continue :new;
             }
         }
-
         try output.append(Sentence{
             .contents = new_s.contents,
-            .mod = has_change,
+            .new = true,
             .off = new_s.off,
         });
     }
@@ -429,7 +388,6 @@ pub fn diffSplit(
 }
 
 test "diffSplit" {
-    // Test case 1: Example from user - partial modification
     {
         const old = "foo.bar";
         const new = "foo.baz";
@@ -438,153 +396,70 @@ test "diffSplit" {
 
         try expectEqual(2, result.items.len);
 
-        // First sentence unchanged
         try expectEqualStrings("foo", result.items[0].contents);
-        try expectEqual(false, result.items[0].mod);
-
-        // Second sentence modified
+        try expectEqual(false, result.items[0].new);
         try expectEqualStrings("baz", result.items[1].contents);
-        try expectEqual(true, result.items[1].mod);
+        try expectEqual(true, result.items[1].new);
     }
 
-    // Test case 2: No changes
     {
-        const old = "hello.world";
-        const new = "hello.world";
+        const old = "foo.bar";
+        const new = "bar.foo";
         const result = try diffSplit(old, new, std.testing.allocator);
         defer result.deinit();
 
         try expectEqual(2, result.items.len);
-        try expectEqualStrings("hello", result.items[0].contents);
-        try expectEqual(false, result.items[0].mod);
-        try expectEqualStrings("world", result.items[1].contents);
-        try expectEqual(false, result.items[1].mod);
+
+        try expectEqualStrings("bar", result.items[0].contents);
+        try expectEqual(false, result.items[0].new);
+        try expectEqualStrings("foo", result.items[1].contents);
+        try expectEqual(false, result.items[1].new);
     }
 
-    // Test case 3: All changed
     {
-        const old = "one.two";
-        const new = "three.four";
-        const result = try diffSplit(old, new, std.testing.allocator);
-        defer result.deinit();
-
-        try expectEqual(2, result.items.len);
-        try expectEqualStrings("three", result.items[0].contents);
-        try expectEqual(true, result.items[0].mod);
-        try expectEqualStrings("four", result.items[1].contents);
-        try expectEqual(true, result.items[1].mod);
-    }
-
-    // Test case 4: Multiple sentences with mixed changes
-    {
-        const old = "keep.change.keep";
-        const new = "keep.modified.keep";
+        const old = "foo";
+        const new = "baz!bar?foo";
         const result = try diffSplit(old, new, std.testing.allocator);
         defer result.deinit();
 
         try expectEqual(3, result.items.len);
-        try expectEqualStrings("keep", result.items[0].contents);
-        try expectEqual(false, result.items[0].mod);
-        try expectEqualStrings("modified", result.items[1].contents);
-        try expectEqual(true, result.items[1].mod);
-        try expectEqualStrings("keep", result.items[2].contents);
-        try expectEqual(false, result.items[2].mod);
+
+        try expectEqualStrings("baz", result.items[0].contents);
+        try expectEqual(true, result.items[0].new);
+        try expectEqualStrings("bar", result.items[1].contents);
+        try expectEqual(true, result.items[1].new);
+        try expectEqualStrings("foo", result.items[2].contents);
+        try expectEqual(false, result.items[2].new);
     }
 
-    // Test case 5: Empty string to content
     {
         const old = "";
-        const new = "hello";
-        const result = try diffSplit(old, new, std.testing.allocator);
-        defer result.deinit();
-
-        try expectEqual(1, result.items.len);
-        try expectEqualStrings("hello", result.items[0].contents);
-        try expectEqual(true, result.items[0].mod);
-    }
-
-    // Test case 6: Content to empty string
-    {
-        const old = "hello";
-        const new = "";
-        const result = try diffSplit(old, new, std.testing.allocator);
-        defer result.deinit();
-
-        try expectEqual(0, result.items.len);
-    }
-
-    // Test case 7: Different delimiters
-    {
-        const old = "first!second?third";
-        const new = "first!changed?third";
-        const result = try diffSplit(old, new, std.testing.allocator);
-        defer result.deinit();
-
-        try expectEqual(3, result.items.len);
-        try expectEqualStrings("first", result.items[0].contents);
-        try expectEqual(false, result.items[0].mod);
-        try expectEqualStrings("changed", result.items[1].contents);
-        try expectEqual(true, result.items[1].mod);
-        try expectEqualStrings("third", result.items[2].contents);
-        try expectEqual(false, result.items[2].mod);
-    }
-
-    // Test case 8: Empty sentences
-    {
-        const old = "first.second.";
-        const new = "first.\nsecond.";
+        const new = "foo.\n!?bar";
         const result = try diffSplit(old, new, std.testing.allocator);
         defer result.deinit();
 
         try expectEqual(2, result.items.len);
-        try expectEqualStrings("first", result.items[0].contents);
-        try expectEqual(false, result.items[0].mod);
-        try expectEqualStrings("second", result.items[1].contents);
-        try expectEqual(false, result.items[1].mod);
+
+        try expectEqualStrings("foo", result.items[0].contents);
+        try expectEqual(true, result.items[0].new);
+        try expectEqual(0, result.items[0].off);
+        try expectEqualStrings("bar", result.items[1].contents);
+        try expectEqual(true, result.items[1].new);
+        try expectEqual(7, result.items[1].off);
     }
 
-    // Test case 9: Consecutive delimiters - verify correct offsets
     {
-        const old = "apple.\nbanana.\ngrape.";
-        const new = "apple.\norange.\ngrape.";
+        const old = "foobar";
+        const new = "foo.bar";
         const result = try diffSplit(old, new, std.testing.allocator);
         defer result.deinit();
 
-        try expectEqual(3, result.items.len);
+        try expectEqual(2, result.items.len);
 
-        try expectEqualStrings("apple", result.items[0].contents);
-        try expectEqual(false, result.items[0].mod);
-        try expectEqual(@as(usize, 0), result.items[0].off);
-
-        try expectEqualStrings("orange", result.items[1].contents);
-        try expectEqual(true, result.items[1].mod);
-        try expectEqual(@as(usize, 7), result.items[1].off);
-
-        try expectEqualStrings("grape", result.items[2].contents);
-        try expectEqual(false, result.items[2].mod);
-        try expectEqual(@as(usize, 15), result.items[2].off);
-    }
-
-    // Test case 10: Inserted sentence
-    {
-        const old = "apple.grape.";
-        const new = "apple.orange.grape.";
-        const result = try diffSplit(old, new, std.testing.allocator);
-        defer result.deinit();
-
-        try expectEqual(3, result.items.len);
-
-        try expectEqualStrings("apple", result.items[0].contents);
-        try expectEqual(false, result.items[0].mod);
-        try expectEqual(@as(usize, 0), result.items[0].off);
-
-        try expectEqualStrings("orange", result.items[1].contents);
-        try expectEqual(true, result.items[1].mod);
-        try expectEqual(@as(usize, 6), result.items[1].off);
-
-        try expectEqualStrings("grape", result.items[2].contents);
-        try expectEqual(false, result.items[2].mod);
-        try expectEqual(@as(usize, 13), result.items[2].off);
+        try expectEqualStrings("foo", result.items[0].contents);
+        try expectEqual(true, result.items[0].new);
+        try expectEqualStrings("bar", result.items[1].contents);
+        try expectEqual(true, result.items[1].new);
     }
 }
 

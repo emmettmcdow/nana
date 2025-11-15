@@ -32,7 +32,7 @@ const UPDATE_NOTE =
 // Making (next|last)_vec_id not a fk because it makes the logic easier - sue me
 const VECTOR_SCHEMA =
     \\CREATE TABLE IF NOT EXISTS vectors (
-    \\    vector_id INTEGER PRIMARY KEY,
+    \\    vector_id INTEGER,
     \\    note_id INTEGER,
     \\    next_vec_id INTEGER,
     \\    last_vec_id INTEGER,

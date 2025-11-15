@@ -177,8 +177,8 @@ pub const Storage = struct {
     }
 
     pub fn rm(self: *Self, id: VectorID) !void {
+        if (id == self.nullVec()) return;
         if (self.index[id] == 0) return Error.MultipleRemove;
-        assert(id != self.nullVec());
         assert(self.meta.vec_n > 0);
         self.index[id] = 0;
         self.meta.vec_n -= 1;

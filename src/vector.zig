@@ -70,18 +70,15 @@ pub const DB = struct {
 
         const old_vecs = try self.relational.vecsForNote(arena.allocator(), note_id);
         var new_vecs = std.ArrayList(VectorRow).init(arena.allocator());
-        var old_vecs_idx: usize = 0;
 
         for ((try diffSplit(old_contents, new_contents, arena.allocator())).items) |sentence| {
-            // std.debug.print("Sentence: {any}\n", .{sentence});
-            if (sentence.mod) {
+            if (sentence.new) {
                 const vec_id = if (try self.embedder.embed(sentence.contents)) |vec_slice| block: {
                     defer self.allocator.free(vec_slice);
                     const new_vec: Vector = vec_slice[0..vec_sz].*;
                     break :block try self.vecs.put(new_vec);
                 } else self.vecs.nullVec();
 
-                // std.debug.print("Placing: '{s}' or '{s}'\n", .{ sentence.contents, new_contents[sentence.off .. sentence.off + sentence.contents.len] });
                 try new_vecs.append(.{
                     .vector_id = vec_id,
                     .note_id = note_id,
@@ -90,10 +87,8 @@ pub const DB = struct {
                 });
             } else {
                 var found = false;
-                while (old_vecs_idx < old_vecs.len) : (old_vecs_idx += 1) {
-                    const old_v = old_vecs[old_vecs_idx];
+                for (old_vecs) |old_v| {
                     const old_v_contents = old_contents[old_v.start_i..old_v.end_i];
-                    // std.debug.print("Comparing '{s}' and '{s}'\n", .{ sentence.contents, old_v_contents });
                     if (!std.mem.eql(u8, sentence.contents, old_v_contents)) continue;
                     try new_vecs.append(VectorRow{
                         .vector_id = try self.vecs.copy(old_v.vector_id),
