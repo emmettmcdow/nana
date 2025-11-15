@@ -262,21 +262,22 @@ pub const Runtime = struct {
 
         try self.db.startTX();
         errdefer self.db.dropTX();
+
         for (from..to) |v| {
             switch (v) {
                 0 => try self.db.upgrade_zero(),
                 1 => try self.db.upgrade_one(),
-                model.LATEST_V => {},
+                2 => try self.db.upgrade_two(),
                 else => unreachable,
             }
         }
-
-        self.db.commitTX();
 
         if (!self.db.integrityCheck()) {
             std.log.err("Relational DB failed integrity check, exiting.", .{});
             return Error.IncoherentDB;
         }
+
+        self.db.commitTX();
         return;
     }
 };

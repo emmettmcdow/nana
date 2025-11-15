@@ -692,6 +692,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.2;
 				MARKETING_VERSION = 0.1.2;
 				OTHER_LDFLAGS = "";
+				"OTHER_LDFLAGS[arch=*]" = "-fsanitize=address";
 				OTHER_SWIFT_FLAGS = "";
 				PREVIEW_BUILD = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = mcdow.nana;

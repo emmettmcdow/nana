@@ -1,4 +1,4 @@
-pub const LATEST_V = 2;
+pub const LATEST_V = 3;
 const PATH_MAX = 1000;
 const DB_FILENAME = "db.db";
 const DB_SETTINGS =
@@ -634,10 +634,47 @@ pub const DB = struct {
     }
 
     pub fn upgrade_one(self: *Self) !void {
-        var stmt = try self.db.prepare(VECTOR_ADD_IDX);
-        defer stmt.deinit();
-        try stmt.exec(.{}, .{});
+        var stmt1 = try self.db.prepare("ALTER TABLE vectors ADD COLUMN start_i INTEGER DEFAULT 0;");
+        defer stmt1.deinit();
+        try stmt1.exec(.{}, .{});
+
+        var stmt2 = try self.db.prepare("ALTER TABLE vectors ADD COLUMN end_i INTEGER DEFAULT 0;");
+        defer stmt2.deinit();
+        try stmt2.exec(.{}, .{});
+
         try self.setVersion("2");
+        return;
+    }
+
+    pub fn upgrade_two(self: *Self) !void {
+        const CREATE_NEW_TABLE =
+            \\CREATE TABLE vectors_new (
+            \\    vector_id INTEGER,
+            \\    note_id INTEGER,
+            \\    next_vec_id INTEGER,
+            \\    last_vec_id INTEGER,
+            \\    start_i INTEGER,
+            \\    end_i INTEGER,
+            \\    FOREIGN KEY(note_id) REFERENCES notes(id)
+            \\);
+        ;
+        var stmt1 = try self.db.prepare(CREATE_NEW_TABLE);
+        defer stmt1.deinit();
+        try stmt1.exec(.{}, .{});
+
+        var stmt2 = try self.db.prepare("INSERT INTO vectors_new SELECT * FROM vectors;");
+        defer stmt2.deinit();
+        try stmt2.exec(.{}, .{});
+
+        var stmt3 = try self.db.prepare("DROP TABLE vectors;");
+        defer stmt3.deinit();
+        try stmt3.exec(.{}, .{});
+
+        var stmt4 = try self.db.prepare("ALTER TABLE vectors_new RENAME TO vectors;");
+        defer stmt4.deinit();
+        try stmt4.exec(.{}, .{});
+
+        try self.setVersion("3");
         return;
     }
 
