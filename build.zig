@@ -1,9 +1,3 @@
-const std = @import("std");
-
-const Step = std.Build.Step;
-const RunStep = Step.Run;
-const LazyPath = std.Build.LazyPath;
-
 const PATH_MAX = 4096;
 const VEC_SZ = 512;
 
@@ -625,3 +619,8 @@ const Codesign = struct {
         return self;
     }
 };
+
+const std = @import("std");
+const Step = std.Build.Step;
+const RunStep = Step.Run;
+const LazyPath = std.Build.LazyPath;
