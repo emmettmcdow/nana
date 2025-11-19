@@ -248,7 +248,7 @@ pub const Runtime = struct {
 
         if (self.lastParsedMD) |ref| ref.deinit();
         self.lastParsedMD = std.ArrayList(u8).init(self.allocator);
-        try json.stringify(self.markdown.parse(content), .{}, self.lastParsedMD.?.writer());
+        try json.stringify(try self.markdown.parse(content), .{}, self.lastParsedMD.?.writer());
         try self.lastParsedMD.?.writer().writeByte(0);
         return self.lastParsedMD.?.items;
     }
@@ -283,8 +283,6 @@ pub const Runtime = struct {
 };
 
 fn isUnchanged(f: File, new_content: []const u8) !bool {
-    defer f.seekTo(0) catch unreachable;
-
     const stat = try f.stat();
     if (stat.size != new_content.len) return false;
 
@@ -293,12 +291,22 @@ fn isUnchanged(f: File, new_content: []const u8) !bool {
     var i: usize = 0;
     while (true) : (i += 1) {
         const c = reader.readByte() catch |err| switch (err) {
-            error.EndOfStream => return true,
-            else => return err,
+            error.EndOfStream => {
+                try f.seekTo(0);
+                return true;
+            },
+            else => {
+                try f.seekTo(0);
+                return err;
+            },
         };
-        if (new_content[i] != c) return false;
+        if (new_content[i] != c) {
+            try f.seekTo(0);
+            return false;
+        }
     }
 
+    try f.seekTo(0);
     return true;
 }
 

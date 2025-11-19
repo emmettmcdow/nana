@@ -310,6 +310,8 @@ pub fn build(b: *std.Build) !void {
         builder.addRule(.{ .builtin = .max_positional_args }, .{});
         builder.addRule(.{ .builtin = .no_unused }, .{});
         builder.addRule(.{ .builtin = .no_orelse_unreachable }, .{});
+        builder.addRule(.{ .builtin = .no_hidden_allocations }, .{});
+        builder.addRule(.{ .builtin = .no_swallow_error }, .{});
         // builder.addRule(.{ .builtin = .declaration_naming }, .{});
         // builder.addRule(.{ .builtin = .field_ordering }, .{});
         // builder.addRule(.{ .builtin = .field_naming }, .{});
@@ -319,12 +321,10 @@ pub fn build(b: *std.Build) !void {
         // builder.addRule(.{ .builtin = .no_comment_out_code }, .{});
         // builder.addRule(.{ .builtin = .no_deprecated }, .{});
         // builder.addRule(.{ .builtin = .no_empty_block }, .{});
-        // builder.addRule(.{ .builtin = .no_hidden_allocations }, .{});
         // builder.addRule(.{ .builtin = .no_inferred_error_unions }, .{});
         // builder.addRule(.{ .builtin = .no_literal_args }, .{});
         // builder.addRule(.{ .builtin = .no_literal_only_bool_expression }, .{});
         // builder.addRule(.{ .builtin = .no_panic }, .{});
-        // builder.addRule(.{ .builtin = .no_swallow_error }, .{});
         // builder.addRule(.{ .builtin = .no_todo }, .{});
         // builder.addRule(.{ .builtin = .no_undefined }, .{});
         // builder.addRule(.{ .builtin = .require_braces }, .{});

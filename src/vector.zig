@@ -37,7 +37,7 @@ pub const DB = struct {
 
         debugSearchHeader(query);
         const found_n = try self.vecs.search(query_vec, &vec_ids);
-        self.debugSearchRankedResults(vec_ids[0..found_n]);
+        try self.debugSearchRankedResults(vec_ids[0..found_n]);
 
         var unique_found_n: usize = 0;
         outer: for (0..@min(found_n, buf.len)) |i| {
@@ -127,16 +127,16 @@ pub const DB = struct {
         std.debug.print("Checking similarity against '{s}':\n", .{query});
     }
 
-    fn debugSearchRankedResults(self: *Self, ids: []VectorID) void {
+    fn debugSearchRankedResults(self: *Self, ids: []VectorID) !void {
         if (!config.debug) return;
         const bufsz = 50;
         for (ids, 1..) |id, i| {
             var buf: [bufsz]u8 = undefined;
-            const noteID = self.relational.vecToNote(id) catch unreachable;
-            const sz = self.readAll(
+            const noteID = try self.relational.vecToNote(id);
+            const sz = try self.readAll(
                 noteID,
                 &buf,
-            ) catch unreachable;
+            );
             if (sz < 0) continue;
             std.debug.print("    {d}. ID({d})'{s}' \n", .{
                 i,
