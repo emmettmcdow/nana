@@ -143,7 +143,7 @@ test "embed skip empty" {
 
     var e = try Embedder.init(allocator);
 
-    const vec_slice = try e.embed("Hello world") orelse unreachable;
+    const vec_slice = (try e.embed("Hello world")).?;
     defer allocator.free(vec_slice);
 }
 
@@ -154,7 +154,7 @@ test "embed skip failures" {
 
     var e = try Embedder.init(allocator);
 
-    const vec_slice = try e.embed("(*^(*&(# 4327897493287498*&)(FKJDHDHLKDJHL") orelse unreachable;
+    const vec_slice = (try e.embed("(*^(*&(# 4327897493287498*&)(FKJDHDHLKDJHL")).?;
     defer allocator.free(vec_slice);
 }
 

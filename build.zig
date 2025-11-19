@@ -309,6 +309,7 @@ pub fn build(b: *std.Build) !void {
         var builder = zlinter.builder(b, .{});
         builder.addRule(.{ .builtin = .max_positional_args }, .{});
         builder.addRule(.{ .builtin = .no_unused }, .{});
+        builder.addRule(.{ .builtin = .no_orelse_unreachable }, .{});
         // builder.addRule(.{ .builtin = .declaration_naming }, .{});
         // builder.addRule(.{ .builtin = .field_ordering }, .{});
         // builder.addRule(.{ .builtin = .field_naming }, .{});
@@ -322,7 +323,6 @@ pub fn build(b: *std.Build) !void {
         // builder.addRule(.{ .builtin = .no_inferred_error_unions }, .{});
         // builder.addRule(.{ .builtin = .no_literal_args }, .{});
         // builder.addRule(.{ .builtin = .no_literal_only_bool_expression }, .{});
-        // builder.addRule(.{ .builtin = .no_orelse_unreachable }, .{});
         // builder.addRule(.{ .builtin = .no_panic }, .{});
         // builder.addRule(.{ .builtin = .no_swallow_error }, .{});
         // builder.addRule(.{ .builtin = .no_todo }, .{});
