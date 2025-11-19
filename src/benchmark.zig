@@ -238,7 +238,6 @@ const EXAMPLE_NOTE_1 =
 const std = @import("std");
 const testing_allocator = std.testing.allocator;
 
-const embed = @import("embed.zig");
 const model = @import("model.zig");
 const NoteID = model.NoteID;
 const Note = model.Note;

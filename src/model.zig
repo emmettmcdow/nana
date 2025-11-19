@@ -13,7 +13,6 @@ const NOTE_SCHEMA =
     \\    path TEXT
     \\);
 ;
-const GET_COLS = "PRAGMA table_info(notes);";
 const SHOW_NOTES = "SELECT * from notes;";
 const GET_LAST_ID = "SELECT id FROM notes ORDER BY id DESC LIMIT 1;";
 const GET_NOTE = "SELECT id,created,modified,path FROM notes WHERE id = ?;";
@@ -41,11 +40,6 @@ const VECTOR_SCHEMA =
     \\    FOREIGN KEY(note_id) REFERENCES notes(id)
     \\);
 ;
-const VECTOR_ADD_IDX =
-    \\ALTER TABLE vectors ADD COLUMN start_i INTEGER DEFAULT 0;
-    \\ALTER TABLE vectors ADD COLUMN end_i INTEGER DEFAULT 0;
-;
-const GET_COLS_VECTOR = "PRAGMA table_info(vectors);";
 const SHOW_VECTOR = "SELECT * from vectors;";
 const GET_NOTEID_FROM_VECID = "SELECT note_id FROM vectors WHERE vector_id = ?;";
 const DELETE_VEC = "DELETE FROM vectors WHERE vector_id = ?;";
@@ -126,21 +120,6 @@ const VectorRowDB = struct {
             .start_i = self.start_i,
             .end_i = self.end_i,
         };
-    }
-};
-
-const VectorIterator = struct {
-    stmt: sqlite.StatementType(.{}, GET_VECS_FROM_NOTEID),
-    it: Iterator(VectorRow),
-
-    const Self = @This();
-
-    pub fn deinit(self: *Self) void {
-        self.stmt.deinit();
-    }
-
-    pub fn next(self: *Self) !?VectorRow {
-        return self.it.next(.{});
     }
 };
 

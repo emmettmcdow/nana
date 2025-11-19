@@ -861,8 +861,6 @@ test "parse markdown" {
     );
 }
 
-const skip_test = true;
-
 const std = @import("std");
 const assert = std.debug.assert;
 const expect = std.testing.expect;

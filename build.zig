@@ -1,11 +1,5 @@
-const PATH_MAX = 4096;
 const VEC_SZ = 512;
 
-fn toSentinel(allocator: std.mem.Allocator, str: []const u8) ![:0]const u8 {
-    var output = try allocator.allocSentinel(u8, str.len, 0);
-    @memcpy(output[0..], str);
-    return output;
-}
 const xc_fw_path = "macos/NanaKit.xcframework";
 
 pub fn build(b: *std.Build) !void {

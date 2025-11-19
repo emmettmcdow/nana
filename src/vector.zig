@@ -373,7 +373,6 @@ const std = @import("std");
 const testing_allocator = std.testing.allocator;
 const expectEqual = std.testing.expectEqual;
 const assert = std.debug.assert;
-const OutOfMemory = std.mem.Allocator.Error.OutOfMemory;
 
 const config = @import("config");
 const tracy = @import("tracy");
@@ -385,8 +384,6 @@ const model = @import("model.zig");
 const Note = model.Note;
 const VectorRow = model.VectorRow;
 const NoteID = model.NoteID;
-const root = @import("root.zig");
-const storage = @import("vec_storage.zig");
 const types = @import("types.zig");
 const Vector = types.Vector;
 const VectorID = types.VectorID;

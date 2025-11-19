@@ -166,7 +166,6 @@ const parseFromSliceLeaky = std.json.parseFromSliceLeaky;
 
 const objc = @import("objc");
 const Object = objc.Object;
-const Class = objc.Class;
 const tracy = @import("tracy");
 
 const types = @import("types.zig");

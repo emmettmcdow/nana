@@ -537,10 +537,6 @@ fn cosine_similarity(a: Vector, b: Vector) vec_type {
     return dot(a, b) / (magnitude(a) * magnitude(b));
 }
 
-fn similarity(a: Vector, b: Vector) vec_type {
-    return cosine_similarity(a, b);
-}
-
 test "cosine orthogonal" {
     try expect(vec_type == f32);
     try expect(vec_sz == 3);
@@ -590,8 +586,6 @@ test "cosine zero-vec" {
     const output = cosine_similarity(a, b);
     try expect(output == 0);
 }
-
-const native_endian = std.builtin.cpu.arch.endian();
 
 const std = @import("std");
 const assert = std.debug.assert;
