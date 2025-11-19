@@ -37,6 +37,10 @@
             .url = "git+https://github.com/tealsnow/zig-tracy#74c75efe3576adc47846369d4df50f4f62a17597",
             .hash = "tracy-0.0.10-Dn49m2RUAAAdadZoiLef0OCmVdUyeu5GmEzXoTAokcZl",
         },
+        .zlinter = .{
+            .url = "git+https://github.com/kurtwagner/zlinter#273acdba90e7d790474ec6117f1c1f11f136547a",
+            .hash = "zlinter-0.0.1-OjQ08fNsCwC__RBWru_qzrvidRlAEJ6SMqjP6hf5SH0m",
+        },
     },
     .paths = .{
         "build.zig",

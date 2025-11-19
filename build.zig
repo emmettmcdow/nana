@@ -309,6 +309,36 @@ pub fn build(b: *std.Build) !void {
     lldb.addArtifactArg(vec_unit_tests);
     const lldb_step = b.step("debug", "run the tests under lldb");
     lldb_step.dependOn(&lldb.step);
+
+    const lint_cmd = b.step("lint", "Lint source code.");
+    lint_cmd.dependOn(step: {
+        var builder = zlinter.builder(b, .{});
+        builder.addRule(.{ .builtin = .max_positional_args }, .{});
+        builder.addRule(.{ .builtin = .no_unused }, .{});
+        // builder.addRule(.{ .builtin = .declaration_naming }, .{});
+        // builder.addRule(.{ .builtin = .field_ordering }, .{});
+        // builder.addRule(.{ .builtin = .field_naming }, .{});
+        // builder.addRule(.{ .builtin = .file_naming }, .{});
+        // builder.addRule(.{ .builtin = .function_naming }, .{});
+        // builder.addRule(.{ .builtin = .import_ordering }, .{});
+        // builder.addRule(.{ .builtin = .no_comment_out_code }, .{});
+        // builder.addRule(.{ .builtin = .no_deprecated }, .{});
+        // builder.addRule(.{ .builtin = .no_empty_block }, .{});
+        // builder.addRule(.{ .builtin = .no_hidden_allocations }, .{});
+        // builder.addRule(.{ .builtin = .no_inferred_error_unions }, .{});
+        // builder.addRule(.{ .builtin = .no_literal_args }, .{});
+        // builder.addRule(.{ .builtin = .no_literal_only_bool_expression }, .{});
+        // builder.addRule(.{ .builtin = .no_orelse_unreachable }, .{});
+        // builder.addRule(.{ .builtin = .no_panic }, .{});
+        // builder.addRule(.{ .builtin = .no_swallow_error }, .{});
+        // builder.addRule(.{ .builtin = .no_todo }, .{});
+        // builder.addRule(.{ .builtin = .no_undefined }, .{});
+        // builder.addRule(.{ .builtin = .require_braces }, .{});
+        // builder.addRule(.{ .builtin = .require_doc_comment }, .{});
+        // builder.addRule(.{ .builtin = .require_errdefer_dealloc }, .{});
+        // builder.addRule(.{ .builtin = .switch_case_ordering }, .{});
+        break :step builder.build();
+    });
 }
 
 const Baselib = struct {
@@ -624,3 +654,5 @@ const std = @import("std");
 const Step = std.Build.Step;
 const RunStep = Step.Run;
 const LazyPath = std.Build.LazyPath;
+
+const zlinter = @import("zlinter");
