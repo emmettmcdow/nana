@@ -312,6 +312,7 @@ pub fn build(b: *std.Build) !void {
         builder.addRule(.{ .builtin = .no_orelse_unreachable }, .{});
         builder.addRule(.{ .builtin = .no_hidden_allocations }, .{});
         builder.addRule(.{ .builtin = .no_swallow_error }, .{});
+        builder.addRule(.{ .builtin = .require_errdefer_dealloc }, .{});
         // builder.addRule(.{ .builtin = .declaration_naming }, .{});
         // builder.addRule(.{ .builtin = .field_ordering }, .{});
         // builder.addRule(.{ .builtin = .field_naming }, .{});
@@ -329,7 +330,6 @@ pub fn build(b: *std.Build) !void {
         // builder.addRule(.{ .builtin = .no_undefined }, .{});
         // builder.addRule(.{ .builtin = .require_braces }, .{});
         // builder.addRule(.{ .builtin = .require_doc_comment }, .{});
-        // builder.addRule(.{ .builtin = .require_errdefer_dealloc }, .{});
         // builder.addRule(.{ .builtin = .switch_case_ordering }, .{});
         break :step builder.build();
     });

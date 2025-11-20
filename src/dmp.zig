@@ -363,6 +363,7 @@ pub fn diffSplit(
     allocator: std.mem.Allocator,
 ) !std.ArrayList(Sentence) {
     var output = std.ArrayList(Sentence).init(allocator);
+    errdefer output.deinit();
     var split_new = Spliterator.init(new);
 
     new: while (split_new.next()) |new_s| {
