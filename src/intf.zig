@@ -31,7 +31,7 @@ export fn nana_init(
     var buf: [PATH_MAX]u8 = undefined;
     var path: []const u8 = undefined;
     if (std.mem.eql(u8, basedir_str, "./")) {
-        path = std.process.getCwd(&buf) catch return CError.FileNotFound;
+        path = std.process.getCwd(&buf) catch return @intFromEnum(CError.FileNotFound);
     } else {
         path = std.Uri.percentDecodeBackwards(&buf, basedir_str);
     }
