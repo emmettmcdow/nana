@@ -282,6 +282,37 @@ pub const Runtime = struct {
     }
 };
 
+/// Resets metadata to a functioning state, returns list of paths to be re-imported.
+/// Returns a double-null-terminated string: "path1\0path2\0\0"
+pub fn doctor(allocator: std.mem.Allocator, basedir: std.fs.Dir) ![:0]const u8 {
+    try deleteAllMeta(basedir);
+    var output = std.ArrayList(u8).init(allocator);
+    errdefer output.deinit();
+
+    var it = basedir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.kind == .file) {
+            try output.appendSlice(entry.name);
+            try output.append(0);
+        } else if (entry.kind == .directory) {
+            std.log.warn("Saw a directory: {s}\n", .{entry.name});
+        }
+    }
+
+    // Final null terminator to mark end of array
+    try output.append(0);
+    return output.toOwnedSliceSentinel(0);
+}
+
+fn deleteAllMeta(basedir: std.fs.Dir) !void {
+    var it = basedir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".db")) {
+            try basedir.deleteFile(entry.name);
+        }
+    }
+}
+
 fn isUnchanged(f: File, new_content: []const u8) !bool {
     const stat = try f.stat();
     if (stat.size != new_content.len) return false;
@@ -869,10 +900,46 @@ test "parse markdown" {
     );
 }
 
+test "doctor" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    (try tmpD.dir.createFile("metadata.db", .{})).close();
+    (try tmpD.dir.createFile("vectors.db", .{})).close();
+    (try tmpD.dir.createFile("note1.txt", .{})).close();
+    (try tmpD.dir.createFile("note2.md", .{})).close();
+
+    const result = try doctor(arena.allocator(), tmpD.dir);
+    defer arena.allocator().free(result);
+
+    try expectError(error.FileNotFound, tmpD.dir.access("metadata.db", .{}));
+    try expectError(error.FileNotFound, tmpD.dir.access("vectors.db", .{}));
+
+    // Parse the double-null-terminated string
+    var names: [2][]const u8 = undefined;
+    var count: usize = 0;
+    var i: usize = 0;
+    while (result[i] != 0) {
+        const start = i;
+        while (result[i] != 0) : (i += 1) {}
+        names[count] = result[start..i];
+        count += 1;
+        i += 1; // skip the null terminator
+    }
+
+    try expectEqual(2, count);
+    try expect(std.mem.eql(u8, names[0], "note1.txt") or std.mem.eql(u8, names[0], "note2.md"));
+    try expect(std.mem.eql(u8, names[1], "note1.txt") or std.mem.eql(u8, names[1], "note2.md"));
+    try expect(!std.mem.eql(u8, names[0], names[1]));
+}
+
 const std = @import("std");
 const assert = std.debug.assert;
 const expect = std.testing.expect;
 const expectEqlStrings = std.testing.expectEqualStrings;
+const expectEqual = std.testing.expectEqual;
 const File = std.fs.File;
 const json = std.json;
 const OutOfMemory = std.mem.Allocator.Error.OutOfMemory;

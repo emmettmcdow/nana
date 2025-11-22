@@ -1,6 +1,7 @@
 var rt: nana.Runtime = undefined;
 var init: bool = false;
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+var persistent_arena: std.heap.ArenaAllocator = std.heap.ArenaAllocator.init(gpa.allocator());
 var mutex = std.Thread.Mutex{};
 
 const CError = enum(c_int) {
@@ -15,6 +16,13 @@ const CError = enum(c_int) {
 
 const PATH_MAX = 1000;
 
+fn refresh_arena() void {
+    mutex.lock();
+    defer mutex.unlock();
+    persistent_arena.deinit();
+    persistent_arena = std.heap.ArenaAllocator.init(gpa.allocator());
+}
+
 /// Output: CError
 export fn nana_init(
     basedir: [*:0]const u8,
@@ -25,6 +33,9 @@ export fn nana_init(
     if (init) {
         return @intFromEnum(CError.DoubleInit);
     }
+
+    // We want to free anything done during nana_doctor before starting up
+    refresh_arena();
 
     const basedir_str = basedir[0..basedir_sz :0];
 
@@ -220,7 +231,43 @@ export fn nana_parse_markdown(content: [*:0]const u8) [*:0]const u8 {
     return @ptrCast(zig_out.ptr);
 }
 
+/// Resets metadata to a functioning state, returns list of notes to be re-imported.
+/// Returns a double-null-terminated string: "path1\0path2\0\0"
+export fn nana_doctor(basedir_path: [*:0]const u8) [*:0]const u8 {
+    mutex.lock();
+    defer mutex.unlock();
+
+    // Clear out data from a previous doctor run
+    refresh_arena();
+
+    // Get the size of the zero-sentinel string
+    const basedir_sz = outer: {
+        for (0..PATH_MAX + 1) |i| {
+            const c: u8 = basedir_path[i];
+            if (c == 0) {
+                break :outer i;
+            }
+        }
+        std.log.err("Provided path is too long\n", .{});
+        return "\x00";
+    };
+
+    var buf: [PATH_MAX]u8 = undefined;
+    const path: []const u8 = std.Uri.percentDecodeBackwards(&buf, basedir_path[0..basedir_sz :0]);
+    const basedir = std.fs.openDirAbsolute(path, .{ .iterate = true }) catch |err| {
+        std.log.err("Failed to access working directory '{s}': {}\n", .{ path, err });
+        return "\x00";
+    };
+
+    const result = doctor(persistent_arena.allocator(), basedir) catch |err| {
+        std.log.err("Failed to run doctor: {}\n", .{err});
+        return "\x00";
+    };
+    return result.ptr;
+}
+
 const std = @import("std");
 const assert = std.debug.assert;
 
 const nana = @import("root.zig");
+const doctor = nana.doctor;
