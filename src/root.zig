@@ -117,14 +117,17 @@ pub const Runtime = struct {
         const id = try self.db.import(created, modified, .{ .path = sourceName });
         if (self.skipEmbed) return id;
 
-        var bufsz: usize = 64;
+        var bufsz: usize = 128;
         var buf = try self.allocator.alloc(u8, bufsz);
         defer self.allocator.free(buf);
         while (true) {
             const sz = self.readAll(id, buf[0..bufsz]) catch |e| switch (e) {
                 Error.BufferTooSmall => {
                     bufsz = try std.math.mul(usize, bufsz, 2);
-                    if (!self.allocator.resize(buf, bufsz)) return OutOfMemory;
+                    buf = self.allocator.realloc(buf, bufsz) catch |alloc_e| {
+                        std.log.err("Failed to resize to {d}: {}\n", .{ bufsz, alloc_e });
+                        return OutOfMemory;
+                    };
                     continue;
                 },
                 else => |leftover_err| return leftover_err,

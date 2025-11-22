@@ -17,8 +17,6 @@ const CError = enum(c_int) {
 const PATH_MAX = 1000;
 
 fn refresh_arena() void {
-    mutex.lock();
-    defer mutex.unlock();
     persistent_arena.deinit();
     persistent_arena = std.heap.ArenaAllocator.init(gpa.allocator());
 }
@@ -30,6 +28,7 @@ export fn nana_init(
 ) c_int {
     mutex.lock();
     defer mutex.unlock();
+    std.log.info("nana_init {s}", .{basedir[0..basedir_sz :0]});
     if (init) {
         return @intFromEnum(CError.DoubleInit);
     }
@@ -66,6 +65,7 @@ export fn nana_init(
 export fn nana_deinit() c_int {
     mutex.lock();
     defer mutex.unlock();
+    std.log.info("nana_deinit", .{});
     if (!init) {
         return @intFromEnum(CError.NotInit);
     }
@@ -77,6 +77,7 @@ export fn nana_deinit() c_int {
 export fn nana_create() c_int {
     mutex.lock();
     defer mutex.unlock();
+    std.log.info("nana_create", .{});
     if (!init) {
         return @intFromEnum(CError.NotInit);
     }
@@ -92,11 +93,12 @@ export fn nana_create() c_int {
 export fn nana_import(path: [*:0]const u8, pathlen: c_uint) c_int {
     mutex.lock();
     defer mutex.unlock();
+    std.log.info("nana_import {s}", .{path[0..pathlen]});
     if (!init) {
         return @intFromEnum(CError.NotInit);
     }
     const id = rt.import(path[0..pathlen], .{ .copy = true }) catch |err| {
-        std.log.err("Failed to create note: {}\n", .{err});
+        std.log.err("Failed to import note: {}\n", .{err});
         switch (err) {
             nana.Error.NotNote => {
                 return @intFromEnum(CError.InvalidFiletype);
@@ -115,6 +117,7 @@ export fn nana_import(path: [*:0]const u8, pathlen: c_uint) c_int {
 export fn nana_create_time(noteID: c_int) c_long {
     mutex.lock();
     defer mutex.unlock();
+    std.log.info("nana_create_time {d}", .{noteID});
     var arena = std.heap.ArenaAllocator.init(gpa.allocator());
     defer arena.deinit();
 
@@ -132,6 +135,7 @@ export fn nana_create_time(noteID: c_int) c_long {
 export fn nana_mod_time(noteID: c_int) c_long {
     mutex.lock();
     defer mutex.unlock();
+    std.log.info("nana_mod_time {d}", .{noteID});
     var arena = std.heap.ArenaAllocator.init(gpa.allocator());
     defer arena.deinit();
 
@@ -147,6 +151,7 @@ export fn nana_mod_time(noteID: c_int) c_long {
 export fn nana_search(query: [*:0]const u8, outbuf: [*c]c_int, sz: c_uint, ignore: c_int) c_int {
     mutex.lock();
     defer mutex.unlock();
+    std.log.info("nana_search {s}", .{std.mem.sliceTo(query, 0)});
     const convQuery: []const u8 = std.mem.sliceTo(query, 0);
 
     const igParam: ?u64 = if (ignore == -1) null else @intCast(ignore);
@@ -161,6 +166,7 @@ export fn nana_search(query: [*:0]const u8, outbuf: [*c]c_int, sz: c_uint, ignor
 export fn nana_write_all(noteID: c_int, content: [*:0]const u8) c_int {
     mutex.lock();
     defer mutex.unlock();
+    std.log.info("nana_write_all {d}", .{noteID});
     const zigStyle: []const u8 = std.mem.sliceTo(content, 0);
     rt.writeAll(@intCast(noteID), zigStyle) catch |err| switch (err) {
         error.FileNotFound => {
@@ -181,6 +187,7 @@ export fn nana_write_all(noteID: c_int, content: [*:0]const u8) c_int {
 export fn nana_write_all_with_time(noteID: c_int, content: [*:0]const u8) c_long {
     mutex.lock();
     defer mutex.unlock();
+    std.log.info("nana_write_all_with_time {d}", .{noteID});
     const zigStyle: []const u8 = std.mem.sliceTo(content, 0);
     rt.writeAll(@intCast(noteID), zigStyle) catch |err| switch (err) {
         error.FileNotFound => {
@@ -207,6 +214,7 @@ export fn nana_write_all_with_time(noteID: c_int, content: [*:0]const u8) c_long
 export fn nana_read_all(noteID: c_int, outbuf: [*c]u8, sz: c_uint) c_int {
     mutex.lock();
     defer mutex.unlock();
+    std.log.info("nana_read_all {d}", .{noteID});
     const written = rt.readAll(@intCast(noteID), outbuf[0..sz]) catch {
         return @intFromEnum(CError.GenericFail);
     };
@@ -221,6 +229,7 @@ export fn nana_read_all(noteID: c_int, outbuf: [*c]u8, sz: c_uint) c_int {
 export fn nana_parse_markdown(content: [*:0]const u8) [*:0]const u8 {
     mutex.lock();
     defer mutex.unlock();
+    std.log.info("nana_parse_markdown", .{});
     const zig_out = rt.parseMarkdown(std.mem.sliceTo(content, 0)) catch |err| switch (err) {
         else => {
             std.log.err("Failed to parse Markdown: {}\n", .{err});
@@ -236,6 +245,7 @@ export fn nana_parse_markdown(content: [*:0]const u8) [*:0]const u8 {
 export fn nana_doctor(basedir_path: [*:0]const u8) [*:0]const u8 {
     mutex.lock();
     defer mutex.unlock();
+    std.log.info("nana_doctor {s}", .{std.mem.sliceTo(basedir_path, 0)});
 
     // Clear out data from a previous doctor run
     refresh_arena();

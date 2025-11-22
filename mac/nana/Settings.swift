@@ -9,14 +9,6 @@ import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
 
-#if DISABLE_NANAKIT
-    func nana_import(_: UnsafePointer<Int8>, _: Int) -> Int32 {
-        return 1 // Success
-    }
-#else
-    import NanaKit
-#endif
-
 enum AppColorScheme: String, CaseIterable, Identifiable, Codable {
     case light = "Light"
     case dark = "Dark"
@@ -80,7 +72,7 @@ struct GeneralSettingsView: View {
     @State var completeFiles = 0
     @State var importError = ""
 
-    func something(result: Result<[URL], any Error>) async throws {
+    func import_from_dir(result: Result<[URL], any Error>) async throws {
         let gottenResult = try result.get()
         guard let dirURL = gottenResult.first else {
             await MainActor.run {
@@ -105,28 +97,17 @@ struct GeneralSettingsView: View {
         await MainActor.run {
             totalFiles = allFiles.count
         }
-        for fileURL in allFiles {
-            let res = await MainActor.run {
-                fileURL.withCString { cString in
-                    nana_import(cString, numericCast(fileURL.utf8.count))
-                }
+        let _ = await importFiles(
+            allFiles,
+            onProgress: { complete, skipped in
+                self.completeFiles = complete
+                self.skippedFiles = skipped
+            },
+            onError: { error in
+                self.importError = error
+                self.totalFiles = 0
             }
-            if res <= 0 {
-                if res != -13 {
-                    await MainActor.run {
-                        importError = "Failed to import " + fileURL + " with error: \(res)"
-                        totalFiles = 0
-                    }
-                    return
-                }
-                await MainActor.run {
-                    skippedFiles += 1
-                }
-            }
-            await MainActor.run {
-                completeFiles += 1
-            }
-        }
+        )
     }
 
     var body: some View {
@@ -182,7 +163,7 @@ struct GeneralSettingsView: View {
                 }
                 Tab("Data", systemImage: "document") {
                     VStack {
-                        ImportProgress(importError: importError, totalFiles: totalFiles, skippedFiles: skippedFiles, completeFiles: completeFiles)
+                        Progress(action: "import", err: importError, totalFiles: totalFiles, skippedFiles: skippedFiles, completeFiles: completeFiles)
                         Button {
                             showFileImporter = true
                         } label: {
@@ -194,42 +175,13 @@ struct GeneralSettingsView: View {
                             allowsMultipleSelection: false
                         ) { result in
                             Task.detached(priority: .userInitiated) {
-                                try await something(result: result)
+                                try await import_from_dir(result: result)
                             }
                         }
                     }
                     .padding()
                 }
             }.frame(minWidth: 250, maxWidth: .infinity, minHeight: 250, maxHeight: .infinity)
-        }
-    }
-}
-
-struct ImportProgress: View {
-    var importError: String
-    var totalFiles: Int
-    var skippedFiles: Int
-    var completeFiles: Int
-
-    var body: some View {
-        if importError != "" {
-            Text("Failed to import files:")
-            ScrollView {
-                Text(importError)
-                    .font(.system(.body, design: .monospaced))
-                    .padding()
-            }
-            .frame(maxHeight: 200)
-        } else if totalFiles != (completeFiles + skippedFiles) {
-            Text("Importing \(totalFiles) files...")
-            ProgressView(value: Float(completeFiles), total: Float(totalFiles))
-                .progressViewStyle(.linear)
-                .padding(.horizontal)
-        } else if totalFiles != 0 {
-            Text("Successfully imported \(completeFiles) files")
-            if skippedFiles != 0 {
-                Text("Skipped importing \(completeFiles) files")
-            }
         }
     }
 }
