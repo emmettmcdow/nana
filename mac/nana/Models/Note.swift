@@ -9,15 +9,15 @@ import Foundation
 
 #if DISABLE_NANAKIT
     // Stub implementations for SwiftUI Previews
-    func nana_create_time(_: Int32) -> Int64 {
+    private func nana_create_time(_: Int32) -> Int64 {
         return Int64(Date().timeIntervalSince1970)
     }
 
-    func nana_mod_time(_: Int32) -> Int64 {
+    private func nana_mod_time(_: Int32) -> Int64 {
         return Int64(Date().timeIntervalSince1970)
     }
 
-    func nana_read_all(_: Int32, _ buffer: inout [Int8], _ bufferSize: Int) -> Int32 {
+    private func nana_read_all(_: Int32, _ buffer: inout [Int8], _ bufferSize: Int) -> Int32 {
         let sampleContent = "Sample note content for preview"
         let utf8Array = Array(sampleContent.utf8.map { Int8(bitPattern: $0) }) + [0]
 
@@ -31,7 +31,7 @@ import Foundation
         return Int32(utf8Array.count - 1) // Don't count null terminator in length
     }
 
-    func nana_write_all_with_time(_: Int32, _: String) -> Int64 {
+    private func nana_write_all_with_time(_: Int32, _: String) -> Int64 {
         return Int64(Date().timeIntervalSince1970) // Return current timestamp
     }
 #else

@@ -1,7 +1,7 @@
 import Foundation
 
 #if DISABLE_NANAKIT
-    func nana_parse_markdown(_: [Int8]) -> UnsafePointer<Int8>? {
+    private func nana_parse_markdown(_: [Int8]) -> UnsafePointer<Int8>? {
         return nil
     }
 #else

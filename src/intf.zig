@@ -14,8 +14,6 @@ const CError = enum(c_int) {
     InvalidFiletype = -13,
 };
 
-const PATH_MAX = 1000;
-
 fn refresh_arena() void {
     persistent_arena.deinit();
     persistent_arena = std.heap.ArenaAllocator.init(gpa.allocator());
@@ -24,30 +22,24 @@ fn refresh_arena() void {
 /// Output: CError
 export fn nana_init(
     basedir: [*:0]const u8,
-    basedir_sz: c_uint,
 ) c_int {
     mutex.lock();
     defer mutex.unlock();
-    std.log.info("nana_init {s}", .{basedir[0..basedir_sz :0]});
+    const basedir_slice = std.mem.sliceTo(basedir, 0);
+    std.log.info("nana_init {s}", .{basedir_slice});
     if (init) {
         return @intFromEnum(CError.DoubleInit);
     }
 
-    // We want to free anything done during nana_doctor before starting up
-    refresh_arena();
-
-    const basedir_str = basedir[0..basedir_sz :0];
-
     var buf: [PATH_MAX]u8 = undefined;
-    var path: []const u8 = undefined;
-    if (std.mem.eql(u8, basedir_str, "./")) {
-        path = std.process.getCwd(&buf) catch return @intFromEnum(CError.FileNotFound);
-    } else {
-        path = std.Uri.percentDecodeBackwards(&buf, basedir_str);
-    }
+    const encoded_basedir = if (std.mem.eql(u8, basedir_slice, "./")) val: {
+        break :val std.process.getCwd(&buf) catch return @intFromEnum(CError.FileNotFound);
+    } else val: {
+        break :val std.Uri.percentDecodeBackwards(&buf, basedir_slice);
+    };
 
-    const d = std.fs.openDirAbsolute(path, .{ .iterate = true }) catch |err| {
-        std.log.err("Failed to access working directory '{s}': {}\n", .{ path, err });
+    const d = std.fs.openDirAbsolute(encoded_basedir, .{ .iterate = true }) catch |err| {
+        std.log.err("Failed to access working directory '{s}': {}\n", .{ encoded_basedir, err });
         return @intFromEnum(CError.GenericFail);
     };
 
@@ -70,6 +62,7 @@ export fn nana_deinit() c_int {
         return @intFromEnum(CError.NotInit);
     }
     rt.deinit();
+    init = false;
     return 0;
 }
 
@@ -90,14 +83,17 @@ export fn nana_create() c_int {
 }
 
 /// Output: CError on failure, NoteID if success
-export fn nana_import(path: [*:0]const u8, pathlen: c_uint) c_int {
+export fn nana_import(path: [*:0]const u8, copy: bool, addExt: bool) c_int {
     mutex.lock();
     defer mutex.unlock();
-    std.log.info("nana_import {s}", .{path[0..pathlen]});
+
+    const path_slice = std.mem.sliceTo(path, 0);
+
+    std.log.info("nana_import {s}, copy={}, addExt={}", .{ path_slice, copy, addExt });
     if (!init) {
         return @intFromEnum(CError.NotInit);
     }
-    const id = rt.import(path[0..pathlen], .{ .copy = true }) catch |err| {
+    const id = rt.import(path_slice, .{ .copy = copy, .addExt = addExt }) catch |err| {
         std.log.err("Failed to import note: {}\n", .{err});
         switch (err) {
             nana.Error.NotNote => {
@@ -276,8 +272,16 @@ export fn nana_doctor(basedir_path: [*:0]const u8) [*:0]const u8 {
     return result.ptr;
 }
 
+/// Clear out data used during doctoring
+export fn nana_doctor_finish() void {
+    mutex.lock();
+    defer mutex.unlock();
+    refresh_arena();
+}
+
 const std = @import("std");
 const assert = std.debug.assert;
+const PATH_MAX = std.posix.PATH_MAX;
 
 const nana = @import("root.zig");
 const doctor = nana.doctor;

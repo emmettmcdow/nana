@@ -23,7 +23,7 @@ pub fn build(b: *std.Build) !void {
     const targets: [2]std.Build.ResolvedTarget = .{
         x86_target,
         arm_target,
-        // TODO: This one has proven much harder than expected to build for. Get back to it later.
+        // This one has proven much harder than expected to build for. Get back to it later.
         // ios_target,
     };
 

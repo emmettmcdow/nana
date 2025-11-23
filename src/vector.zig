@@ -41,7 +41,6 @@ pub const DB = struct {
 
         var unique_found_n: usize = 0;
         outer: for (0..@min(found_n, buf.len)) |i| {
-            // TODO: create scoring system for multiple results in one note
             const noteID = @as(c_int, @intCast(try self.relational.vecToNote(vec_ids[i])));
             for (0..unique_found_n) |j| {
                 if (buf[j] == noteID) continue :outer;

@@ -1,5 +1,4 @@
 pub const LATEST_V = 3;
-const PATH_MAX = 1000;
 const DB_FILENAME = "db.db";
 const DB_SETTINGS =
     \\PRAGMA foreign_keys = 1;
@@ -60,7 +59,7 @@ pub const Note = struct {
 };
 
 pub fn genPath(noteID: NoteID, buf: []u8) []const u8 {
-    const out = std.fmt.bufPrint(buf, "{d}", .{noteID}) catch |err| {
+    const out = std.fmt.bufPrint(buf, "{d}.md", .{noteID}) catch |err| {
         std.log.err("Failed to write path of note {d}: {}\n", .{ noteID, err });
         @panic("Failed to write the path of a note!");
     };
@@ -1066,6 +1065,7 @@ const expectError = std.testing.expectError;
 const testing_allocator = std.testing.allocator;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const expectEqualSlices = std.testing.expectEqualSlices;
+const PATH_MAX = std.posix.PATH_MAX;
 
 const config = @import("config");
 const sqlite = @import("sqlite");

@@ -9,7 +9,7 @@ import Foundation
 import SwiftUI
 
 #if DISABLE_NANAKIT
-    func nana_init(_: UnsafePointer<Int8>, _: UInt32) -> Int {
+    private func nana_init(_: UnsafePointer<Int8>) -> Int {
         Thread.sleep(forTimeInterval: 5.0)
         return 0
     }
@@ -45,7 +45,7 @@ struct nanaApp: App {
             return
         }
         let basedir = url.path()
-        let err = nana_init(basedir, UInt32(basedir.count))
+        let err = nana_init(basedir)
         if err != 0 {
             fatalError("Failed to init libnana! With error:\(err)")
         }

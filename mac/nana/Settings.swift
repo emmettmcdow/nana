@@ -9,6 +9,25 @@ import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
 
+#if DISABLE_NANAKIT
+    // Returns empty double-null-terminated string (no files to import)
+    private func nana_doctor(_: UnsafePointer<CChar>) -> UnsafePointer<CChar>? {
+        return UnsafePointer(strdup("\0")!)
+    }
+
+    private func nana_doctor_finish() {}
+
+    private func nana_init(_: UnsafePointer<CChar>) -> Int32 {
+        return 0 // Success
+    }
+
+    private func nana_deinit() -> Int32 {
+        return 0 // Success
+    }
+#else
+    import NanaKit
+#endif
+
 enum AppColorScheme: String, CaseIterable, Identifiable, Codable {
     case light = "Light"
     case dark = "Dark"
@@ -68,15 +87,16 @@ struct GeneralSettingsView: View {
 
     @State var showFileImporter = false
     @State var totalFiles = 0
-    @State var skippedFiles = 0
-    @State var completeFiles = 0
-    @State var importError = ""
+    @State var skippedFiles: [ImportResult] = []
+    @State var erroredFiles: [ImportResult] = []
+    @State var completeFiles: [ImportResult] = []
+    @State var action: String = ""
 
     func import_from_dir(result: Result<[URL], any Error>) async throws {
         let gottenResult = try result.get()
         guard let dirURL = gottenResult.first else {
             await MainActor.run {
-                importError = "No directory selected"
+                erroredFiles = [ImportResult(filename: "Directory", message: "No directory selected")]
             }
             return
         }
@@ -85,7 +105,7 @@ struct GeneralSettingsView: View {
         }
         guard dirURL.startAccessingSecurityScopedResource() else {
             await MainActor.run {
-                importError = "Failed to start accessing security-scoped resource"
+                erroredFiles = [ImportResult(filename: "Directory", message: "Failed to start accessing security-scoped resource")]
                 totalFiles = 0
             }
             return
@@ -97,17 +117,85 @@ struct GeneralSettingsView: View {
         await MainActor.run {
             totalFiles = allFiles.count
         }
-        let _ = await importFiles(
+        await importFiles(
             allFiles,
-            onProgress: { complete, skipped in
+            copy: false,
+            addExt: false,
+            onProgress: { complete, skipped, errored in
                 self.completeFiles = complete
                 self.skippedFiles = skipped
-            },
-            onError: { error in
-                self.importError = error
-                self.totalFiles = 0
+                self.erroredFiles = errored
             }
         )
+    }
+
+    func import_from_doctor() async {
+        guard let containerIdentifier = Bundle.main.object(forInfoDictionaryKey:
+            "CloudKitContainerIdentifier") as? String
+        else {
+            await MainActor.run {
+                erroredFiles = [ImportResult(filename: "Config", message: "Could not get container identifier from Info.plist")]
+            }
+            return
+        }
+        let filemanager = FileManager.default
+        guard let dirURL = filemanager.url(forUbiquityContainerIdentifier: containerIdentifier) else {
+            await MainActor.run {
+                erroredFiles = [ImportResult(filename: "iCloud", message: "Could not get iCloud container URL")]
+            }
+            return
+        }
+
+        await MainActor.run {
+            totalFiles = 0
+        }
+
+        var err = nana_deinit()
+        if err != 0 {
+            fatalError("Failed to de-init libnana! With error:\(err)")
+        }
+
+        // Call nana_doctor with the directory path
+        let resultPtr = dirURL.path().withCString { cString in
+            let resultPtr = nana_doctor(cString)
+
+            err = nana_init(cString)
+            if err != 0 {
+                fatalError("Failed to init libnana! With error:\(err)")
+            }
+            return resultPtr
+        }
+
+        // Parse the double-null-terminated string into an array of strings
+        var files: [String] = []
+        var maybePtr = resultPtr
+        while let unwrappedPtr = maybePtr {
+            guard unwrappedPtr.pointee != 0 else {
+                break
+            }
+            let str = String(cString: unwrappedPtr)
+            if !str.isEmpty {
+                files.append(str)
+            }
+            maybePtr = unwrappedPtr.advanced(by: str.utf8.count + 1)
+        }
+
+        await MainActor.run {
+            totalFiles = files.count
+        }
+
+        await importFiles(
+            files,
+            copy: true,
+            addExt: true,
+            onProgress: { complete, skipped, errored in
+                self.completeFiles = complete
+                self.skippedFiles = skipped
+                self.erroredFiles = errored
+            }
+        )
+
+        nana_doctor_finish()
     }
 
     var body: some View {
@@ -163,11 +251,11 @@ struct GeneralSettingsView: View {
                 }
                 Tab("Data", systemImage: "document") {
                     VStack {
-                        Progress(action: "import", err: importError, totalFiles: totalFiles, skippedFiles: skippedFiles, completeFiles: completeFiles)
                         Button {
+                            action = "import"
                             showFileImporter = true
                         } label: {
-                            Label("Import Obsidian Vault", systemImage: "doc.circle")
+                            Label("Import Obsidian Vault", systemImage: "square.and.arrow.down")
                         }
                         .fileImporter(
                             isPresented: $showFileImporter,
@@ -178,6 +266,20 @@ struct GeneralSettingsView: View {
                                 try await import_from_dir(result: result)
                             }
                         }
+                        Button {
+                            action = "doctor"
+                            Task.detached(priority: .userInitiated) {
+                                await import_from_doctor()
+                            }
+                        } label: {
+                            Label("Fix problems with data", systemImage: "stethoscope")
+                        }
+                        Spacer()
+                        Progress(action: action,
+                                 totalFiles: totalFiles,
+                                 skippedFiles: skippedFiles,
+                                 erroredFiles: erroredFiles,
+                                 completeFiles: completeFiles)
                     }
                     .padding()
                 }
@@ -215,9 +317,10 @@ func filesInDir(dirURL: URL) -> [String] {
     GeneralSettingsView(
         showFileImporter: false,
         totalFiles: 0,
-        skippedFiles: 0,
-        completeFiles: 0,
-        importError: ""
+        skippedFiles: [],
+        erroredFiles: [],
+        completeFiles: [],
+        action: ""
     )
 }
 
@@ -225,9 +328,16 @@ func filesInDir(dirURL: URL) -> [String] {
     GeneralSettingsView(
         showFileImporter: false,
         totalFiles: 10,
-        skippedFiles: 0,
-        completeFiles: 5,
-        importError: ""
+        skippedFiles: [],
+        erroredFiles: [],
+        completeFiles: [
+            ImportResult(filename: "note1.md", message: ""),
+            ImportResult(filename: "note2.md", message: ""),
+            ImportResult(filename: "note3.md", message: ""),
+            ImportResult(filename: "note4.md", message: ""),
+            ImportResult(filename: "note5.md", message: ""),
+        ],
+        action: "import"
     )
 }
 
@@ -235,9 +345,10 @@ func filesInDir(dirURL: URL) -> [String] {
     GeneralSettingsView(
         showFileImporter: false,
         totalFiles: 10,
-        skippedFiles: 0,
-        completeFiles: 10,
-        importError: ""
+        skippedFiles: [],
+        erroredFiles: [],
+        completeFiles: (1 ... 10).map { ImportResult(filename: "note\($0).md", message: "") },
+        action: "import"
     )
 }
 
@@ -245,9 +356,10 @@ func filesInDir(dirURL: URL) -> [String] {
     GeneralSettingsView(
         showFileImporter: false,
         totalFiles: 10,
-        skippedFiles: 1,
-        completeFiles: 9,
-        importError: ""
+        skippedFiles: [ImportResult(filename: "image.png", message: "File isn't a note.")],
+        erroredFiles: [],
+        completeFiles: (1 ... 9).map { ImportResult(filename: "note\($0).md", message: "") },
+        action: "import"
     )
 }
 
@@ -255,8 +367,9 @@ func filesInDir(dirURL: URL) -> [String] {
     GeneralSettingsView(
         showFileImporter: false,
         totalFiles: 10,
-        skippedFiles: 0,
-        completeFiles: 9,
-        importError: "Something went wrong while importing: bufferoverflow, stackoverflow, uh oh big oops OH NO everything is broken we got HACKED."
+        skippedFiles: [],
+        erroredFiles: [ImportResult(filename: "broken.md", message: "Something went wrong while importing: buffer overflow")],
+        completeFiles: (1 ... 9).map { ImportResult(filename: "note\($0).md", message: "") },
+        action: "import"
     )
 }

@@ -75,8 +75,10 @@ pub const Runtime = struct {
     }
 
     const ImportOpts = struct {
-        /// Whether to `copy` the file to the `basedir` or just use the original absolute path
+        /// Whether to `copy` the file to the `basedir` or just use the original absolute path.
         copy: bool = false,
+        /// Whether to add an '.md' extension to the newly copied file. Path must be a number.
+        addExt: bool = false,
     };
 
     /// Create a new note, but use the contents of another file specified by `path`.
@@ -84,37 +86,54 @@ pub const Runtime = struct {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:import" });
         defer zone.end();
 
+        assert(!opts.addExt or (opts.addExt and opts.copy));
+
+        const isNote = opts.addExt or hasNoteExtension(path);
+        if (!isNote and shouldIgnoreFile(path)) return Error.NotNote;
+
         var f: std.fs.File = undefined;
-        if (!opts.copy) {
-            f = try self.basedir.openFile(path, .{});
-        } else {
+        if (std.fs.path.isAbsolute(path)) {
             f = try std.fs.openFileAbsolute(path, .{});
+        } else {
+            f = try self.basedir.openFile(path, .{});
         }
         defer f.close();
-
-        var notNote = true;
-        for ([_][]const u8{ "md", "txt" }) |ext| {
-            if (std.mem.eql(u8, path[path.len - ext.len ..], ext)) {
-                notNote = false;
-                break;
-            }
-        }
 
         const created: i64 = @intCast(@divTrunc((try f.metadata()).created().?, 1000));
         const modified: i64 = @intCast(@divTrunc((try f.metadata()).modified(), 1000));
         if (!opts.copy) {
-            if (notNote) return Error.NotNote;
+            if (!isNote) return Error.NotNote;
             return self.db.import(created, modified, .{ .path = path });
         }
 
-        const sourceDirPath = std.fs.path.dirname(path) orelse return Error.MalformedPath;
         const sourceName = std.fs.path.basename(path);
-        var sourceDir = try std.fs.openDirAbsolute(sourceDirPath, .{});
-        defer sourceDir.close();
-        try sourceDir.copyFile(sourceName, self.basedir, sourceName, .{});
 
-        if (notNote) return Error.NotNote;
-        const id = try self.db.import(created, modified, .{ .path = sourceName });
+        const destBuf = try self.allocator.alloc(u8, PATH_MAX);
+        defer self.allocator.free(destBuf);
+        const destName = if (opts.addExt and hasNoteExtension(sourceName) and allNums(sourceName)) val: {
+            if (sourceName.len + 1 >= PATH_MAX) return Error.MalformedPath;
+            break :val try std.fmt.bufPrint(destBuf, "_{s}", .{sourceName});
+        } else if (opts.addExt and allNums(sourceName)) val: {
+            if (sourceName.len + 4 >= PATH_MAX) return Error.MalformedPath;
+            break :val try std.fmt.bufPrint(destBuf, "_{s}.md", .{sourceName});
+        } else sourceName;
+
+        // NOTE: this doesn't delete old notes if it's in the same dir.
+        if (std.fs.path.isAbsolute(path)) {
+            const sourceDirPath = std.fs.path.dirname(path) orelse return Error.MalformedPath;
+            var sourceDir = try std.fs.openDirAbsolute(sourceDirPath, .{});
+            defer sourceDir.close();
+            try sourceDir.copyFile(sourceName, self.basedir, destName, .{});
+        } else if (std.fs.path.dirname(path)) |sourceDirPath| {
+            var sourceDir = try self.basedir.openDir(sourceDirPath, .{});
+            defer sourceDir.close();
+            try sourceDir.copyFile(sourceName, self.basedir, destName, .{});
+        } else {
+            try self.basedir.copyFile(sourceName, self.basedir, destName, .{});
+        }
+
+        if (!isNote) return Error.NotNote;
+        const id = try self.db.import(created, modified, .{ .path = destName });
         if (self.skipEmbed) return id;
 
         var bufsz: usize = 128;
@@ -293,12 +312,12 @@ pub fn doctor(allocator: std.mem.Allocator, basedir: std.fs.Dir) ![:0]const u8 {
     errdefer output.deinit();
 
     var it = basedir.iterate();
-    while (try it.next()) |entry| {
-        if (entry.kind == .file) {
-            try output.appendSlice(entry.name);
+    while (try it.next()) |f| {
+        if (f.kind == .file and !shouldIgnoreFile(f.name)) {
+            try output.appendSlice(f.name);
             try output.append(0);
-        } else if (entry.kind == .directory) {
-            std.log.warn("Saw a directory: {s}\n", .{entry.name});
+        } else if (f.kind == .directory) {
+            std.log.warn("Saw a directory: {s}\n", .{f.name});
         }
     }
 
@@ -314,6 +333,36 @@ fn deleteAllMeta(basedir: std.fs.Dir) !void {
             try basedir.deleteFile(entry.name);
         }
     }
+}
+
+const IGNORED_FILES = [_][]const u8{".DS_Store"};
+fn shouldIgnoreFile(path: []const u8) bool {
+    for (IGNORED_FILES) |ignored_filename| {
+        if (endsWith(path, ignored_filename)) return true;
+    }
+    return false;
+}
+
+const NOTE_EXT = [_][]const u8{ ".md", ".txt" };
+fn hasNoteExtension(path: []const u8) bool {
+    for (NOTE_EXT) |ext| if (endsWith(path, ext)) return true;
+    return false;
+}
+
+fn endsWith(path: []const u8, ext: []const u8) bool {
+    return path.len >= ext.len and std.mem.eql(u8, path[path.len - ext.len ..], ext);
+}
+
+fn allNums(path: []const u8) bool {
+    for (path, 0..) |c, i| {
+        if (c < '0' or c > '9') {
+            if (std.mem.eql(u8, path[i..], ".md") or std.mem.eql(u8, path[i..], ".txt")) {
+                return true;
+            }
+            return false;
+        }
+    }
+    return true;
 }
 
 fn isUnchanged(f: File, new_content: []const u8) !bool {
@@ -435,8 +484,8 @@ test "readAll null-term" {
 
     var buf: [20]u8 = [_]u8{'1'} ** 20;
     _ = try rt.readAll(noteID, &buf);
-    assert(buf[3] == '4');
-    assert(buf[4] == 0);
+    try expectEqual('4', buf[3]);
+    try expectEqual(0, buf[4]);
 }
 
 test "no modify on read" {
@@ -820,16 +869,50 @@ test "import skip unrecognized file extensions" {
     try f.writeAll("something");
     f.close();
 
-    for ([2][]const u8{ txt, md }) |path| {
+    const ds_store = "/tmp/.DS_Store";
+    f = try std.fs.createFileAbsolute(ds_store, .{});
+    try f.writeAll("something");
+    f.close();
+
+    for ([_][]const u8{ txt, md }) |path| {
         _ = try rt.import(path, .{ .copy = true });
-        f = try tmpD.dir.openFile(std.fs.path.basename(path), .{});
-        f.close();
+        (try tmpD.dir.openFile(std.fs.path.basename(path), .{})).close();
     }
-    for ([3][]const u8{ png, tar, pdf }) |path| {
+    for ([_][]const u8{ png, tar, pdf }) |path| {
         try expectError(Error.NotNote, rt.import(path, .{ .copy = true }));
-        f = try tmpD.dir.openFile(std.fs.path.basename(path), .{});
-        f.close();
+        (try tmpD.dir.openFile(std.fs.path.basename(path), .{})).close();
     }
+    for ([_][]const u8{ds_store}) |path| {
+        try expectError(Error.NotNote, rt.import(path, .{ .copy = true }));
+        try expectError(FileNotFound, tmpD.dir.openFile(std.fs.path.basename(path), .{}));
+    }
+}
+
+test "import copy addExt" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
+    defer rt.deinit();
+
+    const one = "/tmp/1";
+    var f = try std.fs.createFileAbsolute(one, .{});
+    try f.writeAll("something");
+    f.close();
+
+    const abc = "/tmp/abc";
+    f = try std.fs.createFileAbsolute(abc, .{});
+    try f.writeAll("something");
+    f.close();
+
+    _ = try rt.import(abc, .{ .copy = true, .addExt = true });
+    (try tmpD.dir.openFile(abc, .{})).close();
+    try expectError(FileNotFound, tmpD.dir.openFile("abc.md", .{}));
 }
 
 test "writeAll unchanged" {
@@ -913,6 +996,8 @@ test "doctor" {
     (try tmpD.dir.createFile("vectors.db", .{})).close();
     (try tmpD.dir.createFile("note1.txt", .{})).close();
     (try tmpD.dir.createFile("note2.md", .{})).close();
+    (try tmpD.dir.createFile("1234", .{})).close();
+    (try tmpD.dir.createFile(".DS_Store", .{})).close();
 
     const result = try doctor(arena.allocator(), tmpD.dir);
     defer arena.allocator().free(result);
@@ -921,7 +1006,7 @@ test "doctor" {
     try expectError(error.FileNotFound, tmpD.dir.access("vectors.db", .{}));
 
     // Parse the double-null-terminated string
-    var names: [2][]const u8 = undefined;
+    var names: [3][]const u8 = undefined;
     var count: usize = 0;
     var i: usize = 0;
     while (result[i] != 0) {
@@ -932,9 +1017,10 @@ test "doctor" {
         i += 1; // skip the null terminator
     }
 
-    try expectEqual(2, count);
-    try expect(std.mem.eql(u8, names[0], "note1.txt") or std.mem.eql(u8, names[0], "note2.md"));
-    try expect(std.mem.eql(u8, names[1], "note1.txt") or std.mem.eql(u8, names[1], "note2.md"));
+    try expectEqual(3, count);
+    try expect(std.mem.eql(u8, names[0], "note1.txt"));
+    try expect(std.mem.eql(u8, names[1], "note2.md"));
+    try expect(std.mem.eql(u8, names[2], "1234"));
     try expect(!std.mem.eql(u8, names[0], names[1]));
 }
 
@@ -944,8 +1030,10 @@ const expect = std.testing.expect;
 const expectEqlStrings = std.testing.expectEqualStrings;
 const expectEqual = std.testing.expectEqual;
 const File = std.fs.File;
+const FileNotFound = std.fs.File.OpenError.FileNotFound;
 const json = std.json;
 const OutOfMemory = std.mem.Allocator.Error.OutOfMemory;
+const PATH_MAX = std.posix.PATH_MAX;
 const testing_allocator = std.testing.allocator;
 const expectError = std.testing.expectError;
 
