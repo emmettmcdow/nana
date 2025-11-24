@@ -28,7 +28,10 @@ pub fn readAllZ2(basedir: std.fs.Dir, path: []const u8, allocator: std.mem.Alloc
         const sz = readAllZ(basedir, path, buf[0..bufsz]) catch |e| switch (e) {
             root.Error.BufferTooSmall => {
                 bufsz = try std.math.mul(usize, bufsz, 2);
-                if (!allocator.resize(buf, bufsz)) return OutOfMemory;
+                buf = allocator.realloc(buf, bufsz) catch |alloc_e| {
+                    std.log.err("Failed to resize to {d}: {}\n", .{ bufsz, alloc_e });
+                    return OutOfMemory;
+                };
                 continue;
             },
             else => |leftover_err| return leftover_err,

@@ -91,6 +91,7 @@ pub const Runtime = struct {
         const isNote = opts.addExt or hasNoteExtension(path);
         if (!isNote and shouldIgnoreFile(path)) return Error.NotNote;
 
+        // 1. Open the source file
         var f: std.fs.File = undefined;
         if (std.fs.path.isAbsolute(path)) {
             f = try std.fs.openFileAbsolute(path, .{});
@@ -99,6 +100,7 @@ pub const Runtime = struct {
         }
         defer f.close();
 
+        // 2. Read the metadata
         const created: i64 = @intCast(@divTrunc((try f.metadata()).created().?, 1000));
         const modified: i64 = @intCast(@divTrunc((try f.metadata()).modified(), 1000));
         if (!opts.copy) {
@@ -106,54 +108,42 @@ pub const Runtime = struct {
             return self.db.import(created, modified, .{ .path = path });
         }
 
+        // 3. Modify the filename if necessary
         const sourceName = std.fs.path.basename(path);
-
-        const destBuf = try self.allocator.alloc(u8, PATH_MAX);
-        defer self.allocator.free(destBuf);
-        const destName = if (opts.addExt and hasNoteExtension(sourceName) and allNums(sourceName)) val: {
-            if (sourceName.len + 1 >= PATH_MAX) return Error.MalformedPath;
-            break :val try std.fmt.bufPrint(destBuf, "_{s}", .{sourceName});
-        } else if (opts.addExt and allNums(sourceName)) val: {
+        var destBuf: [PATH_MAX]u8 = undefined;
+        const needsExtension = opts.addExt and !hasNoteExtension(sourceName);
+        const needsUnderscore = allNums(sourceName);
+        const destName = if (needsExtension and needsUnderscore) blk: {
             if (sourceName.len + 4 >= PATH_MAX) return Error.MalformedPath;
-            break :val try std.fmt.bufPrint(destBuf, "_{s}.md", .{sourceName});
+            break :blk try std.fmt.bufPrint(&destBuf, "_{s}.md", .{sourceName});
+        } else if (needsExtension) blk: {
+            if (sourceName.len + 3 >= PATH_MAX) return Error.MalformedPath;
+            break :blk try std.fmt.bufPrint(&destBuf, "{s}.md", .{sourceName});
+        } else if (needsUnderscore) blk: {
+            if (sourceName.len + 1 >= PATH_MAX) return Error.MalformedPath;
+            break :blk try std.fmt.bufPrint(&destBuf, "_{s}", .{sourceName});
         } else sourceName;
 
-        // NOTE: this doesn't delete old notes if it's in the same dir.
+        // 4. Copy the file if necessary
         if (std.fs.path.isAbsolute(path)) {
             const sourceDirPath = std.fs.path.dirname(path) orelse return Error.MalformedPath;
             var sourceDir = try std.fs.openDirAbsolute(sourceDirPath, .{});
             defer sourceDir.close();
             try sourceDir.copyFile(sourceName, self.basedir, destName, .{});
-        } else if (std.fs.path.dirname(path)) |sourceDirPath| {
-            var sourceDir = try self.basedir.openDir(sourceDirPath, .{});
-            defer sourceDir.close();
-            try sourceDir.copyFile(sourceName, self.basedir, destName, .{});
-        } else {
+        } else if (!std.mem.eql(u8, sourceName, destName)) {
             try self.basedir.copyFile(sourceName, self.basedir, destName, .{});
+            try self.basedir.deleteFile(sourceName);
         }
 
+        // 5. Import into the DB
         if (!isNote) return Error.NotNote;
         const id = try self.db.import(created, modified, .{ .path = destName });
         if (self.skipEmbed) return id;
 
-        var bufsz: usize = 128;
-        var buf = try self.allocator.alloc(u8, bufsz);
-        defer self.allocator.free(buf);
-        while (true) {
-            const sz = self.readAll(id, buf[0..bufsz]) catch |e| switch (e) {
-                Error.BufferTooSmall => {
-                    bufsz = try std.math.mul(usize, bufsz, 2);
-                    buf = self.allocator.realloc(buf, bufsz) catch |alloc_e| {
-                        std.log.err("Failed to resize to {d}: {}\n", .{ bufsz, alloc_e });
-                        return OutOfMemory;
-                    };
-                    continue;
-                },
-                else => |leftover_err| return leftover_err,
-            };
-            try self.vectors.embedText(id, "", buf[0..sz]);
-            break;
-        }
+        // 6. Embed the contents
+        const contents = try util.readAllZ2(self.basedir, destName, self.allocator);
+        defer self.allocator.free(contents);
+        try self.vectors.embedText(id, "", contents);
 
         return id;
     }
@@ -887,7 +877,6 @@ test "import skip unrecognized file extensions" {
         try expectError(FileNotFound, tmpD.dir.openFile(std.fs.path.basename(path), .{}));
     }
 }
-
 test "import copy addExt" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
@@ -900,19 +889,42 @@ test "import copy addExt" {
     });
     defer rt.deinit();
 
-    const one = "/tmp/1";
-    var f = try std.fs.createFileAbsolute(one, .{});
-    try f.writeAll("something");
-    f.close();
+    const cases = [_]struct { src: []const u8, dest: []const u8, oldExist: bool }{
+        .{ .src = "/tmp/1", .dest = "_1.md", .oldExist = true },
+        .{ .src = "/tmp/_2", .dest = "_2.md", .oldExist = true },
+        .{ .src = "/tmp/3.md", .dest = "_2.md", .oldExist = true },
+        .{ .src = "4", .dest = "_4.md", .oldExist = false },
+        .{ .src = "a", .dest = "a.md", .oldExist = false },
+    };
 
-    const abc = "/tmp/abc";
-    f = try std.fs.createFileAbsolute(abc, .{});
-    try f.writeAll("something");
-    f.close();
+    for (cases) |case| {
+        const src_is_absolute = case.src[0] == '/';
 
-    _ = try rt.import(abc, .{ .copy = true, .addExt = true });
-    (try tmpD.dir.openFile(abc, .{})).close();
-    try expectError(FileNotFound, tmpD.dir.openFile("abc.md", .{}));
+        // Create source
+        if (src_is_absolute) {
+            (try std.fs.createFileAbsolute(case.src, .{})).close();
+        } else {
+            (try rt.basedir.createFile(case.src, .{})).close();
+        }
+
+        // Run the import
+        _ = try rt.import(case.src, .{ .copy = true, .addExt = true });
+
+        // New file
+        (try rt.basedir.openFile(case.dest, .{})).close();
+
+        // Old File
+        const maybe_f = if (src_is_absolute)
+            std.fs.openFileAbsolute(case.src, .{})
+        else
+            rt.basedir.openFile(case.src, .{});
+
+        if (case.oldExist) {
+            (try maybe_f).close();
+        } else {
+            try expectError(FileNotFound, maybe_f);
+        }
+    }
 }
 
 test "writeAll unchanged" {
@@ -1032,7 +1044,6 @@ const expectEqual = std.testing.expectEqual;
 const File = std.fs.File;
 const FileNotFound = std.fs.File.OpenError.FileNotFound;
 const json = std.json;
-const OutOfMemory = std.mem.Allocator.Error.OutOfMemory;
 const PATH_MAX = std.posix.PATH_MAX;
 const testing_allocator = std.testing.allocator;
 const expectError = std.testing.expectError;
