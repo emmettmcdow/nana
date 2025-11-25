@@ -5,5 +5,6 @@ macos/
 mac/nana/Resources
 *.db
 PROJECT-NOTES.md
+TODO*
 
 node_modules/

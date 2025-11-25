@@ -1,5 +1,4 @@
 //**************************************************************************************** Embedder
-
 pub const Embedder = struct {
     const Self = @This();
 
@@ -14,12 +13,16 @@ pub const Embedder = struct {
         var NLEmbedding = objc.getClass("NLEmbedding").?;
         const fromUTF8 = objc.Sel.registerName("stringWithUTF8String:");
 
-        const sentenceEmbeddingForLanguage = objc.Sel.registerName("sentenceEmbeddingForLanguage:");
+        const sentenceEmbeddingForLang = objc.Sel.registerName("sentenceEmbeddingForLanguage:");
         const language = "en";
         const ns_lang = NSString.msgSend(Object, fromUTF8, .{language});
 
-        const embedder = NLEmbedding.msgSend(Object, sentenceEmbeddingForLanguage, .{ns_lang});
+        const embedder = NLEmbedding.msgSend(Object, sentenceEmbeddingForLang, .{ns_lang});
         assert(embedder.getProperty(c_int, "dimension") == vec_sz);
+
+        // Retain the Objective-C object to prevent it from being deallocated
+        const retain_sel = objc.Sel.registerName("retain");
+        _ = embedder.msgSend(Object, retain_sel, .{});
 
         return Embedder{
             .allocator = allocator,
@@ -27,19 +30,17 @@ pub const Embedder = struct {
         };
     }
     pub fn deinit(self: *Self) void {
-        _ = self;
+        // Release the retained Objective-C object
+        const release_sel = objc.Sel.registerName("release");
+        _ = self.embedder.msgSend(void, release_sel, .{});
     }
 
-    pub fn split(self: Self, note: []const u8) std.mem.SplitIterator(u8, .any) {
+    pub fn split(self: Self, note: []const u8) EmbedIterator {
         _ = self;
-        return .{
-            .index = 0,
-            .buffer = note,
-            .delimiter = ".!?\n",
-        };
+        return EmbedIterator.init(note);
     }
 
-    pub fn embed(self: *Self, str: []const u8) !?Vector {
+    pub fn embed(self: *Self, str: []const u8) !?[]vec_type {
         const zone = tracy.beginZone(@src(), .{ .name = "embed.zig:embed" });
         defer zone.end();
 
@@ -55,13 +56,51 @@ pub const Embedder = struct {
         defer self.allocator.free(c_str);
         const objc_str = NSString.msgSend(Object, fromUTF8, .{c_str.ptr});
 
-        var vector: []vec_type = try self.allocator.alloc(vec_type, vec_sz);
+        const vector: []vec_type = try self.allocator.alloc(vec_type, vec_sz);
         if (!self.embedder.msgSend(bool, getVectorForString, .{ vector.ptr, objc_str })) {
             std.log.err("Failed to embed {s}\n", .{str[0..@min(str.len, 10)]});
             return null;
         }
 
-        return vector[0..vec_sz].*;
+        return vector;
+    }
+};
+
+pub const Sentence = struct {
+    contents: []const u8,
+    start_i: u32,
+    end_i: u32,
+};
+
+pub const EmbedIterator = struct {
+    const Self = @This();
+
+    splitter: std.mem.SplitIterator(u8, .any),
+    curr_i: u32,
+
+    pub fn init(buffer: []const u8) Self {
+        return .{
+            .splitter = std.mem.SplitIterator(u8, .any){
+                .index = 0,
+                .buffer = buffer,
+                .delimiter = ".!?\n",
+            },
+            .curr_i = 0,
+        };
+    }
+
+    pub fn next(self: *Self) ?Sentence {
+        if (self.splitter.next()) |sentence| {
+            const out = Sentence{
+                .contents = sentence,
+                .start_i = self.curr_i,
+                .end_i = self.curr_i + @as(u32, @intCast(sentence.len)),
+            };
+            self.curr_i += @intCast(sentence.len + 1);
+            return out;
+        } else {
+            return null;
+        }
     }
 };
 
@@ -81,15 +120,19 @@ test "embed - embed" {
     var e = try Embedder.init(allocator);
 
     var output = try e.embed("Hello world");
+    defer if (output) |o| allocator.free(o);
     // We don't check this too hard because the work to save vectors is not worth the reward.
     // Better to check at the interface level. i.e. we don't care what the specific embedding is
     // as long as the output is what we desire. This test is just to verify that the embedder
     // doesn't do anything FUBAR.
-    var sum = @reduce(.Add, output.?);
+    var vec: Vector = output.?[0..vec_sz].*;
+    var sum = @reduce(.Add, vec);
     try expectEqual(1.009312, sum);
 
     output = try e.embed("Hello again world");
-    sum = @reduce(.Add, output.?);
+    defer if (output) |o| allocator.free(o);
+    vec = output.?[0..vec_sz].*;
+    sum = @reduce(.Add, vec);
     try expectEqual(7.870239, sum);
 }
 
@@ -100,7 +143,8 @@ test "embed skip empty" {
 
     var e = try Embedder.init(allocator);
 
-    _ = try e.embed("Hello world") orelse assert(false);
+    const vec_slice = (try e.embed("Hello world")).?;
+    defer allocator.free(vec_slice);
 }
 
 test "embed skip failures" {
@@ -110,17 +154,18 @@ test "embed skip failures" {
 
     var e = try Embedder.init(allocator);
 
-    _ = try e.embed("(*^(*&(# 4327897493287498*&)(FKJDHDHLKDJHLKFHKLFHD") orelse assert(false);
+    const vec_slice = (try e.embed("(*^(*&(# 4327897493287498*&)(FKJDHDHLKDJHL")).?;
+    defer allocator.free(vec_slice);
 }
 
 const std = @import("std");
 const assert = std.debug.assert;
 const expectEqual = std.testing.expectEqual;
+const expectEqualStrings = std.testing.expectEqualStrings;
 const parseFromSliceLeaky = std.json.parseFromSliceLeaky;
 
 const objc = @import("objc");
 const Object = objc.Object;
-const Class = objc.Class;
 const tracy = @import("tracy");
 
 const types = @import("types.zig");

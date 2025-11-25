@@ -10,11 +10,11 @@ import SwiftUI
 
 #if DISABLE_NANAKIT
     // Stub implementations for SwiftUI Previews
-    func nana_create() -> Int32 {
+    private func nana_create() -> Int32 {
         return Int32.random(in: 1 ... 1000)
     }
 
-    func nana_search(_: String, _ ids: inout [Int32], _ maxCount: Int, _: Int32) -> Int32 {
+    private func nana_search(_: String, _ ids: inout [Int32], _ maxCount: Int, _: Int32) -> Int32 {
         // Return some sample note IDs for preview
         let sampleIds: [Int32] = [1, 2, 3, 4, 5]
         let returnCount = min(sampleIds.count, maxCount)

@@ -71,7 +71,7 @@ pub const Markdown = struct {
     }
 
     /// Parses the 'src'. Calling this invalidates(frees) the last returned list of tokens.
-    pub fn parse(self: *Self, src: []const u8) []Token {
+    pub fn parse(self: *Self, src: []const u8) ![]Token {
         const parse_zone = tracy.beginZone(@src(), .{ .name = "markdown.zig:parse" });
         defer parse_zone.end();
 
@@ -82,40 +82,40 @@ pub const Markdown = struct {
 
         while (self.i < self.src.len) {
             if (self.match(.HEADER)) |degree| {
-                self.pushToken(.HEADER, degree);
+                try self.pushToken(.HEADER, degree);
                 _ = self.consumeUntil("\n", .{});
             } else if (self.match(.BOLD)) |_| {
-                self.pushToken(.BOLD, 1);
+                try self.pushToken(.BOLD, 1);
                 const found = self.consumeUntil("**", .{ .newlineBreak = true });
                 if (!found) {
                     self.popToken();
                 }
             } else if (self.match(.BLOCK_CODE)) |_| {
-                self.pushToken(.BLOCK_CODE, 1);
+                try self.pushToken(.BLOCK_CODE, 1);
                 const found = self.consumeUntil("```", .{});
                 if (!found or !self.startOrEndLine()) { // See #closing-code-blocks
                     self.popToken();
                     continue;
                 }
             } else if (self.match(.UNORDERED_LIST)) |degree| {
-                self.pushToken(.UNORDERED_LIST, degree);
+                try self.pushToken(.UNORDERED_LIST, degree);
                 _ = self.consumeUntil("\n", .{ .newlineBreak = true });
             } else {
                 // Is PLAIN
                 const isEmpty = self.tokens.getLastOrNull() == null;
                 if (isEmpty or self.tokens.getLast().tType != .PLAIN) {
-                    self.pushToken(.PLAIN, 1);
+                    try self.pushToken(.PLAIN, 1);
                 }
                 self.i += 1;
             }
         }
-        self.pushToken(null, null);
+        try self.pushToken(null, null);
 
         return self.tokens.items;
     }
 
     /// Completes the token at the end of the list and optionally adds a new one of type newType.
-    fn pushToken(self: *Self, newType: ?TokenType, degree: ?u8) void {
+    fn pushToken(self: *Self, newType: ?TokenType, degree: ?u8) !void {
         const push_zone = tracy.beginZone(@src(), .{ .name = "markdown.zig:pushToken" });
         defer push_zone.end();
 
@@ -123,14 +123,14 @@ pub const Markdown = struct {
             var copy = token;
             copy.endI = @min(self.i, self.src.len);
             copy.contents = self.src[copy.startI..copy.endI];
-            self.tokens.append(copy) catch unreachable;
+            try self.tokens.append(copy);
         }
         if (newType) |tt| {
             assert(degree != null);
             if (degree) |d| {
-                self.tokens.append(
+                try self.tokens.append(
                     .{ .tType = tt, .startI = self.i, .endI = self.i + 1, .degree = d },
-                ) catch unreachable;
+                );
             }
         }
     }
@@ -236,25 +236,30 @@ test "header plain" {
     try expectEqualDeep(&[_]Token{
         .{ .tType = .HEADER, .contents = "# Header\n", .startI = 0, .endI = 9 },
         .{ .tType = .PLAIN, .contents = "plain text.", .startI = 9, .endI = 20 },
-    }, l.parse(
+    }, try l.parse(
         \\# Header
         \\plain text.
     ));
     try expectEqualSlices(Token, &[_]Token{
-        .{ .tType = .HEADER, .contents = "# Header with # in the middle", .startI = 0, .endI = 29 },
-    }, l.parse(
+        .{
+            .tType = .HEADER,
+            .contents = "# Header with # in the middle",
+            .startI = 0,
+            .endI = 29,
+        },
+    }, try l.parse(
         \\# Header with # in the middle
     ));
     try expectEqualDeep(&[_]Token{
         .{ .tType = .PLAIN, .contents = "Plain with # in the middle", .startI = 0, .endI = 26 },
-    }, l.parse(
+    }, try l.parse(
         \\Plain with # in the middle
     ));
     try expectEqualDeep(&[_]Token{
         .{ .tType = .HEADER, .contents = "# A\n", .startI = 0, .endI = 4 },
         .{ .tType = .PLAIN, .contents = "B\n", .startI = 4, .endI = 6 },
         .{ .tType = .HEADER, .contents = "# C", .startI = 6, .endI = 9 },
-    }, l.parse(
+    }, try l.parse(
         \\# A
         \\B
         \\# C
@@ -269,7 +274,7 @@ test "header plain" {
         .{ .tType = .HEADER, .degree = 5, .contents = "##### 5\n", .startI = i, .endI = plusEq(&i, 8) },
         .{ .tType = .HEADER, .degree = 6, .contents = "###### 6\n", .startI = i, .endI = plusEq(&i, 9) },
         .{ .tType = .PLAIN, .degree = 1, .contents = "####### plain", .startI = i, .endI = plusEq(&i, 13) },
-    }, l.parse(
+    }, try l.parse(
         \\# 1
         \\## 2
         \\### 3
@@ -287,7 +292,7 @@ test "bold" {
     var l = Markdown.init(arena.allocator());
 
     var i: usize = 0;
-    var output = l.parse("a**b**c**d**e");
+    var output = try l.parse("a**b**c**d**e");
     try expectEqualDeep(&[_]Token{
         .{ .tType = .PLAIN, .contents = "a", .startI = i, .endI = plusEq(&i, 1) },
         .{ .tType = .BOLD, .contents = "**b**", .startI = i, .endI = plusEq(&i, 5) },
@@ -297,13 +302,13 @@ test "bold" {
     }, output);
 
     i = 0;
-    output = l.parse("ab**cd");
+    output = try l.parse("ab**cd");
     try expectEqualDeep(&[_]Token{
         .{ .tType = .PLAIN, .contents = "ab**cd", .startI = i, .endI = plusEq(&i, 6) },
     }, output);
 
     i = 0;
-    output = l.parse("ab**\ne**f**g\n");
+    output = try l.parse("ab**\ne**f**g\n");
     try expectEqualDeep(&[_]Token{
         .{ .tType = .PLAIN, .contents = "ab**\ne", .startI = i, .endI = plusEq(&i, 6) },
         .{ .tType = .BOLD, .contents = "**f**", .startI = i, .endI = plusEq(&i, 5) },
@@ -318,7 +323,7 @@ test "block code" {
     var l = Markdown.init(arena.allocator());
 
     var i: usize = 0;
-    var output = l.parse("```this is code\nsecond line of code\n```");
+    var output = try l.parse("```this is code\nsecond line of code\n```");
     try expectEqualDeep(&[_]Token{
         .{
             .tType = .BLOCK_CODE,
@@ -329,7 +334,7 @@ test "block code" {
     }, output);
 
     i = 0;
-    output = l.parse("not code\n```\ncode with **no styling**\n```\nnot code again");
+    output = try l.parse("not code\n```\ncode with **no styling**\n```\nnot code again");
     try expectEqualDeep(&[_]Token{
         .{ .tType = .PLAIN, .contents = "not code\n", .startI = i, .endI = plusEq(&i, 9) },
         .{
@@ -349,14 +354,14 @@ test "unordered list" {
     var l = Markdown.init(arena.allocator());
 
     var i: usize = 0;
-    var output = l.parse("- uno\n- dos");
+    var output = try l.parse("- uno\n- dos");
     try expectEqualDeep(&[_]Token{
         .{ .tType = .UNORDERED_LIST, .contents = "- uno\n", .startI = i, .endI = plusEq(&i, 6) },
         .{ .tType = .UNORDERED_LIST, .contents = "- dos", .startI = i, .endI = plusEq(&i, 5) },
     }, output);
 
     i = 0;
-    output = l.parse("- 1\n\t- 2\n\t\t- 3\n\t\t\t- 4\n\t\t\t\t- 5\n\t\t\t\t\t- 6");
+    output = try l.parse("- 1\n\t- 2\n\t\t- 3\n\t\t\t- 4\n\t\t\t\t- 5\n\t\t\t\t\t- 6");
     try expectEqualDeep(&[_]Token{
         .{ .tType = .UNORDERED_LIST, .contents = "- 1\n", .startI = i, .endI = plusEq(&i, 4), .degree = 1 },
         .{ .tType = .UNORDERED_LIST, .contents = "\t- 2\n", .startI = i, .endI = plusEq(&i, 5), .degree = 2 },
@@ -371,15 +376,6 @@ fn plusEq(a: *usize, b: usize) usize {
     a.* += b;
     return a.*;
 }
-
-const std = @import("std");
-const assert = std.debug.assert;
-const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
-const expect = std.expect;
-const expectEqualDeep = std.testing.expectEqualDeep;
-const expectEqualSlices = std.testing.expectEqualSlices;
-const tracy = @import("tracy");
 
 // Notes
 //
@@ -413,3 +409,13 @@ const tracy = @import("tracy");
 //
 // Maybe we break the rule for the quote? Seems like we might want to enforce a double newline for
 // quote. Seems a little odd.
+
+const std = @import("std");
+const assert = std.debug.assert;
+const Allocator = std.mem.Allocator;
+const ArrayList = std.ArrayList;
+const expect = std.expect;
+const expectEqualDeep = std.testing.expectEqualDeep;
+const expectEqualSlices = std.testing.expectEqualSlices;
+
+const tracy = @import("tracy");

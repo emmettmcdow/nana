@@ -1,568 +1,390 @@
-pub const Error = error{MultipleRemove};
+const VECTOR_DB_PATH = "vecs.db";
 
-const latest_format_version = 1;
-const v1_meta: StorageMetadata = .{
-    .fmt_v = latest_format_version,
-    .vec_sz = vec_sz,
-    .vec_type = BinaryTypeRepresentation.to_binary(vec_type),
-    .idx_type = BinaryTypeRepresentation.to_binary(u8),
-    .vec_n = 0,
-};
+const MAX_NOTE_LEN: usize = std.math.maxInt(u32);
 
-// **************************************************************************************** Helpers
-// Endianness doesn't matter since we only check whether the value is 0 or not... for now
-pub inline fn writeSlice(
-    w: *FileWriter,
-    slice: []u8,
-) !void {
-    for (slice) |byte| {
-        try w.writeByte(byte);
-    }
-}
-
-pub inline fn readSlice(
-    r: *FileReader,
-    buf: []u8,
-) !void {
-    for (0..buf.len) |i| {
-        buf[i] = try r.readByte();
-    }
-}
-
-pub inline fn end_i(s: []u8) usize {
-    for (1..s.len + 1) |rev_i| {
-        const i = s.len - rev_i;
-        if (s[i] != 0) return i + 1;
-    }
-    return 0;
-}
-
-pub inline fn readVec(v: *Vector, r: *FileReader, endian: std.builtin.Endian) !void {
-    for (0..v1_meta.vec_sz) |j| {
-        const elem = r.readInt(v1_meta.vec_type.stored_as(), endian) catch |err| {
-            std.debug.print("Error: {}\n", .{err});
-            return err;
-        };
-        const converted = @as(v1_meta.vec_type.to_type(), @bitCast(elem));
-        v[j] = converted;
-    }
-}
-
-pub inline fn writeVec(v: Vector, w: *FileWriter, endian: std.builtin.Endian) !void {
-    const array: [vec_sz]vec_type = v;
-    for (array) |elem| {
-        try w.writeInt(
-            v1_meta.vec_type.stored_as(),
-            @bitCast(elem),
-            endian,
-        );
-    }
-}
-
-// ********************************************************************************************* DB
-pub const BinaryTypeRepresentation = enum(u8) {
-    float32,
-    uint8,
-
-    pub inline fn to_type(self: BinaryTypeRepresentation) type {
-        switch (self) {
-            .float32 => return f32,
-            .uint8 => return u8,
-        }
-    }
-
-    pub inline fn to_binary(T: type) BinaryTypeRepresentation {
-        switch (T) {
-            f32 => return .float32,
-            u8 => return .uint8,
-            else => undefined,
-        }
-    }
-
-    pub inline fn stored_as(self: BinaryTypeRepresentation) type {
-        switch (self) {
-            .float32 => return u32,
-            .uint8 => return u8,
-        }
-    }
-};
-
-/// This is the metadata we need to determine what the binary format of the rest of the file looks
-/// like. Nothing dynamic should be in here. Only fixed-size data.
-pub const StorageMetadata = packed struct {
-    /// Big if true
-    endian: bool = true,
-    /// This defines what version of the storage metadata to use
-    fmt_v: u8,
-    /// Dimensionality
-    vec_sz: usize,
-    /// Type of the elements in the vectors. Binary representation of a Zig type
-    vec_type: BinaryTypeRepresentation,
-    /// Type of the elements in the index. Binary representation of a Zig type
-    idx_type: BinaryTypeRepresentation,
-    /// Number of vectors
-    vec_n: usize,
-
-    const Self = @This();
-
-    pub fn endianness(self: Self) std.builtin.Endian {
-        if (self.endian) {
-            return .big;
-        } else {
-            return .little;
-        }
-    }
-};
-//  ___Index____ ___Vecs____
-// |___________||__________|
-// |1  |0  |1  |v1 |nil|v2 |
-// |___|___|___|___|___|___|
-//
-//  Each index corresponds to a single index within the vector array.
-//  The integer will be non-zero if that vector index is occupied, zero otherwise.
 pub const DB = struct {
-    meta: StorageMetadata = v1_meta,
-    index: []u8,
-    vectors: []Vector,
-    capacity: usize,
-    allocator: std.mem.Allocator,
-    dir: std.fs.Dir,
-
-    const Opts = struct {
-        sz: usize = 32,
-    };
-
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, dir: std.fs.Dir, opts: Opts) !Self {
-        const vecs = try allocator.alloc(Vector, opts.sz);
-        @memset(vecs, std.mem.zeroes(Vector));
-        const idx = try allocator.alloc(u8, opts.sz);
-        @memset(idx, 0);
-        return DB{
-            .vectors = vecs,
-            .index = idx,
-            .capacity = opts.sz,
+    embedder: embed.Embedder,
+    relational: *model.DB,
+    vecs: vec_storage.Storage,
+    basedir: std.fs.Dir,
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator, basedir: std.fs.Dir, relational: *model.DB) !Self {
+        var vecs = try vec_storage.Storage.init(allocator, basedir, .{});
+        try vecs.load(VECTOR_DB_PATH);
+        const embedder = try embed.Embedder.init(allocator);
+        return .{
+            .embedder = embedder,
+            .relational = relational,
+            .vecs = vecs,
+            .basedir = basedir,
             .allocator = allocator,
-            .dir = dir,
         };
     }
     pub fn deinit(self: *Self) void {
-        self.allocator.free(self.vectors);
+        self.vecs.deinit();
+        self.embedder.deinit();
     }
 
-    pub fn get(self: Self, id: VectorID) Vector {
-        return self.vectors[id];
+    pub fn search(self: *Self, query: []const u8, buf: []c_int) !usize {
+        const query_vec_slice = (try self.embedder.embed(query)) orelse return 0;
+        defer self.allocator.free(query_vec_slice);
+        const query_vec: Vector = query_vec_slice[0..vec_sz].*;
+
+        var vec_ids: [1000]VectorID = undefined;
+
+        debugSearchHeader(query);
+        const found_n = try self.vecs.search(query_vec, &vec_ids);
+        try self.debugSearchRankedResults(vec_ids[0..found_n]);
+
+        var unique_found_n: usize = 0;
+        outer: for (0..@min(found_n, buf.len)) |i| {
+            const noteID = @as(c_int, @intCast(try self.relational.vecToNote(vec_ids[i])));
+            for (0..unique_found_n) |j| {
+                if (buf[j] == noteID) continue :outer;
+            }
+            buf[unique_found_n] = noteID;
+            unique_found_n += 1;
+        }
+        std.log.info("Found {d} results searching with {s}\n", .{ unique_found_n, query });
+        return unique_found_n;
     }
 
-    pub fn put(self: *Self, v: Vector) !VectorID {
-        const new_id = self.nextIndex();
-        assert(self.index[new_id] == 0);
-        self.meta.vec_n += 1;
-
-        try self.grow();
-
-        self.putAt(v, new_id);
-        return new_id;
-    }
-
-    fn putAt(self: *Self, v: Vector, id: usize) void {
-        self.vectors[id] = v;
-        self.index[id] = 1;
-    }
-
-    pub fn rm(self: *Self, id: VectorID) !void {
-        if (self.index[id] == 0) return Error.MultipleRemove;
-        assert(self.meta.vec_n > 0);
-        self.index[id] = 0;
-        self.meta.vec_n -= 1;
-    }
-
-    pub fn search(self: Self, query: Vector, buf: []VectorID) !usize {
-        const zone = tracy.beginZone(@src(), .{ .name = "vector.zig:search" });
+    pub fn embedText(
+        self: *Self,
+        note_id: NoteID,
+        old_contents: []const u8,
+        new_contents: []const u8,
+    ) !void {
+        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:embedText" });
         defer zone.end();
-        // This scores best on the benchmark but vibes-wise it's way off
-        const THRESHOLD = 0.35;
-        // const THRESHOLD = 0.7;
+
+        assert(new_contents.len < MAX_NOTE_LEN);
+        assert(old_contents.len < MAX_NOTE_LEN);
 
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
 
-        const entry = struct {
-            id: VectorID,
-            sim: vec_type,
+        const old_vecs = try self.relational.vecsForNote(arena.allocator(), note_id);
+        var new_vecs = std.ArrayList(VectorRow).init(arena.allocator());
 
-            const InnerSelf = @This();
+        for ((try diffSplit(old_contents, new_contents, arena.allocator())).items) |sentence| {
+            if (sentence.new) {
+                const vec_id = if (try self.embedder.embed(sentence.contents)) |vec_slice| block: {
+                    defer self.allocator.free(vec_slice);
+                    const new_vec: Vector = vec_slice[0..vec_sz].*;
+                    break :block try self.vecs.put(new_vec);
+                } else self.vecs.nullVec();
 
-            pub fn order(_: void, a: InnerSelf, b: InnerSelf) std.math.Order {
-                return std.math.order(b.sim, a.sim);
+                try new_vecs.append(.{
+                    .vector_id = vec_id,
+                    .note_id = note_id,
+                    .start_i = sentence.off,
+                    .end_i = sentence.off + sentence.contents.len,
+                });
+            } else {
+                var found = false;
+                for (old_vecs) |old_v| {
+                    const old_v_contents = old_contents[old_v.start_i..old_v.end_i];
+                    if (!std.mem.eql(u8, sentence.contents, old_v_contents)) continue;
+                    try new_vecs.append(VectorRow{
+                        .vector_id = try self.vecs.copy(old_v.vector_id),
+                        .note_id = note_id,
+                        .start_i = sentence.off,
+                        .end_i = sentence.off + sentence.contents.len,
+                    });
+                    found = true;
+                    break;
+                }
+                assert(found);
             }
-        };
-
-        var pq = std.PriorityQueue(entry, void, entry.order).init(arena.allocator(), undefined);
-
-        for (self.index, 0..) |valid, id| {
-            if (valid == 0) continue;
-            const similar = cosine_similarity(self.get(id), query);
-            debugSearchSimilar(id, similar);
-            if (similar > THRESHOLD) {
-                try pq.add(.{ .id = id, .sim = similar });
-            }
         }
-
-        var i: usize = 0;
-        while (pq.removeOrNull()) |pair| : (i += 1) {
-            if (i >= buf.len) break;
-            buf[i] = pair.id;
+        try self.clearVecsForNote(note_id);
+        for (new_vecs.items) |v| {
+            try self.relational.appendVector(v.note_id, v.vector_id, v.start_i, v.end_i);
         }
-
-        return i;
-    }
-
-    fn debugSearchSimilar(vecID: VectorID, similar: vec_type) void {
-        if (!config.debug) return;
-        std.debug.print("    ID({d}) similarity: {d}\n", .{ vecID, similar });
-    }
-
-    pub fn save(self: Self, path: []const u8) !void {
-        var f = self.dir.openFile(path, .{ .mode = .write_only }) catch |err| switch (err) {
-            std.fs.File.OpenError.FileNotFound => try self.dir.createFile(path, .{}),
-            else => return err,
-        };
-        defer f.close();
-        var writer = f.writer();
-        try writer.writeStructEndian(self.meta, self.meta.endianness());
-        try writeSlice(&writer, self.index);
-        for (0..end_i(self.index)) |i| {
-            try writeVec(self.vectors[i], &writer, self.meta.endianness());
-        }
+        try self.vecs.save(VECTOR_DB_PATH);
 
         return;
     }
 
-    pub fn load(self: *Self, path: []const u8) !Self {
-        // We take the naiive approach to reading for now. We only have one version of the file,
-        // but we have future proofed ourselves to be able to use multiple. We don't yet need
-        // multiple so we can just read the file in a "dumb" way.
-        //
-        // Dumb = not reading metadata before reading the whole file.
-        var f = self.dir.openFile(path, .{ .mode = .read_only }) catch |err| switch (err) {
-            // Don't do anything if there is no file to load: file is created on save
-            std.fs.File.OpenError.FileNotFound => return self.*,
-            else => return err,
-        };
-        defer f.close();
-        var reader = f.reader();
-
-        const endian = self.meta.endianness();
-        self.meta = try reader.readStructEndian(StorageMetadata, endian);
-        // This is a hack to deal with my poor grasp of comptime.
-        // Maybe we can come in and create multiple load body functions. Firstly you check the
-        // version, and then you call out to one of the many load functions. Where the meta is
-        // comptime known.
-        assert(self.meta.fmt_v == v1_meta.fmt_v);
-        assert(self.meta.vec_sz == v1_meta.vec_sz);
-        assert(self.meta.vec_type == v1_meta.vec_type);
-        assert(self.meta.idx_type == v1_meta.idx_type);
-
-        try self.grow();
-        try readSlice(&reader, self.index);
-
-        for (0..end_i(self.index)) |i| {
-            var v: Vector = undefined;
-            if (self.index[i] == 0) continue;
-            try readVec(&v, &reader, endian);
-            self.putAt(v, i);
-        }
-
-        return self.*;
+    fn clearVecsForNote(self: *Self, id: NoteID) !void {
+        const vecs = try self.relational.vecsForNote(self.allocator, id);
+        defer self.allocator.free(vecs);
+        for (vecs) |v| try self.delete(v.vector_id);
     }
 
-    /// Locates the next empty index for a vector. Prioritizes filling holes in the arrays.
-    fn nextIndex(self: *Self) usize {
-        for (self.index, 0..) |v, i| {
-            if (v == 0) return i;
-        }
-        unreachable;
+    fn delete(self: *Self, id: VectorID) !void {
+        try self.relational.deleteVec(id);
+        try self.vecs.rm(id);
     }
 
-    /// Grows the backing data structure to fit the `self.meta.vec_n`.
-    fn grow(self: *Self) !void {
-        var sz = self.capacity;
-        while (self.meta.vec_n >= sz) {
-            sz *= 2;
-        }
-        if (sz == self.capacity) return;
+    fn debugSearchHeader(query: []const u8) void {
+        if (!config.debug) return;
+        std.debug.print("Checking similarity against '{s}':\n", .{query});
+    }
 
-        self.index = try self.allocator.realloc(self.index, sz);
-        @memset(self.index[self.capacity..], 0);
-        self.vectors = try self.allocator.realloc(self.vectors, sz);
-        @memset(self.vectors[self.capacity..], std.mem.zeroes(Vector));
-        self.capacity = sz;
+    fn debugSearchRankedResults(self: *Self, ids: []VectorID) !void {
+        if (!config.debug) return;
+        const bufsz = 50;
+        for (ids, 1..) |id, i| {
+            var buf: [bufsz]u8 = undefined;
+            const noteID = try self.relational.vecToNote(id);
+            const sz = try self.readAll(
+                noteID,
+                &buf,
+            );
+            if (sz < 0) continue;
+            std.debug.print("    {d}. ID({d})'{s}' \n", .{
+                i,
+                noteID,
+                buf[0..@min(sz, bufsz)],
+            });
+        }
     }
 };
 
-const tmpDir = std.testing.tmpDir;
-const testing_allocator = std.testing.allocator;
-const expect = std.testing.expect;
-
-test "test put / get" {
-    var tmpD = tmpDir(.{ .iterate = true });
+test "embedText hello" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
+    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer rel.deinit();
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    defer db.deinit();
 
-    var inst = try DB.init(arena.allocator(), tmpD.dir, .{});
-    try expect(inst.meta.vec_n == 0);
-    const vec1 = Vector{ 1, 1, 1 };
-    const id = try inst.put(vec1);
-    try expect(inst.meta.vec_n == 1);
-    const vec2 = inst.get(id);
+    const id = try rel.create();
 
-    try expect(@reduce(.And, vec1 == vec2));
+    const text = "hello";
+    try db.embedText(id, "", text);
+
+    var buf: [1]c_int = undefined;
+    const results = try db.search(text, &buf);
+
+    try expectEqual(1, results);
+    try expectEqual(@as(c_int, @intCast(id)), buf[0]);
 }
 
-test "re-init DB" {
-    var tmpD = tmpDir(.{ .iterate = true });
+test "embedText skip empties" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
+    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer rel.deinit();
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    defer db.deinit();
 
-    var inst = try DB.init(arena.allocator(), tmpD.dir, .{});
-    try expect(inst.meta.vec_n == 0);
-    const vec1 = Vector{ 1, 1, 1 };
-    const id = try inst.put(vec1);
-    try expect(inst.meta.vec_n == 1);
-    try inst.save("temp.db");
-    inst.deinit();
+    const id = try rel.create();
 
-    var inst2 = try DB.init(arena.allocator(), tmpD.dir, .{});
-    inst2 = try inst2.load("temp.db");
-    try expect(inst2.meta.vec_n == 1);
-    const vec2 = inst2.get(id);
-    try expect(@reduce(.And, vec1 == vec2));
-    inst2.deinit();
+    const text = "/hello/";
+    try db.embedText(id, "", text);
 }
 
-test "re-init DB multiple" {
-    var tmpD = tmpDir(.{ .iterate = true });
+test "embedText clear previous" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
+    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer rel.deinit();
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    defer db.deinit();
 
-    const vecs: [4]Vector = .{
-        .{ 1, 1, 1 },
-        .{ 1, 2, 3 },
-        .{ 0.5, 0.5, 0.5 },
-        .{ -0.5, -0.5, -0.5 },
-    };
+    const id = try rel.create();
 
-    var inst = try DB.init(arena.allocator(), tmpD.dir, .{});
-    try expect(inst.meta.vec_n == 0);
-    for (vecs) |vec| {
-        _ = try inst.put(vec);
+    try db.embedText(id, "", "hello");
+
+    var buf: [1]c_int = undefined;
+    try expectEqual(1, try db.search("hello", &buf));
+
+    try db.embedText(id, "hello", "flatiron");
+    try expectEqual(0, try db.search("hello", &buf));
+}
+
+test "search remove duplicates" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer rel.deinit();
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    defer db.deinit();
+
+    const noteID1 = try rel.create();
+    _ = try db.embedText(noteID1, "", "pizza. pizza. pizza.");
+
+    var buffer: [10]c_int = undefined;
+    const n = try db.search("pizza", &buffer);
+    try expectEqual(1, n);
+    try expectEqual(@as(c_int, @intCast(noteID1)), buffer[0]);
+}
+
+fn getVectorsForNote(db: *DB, rel: *model.DB, noteID: NoteID, vecs: []Vector) !usize {
+    const vec_rows = try rel.vecsForNote(testing_allocator, noteID);
+    defer testing_allocator.free(vec_rows);
+    for (vec_rows, 0..) |v, i| {
+        vecs[i] = db.vecs.get(v.vector_id);
     }
-    try expect(inst.meta.vec_n == vecs.len);
-    try inst.save("temp.db");
-    inst.deinit();
-
-    var inst2 = try DB.init(arena.allocator(), tmpD.dir, .{});
-    inst2 = try inst2.load("temp.db");
-    try expect(inst2.meta.vec_n == vecs.len);
-    for (0..vecs.len - 1) |i| {
-        try expect(@reduce(.And, vecs[i] == inst2.get(i)));
-    }
-    inst2.deinit();
+    return vec_rows.len;
 }
 
-test "re-init DB index" {
-    var tmpD = tmpDir(.{ .iterate = true });
+test "embedText no update" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
+    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer rel.deinit();
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    defer db.deinit();
 
-    const vecs: [4]Vector = .{
-        .{ 1, 1, 1 },
-        .{ 1, 2, 3 },
-        .{ 0.5, 0.5, 0.5 },
-        .{ -0.5, -0.5, -0.5 },
-    };
-    var ids: [4]VectorID = undefined;
+    const noteID = try rel.create();
 
-    var inst = try DB.init(arena.allocator(), tmpD.dir, .{});
-    try expect(inst.meta.vec_n == 0);
-    for (vecs, 0..) |vec, i| {
-        ids[i] = try inst.put(vec);
-    }
-    for (inst.index[0..4]) |val| {
-        try expect(val != 0);
-    }
-    try inst.rm(ids[0]);
-    try inst.rm(ids[2]);
+    try db.embedText(noteID, "", "apple");
+    var initial_vecs: [1]Vector = undefined;
+    try expectEqual(1, try getVectorsForNote(&db, &rel, noteID, &initial_vecs));
 
-    try expect(inst.index[0] == 0);
-    try expect(inst.index[1] == 1);
-    try expect(inst.index[2] == 0);
-    try expect(inst.index[3] == 1);
-    try expect(inst.meta.vec_n == vecs.len - 2);
-    try inst.save("temp.db");
-    inst.deinit();
+    try db.embedText(noteID, "apple", "apple");
+    var updated_vecs: [1]Vector = undefined;
+    try expectEqual(1, try getVectorsForNote(&db, &rel, noteID, &updated_vecs));
 
-    var inst2 = try DB.init(arena.allocator(), tmpD.dir, .{});
-    inst2 = try inst2.load("temp.db");
-    try expect(inst2.meta.vec_n == vecs.len - 2);
-    try expect(inst2.index[0] == 0);
-    try expect(inst2.index[1] == 1);
-    try expect(inst2.index[2] == 0);
-    try expect(inst2.index[3] == 1);
-    inst2.deinit();
+    // Vector should be different (apple != banana)
+    try std.testing.expect(@reduce(.And, initial_vecs[0] == updated_vecs[0]));
 }
 
-test "test put resize" {
-    var tmpD = tmpDir(.{ .iterate = true });
+test "embedText updates single word sentence" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
+    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer rel.deinit();
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    defer db.deinit();
 
-    var inst = try DB.init(arena.allocator(), tmpD.dir, .{});
-    try expect(inst.meta.vec_n == 0);
-    try expect(inst.capacity == 32);
+    const noteID = try rel.create();
 
-    const vec1 = Vector{ 1, 1, 1 };
-    for (0..31) |_| {
-        _ = try inst.put(vec1);
-    }
-    try expect(inst.meta.vec_n == 31);
-    try expect(inst.capacity == 32);
-    _ = try inst.put(vec1);
-    try expect(inst.meta.vec_n == 32);
-    try expect(inst.capacity == 64);
+    try db.embedText(noteID, "", "apple");
+    var initial_vecs: [1]Vector = undefined;
+    try expectEqual(1, try getVectorsForNote(&db, &rel, noteID, &initial_vecs));
+
+    try db.embedText(noteID, "apple", "banana");
+    var updated_vecs: [1]Vector = undefined;
+    try expectEqual(1, try getVectorsForNote(&db, &rel, noteID, &updated_vecs));
+
+    // Vector should be different (apple != banana)
+    try std.testing.expect(!@reduce(.And, initial_vecs[0] == updated_vecs[0]));
 }
 
-test "no failure on loading non-existent db" {
-    var tmpD = tmpDir(.{ .iterate = true });
+test "embedText updates last sentence" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
+    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer rel.deinit();
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    defer db.deinit();
 
-    var inst = try DB.init(arena.allocator(), tmpD.dir, .{});
-    _ = try inst.load("vecs.db");
-    inst.deinit();
+    const noteID = try rel.create();
+
+    try db.embedText(noteID, "", "apple. banana.");
+    var initial_vecs: [2]Vector = undefined;
+    try expectEqual(2, try getVectorsForNote(&db, &rel, noteID, &initial_vecs));
+
+    try db.embedText(noteID, "apple. banana.", "apple. orange.");
+    var updated_vecs: [2]Vector = undefined;
+    try expectEqual(2, try getVectorsForNote(&db, &rel, noteID, &updated_vecs));
+
+    // First vector should be the same (apple == apple)
+    try std.testing.expect(@reduce(.And, initial_vecs[0] == updated_vecs[0]));
+
+    // Last vector should be different (banana != orange)
+    try std.testing.expect(!@reduce(.And, initial_vecs[1] == updated_vecs[1]));
 }
 
-test "grow" {
-    var tmpD = tmpDir(.{ .iterate = true });
+test "embedText updates only changed sentences" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
+    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer rel.deinit();
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    defer db.deinit();
 
-    var inst = try DB.init(arena.allocator(), tmpD.dir, .{ .sz = 1 });
-    try inst.grow();
-    try expect(inst.capacity == 1);
-    try expect(inst.vectors.len == 1);
-    try expect(inst.index.len == 1);
-    _ = try inst.put(std.mem.zeroes(Vector));
-    try expect(inst.capacity == 2);
-    try expect(inst.vectors.len == 2);
-    try expect(inst.index.len == 2);
-    _ = try inst.put(std.mem.zeroes(Vector));
-    try expect(inst.capacity == 4);
-    try expect(inst.vectors.len == 4);
-    try expect(inst.index.len == 4);
-    _ = try inst.put(std.mem.zeroes(Vector));
-    try expect(inst.capacity == 4);
-    try expect(inst.vectors.len == 4);
-    try expect(inst.index.len == 4);
-    try expect(inst.index[0] == 1);
-    try expect(inst.index[1] == 1);
-    try expect(inst.index[2] == 1);
-    try expect(inst.index[3] == 0);
+    const noteID = try rel.create();
+
+    // Initial content: three one-word sentences
+    const initial_content = "apple. banana. cherry.";
+    try db.embedText(noteID, "", initial_content);
+
+    var initial_vecs: [3]Vector = undefined;
+    try expectEqual(3, try getVectorsForNote(&db, &rel, noteID, &initial_vecs));
+
+    // Updated content: same first and last words, different middle word
+    const updated_content = "apple. dragonfruit. cherry.";
+    try db.embedText(noteID, initial_content, updated_content);
+
+    var updated_vecs: [3]Vector = undefined;
+    try expectEqual(3, try getVectorsForNote(&db, &rel, noteID, &updated_vecs));
+
+    try std.testing.expect(@reduce(.And, initial_vecs[0] == updated_vecs[0]));
+    try std.testing.expect(!@reduce(.And, initial_vecs[1] == updated_vecs[1]));
+    try std.testing.expect(@reduce(.And, initial_vecs[2] == updated_vecs[2]));
 }
 
-// **************************************************************************************** Vectors
-pub fn dot(a: Vector, b: Vector) vec_type {
-    return @reduce(.Add, a * b);
-}
+test "embedText handle newlines" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer rel.deinit();
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    defer db.deinit();
 
-pub fn magnitude(a: Vector) vec_type {
-    return @sqrt(@reduce(.Add, a * a));
-}
+    const noteID = try rel.create();
 
-const zero_vec: Vector = @splat(0);
-fn is_zero(a: Vector) bool {
-    return @reduce(.And, a == zero_vec);
-}
+    const initial_content = "apple.\nbanana.\ngrape.";
+    try db.embedText(noteID, "", initial_content);
 
-fn cosine_similarity(a: Vector, b: Vector) vec_type {
-    if (is_zero(a) or is_zero(b)) return 0;
-    return dot(a, b) / (magnitude(a) * magnitude(b));
-}
+    var initial_vecs: [3]Vector = undefined;
+    try expectEqual(3, try getVectorsForNote(&db, &rel, noteID, &initial_vecs));
 
-fn similarity(a: Vector, b: Vector) vec_type {
-    return cosine_similarity(a, b);
-}
+    const updated_content = "apple.\norange.\ngrape.";
+    try db.embedText(noteID, initial_content, updated_content);
 
-test "cosine orthogonal" {
-    try expect(vec_type == f32);
-    try expect(vec_sz == 3);
+    var updated_vecs: [3]Vector = undefined;
+    try expectEqual(3, try getVectorsForNote(&db, &rel, noteID, &updated_vecs));
 
-    const a = Vector{ 1, 0, 0 };
-    const b = Vector{ 0, 1, 0 };
-    const c = Vector{ 0, 0, 1 };
-
-    try expect(cosine_similarity(a, b) == 0);
-    try expect(cosine_similarity(a, c) == 0);
-    try expect(cosine_similarity(b, c) == 0);
-}
-
-test "cosine equal" {
-    const a = Vector{ 1, 0, 0 };
-
-    try expect(cosine_similarity(a, a) == 1);
-}
-
-test "cosine reverse" {
-    const a = Vector{ 1, 0, 0 };
-    const b = Vector{ -1, 0, 0 };
-
-    try expect(cosine_similarity(a, b) == -1);
-}
-
-test "cosine 45-degree" {
-    const a = Vector{ 1, 0, 0 };
-    const b = Vector{ 1, 1, 0 };
-
-    const output = cosine_similarity(a, b);
-    try expect(output == 0.70710677);
-}
-
-test "cosine similar" {
-    const a = Vector{ 1, 2, 3 };
-    const b = Vector{ 1, 1, 1 };
-
-    const output = cosine_similarity(a, b);
-    try expect(output == 0.9258201);
-}
-
-test "cosine zero-vec" {
-    const a = Vector{ 0, 0, 0 };
-    const b = Vector{ 1, 0, 0 };
-
-    const output = cosine_similarity(a, b);
-    try expect(output == 0);
+    try std.testing.expect(@reduce(.And, initial_vecs[0] == updated_vecs[0]));
+    try std.testing.expect(!@reduce(.And, initial_vecs[1] == updated_vecs[1]));
+    try std.testing.expect(@reduce(.And, initial_vecs[2] == updated_vecs[2]));
 }
 
 const std = @import("std");
+const testing_allocator = std.testing.allocator;
+const expectEqual = std.testing.expectEqual;
 const assert = std.debug.assert;
-const FileWriter = std.fs.File.Writer;
-const FileReader = std.fs.File.Reader;
-const native_endian = std.builtin.cpu.arch.endian();
-
-const tracy = @import("tracy");
 
 const config = @import("config");
+const tracy = @import("tracy");
+
+const diff = @import("dmp.zig");
+const diffSplit = diff.diffSplit;
+const embed = @import("embed.zig");
+const model = @import("model.zig");
+const Note = model.Note;
+const VectorRow = model.VectorRow;
+const NoteID = model.NoteID;
 const types = @import("types.zig");
 const Vector = types.Vector;
 const VectorID = types.VectorID;
 const vec_sz = types.vec_sz;
-const vec_type = types.vec_type;
+const vec_storage = @import("vec_storage.zig");
