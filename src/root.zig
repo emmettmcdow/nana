@@ -141,9 +141,24 @@ pub const Runtime = struct {
         if (self.skipEmbed) return id;
 
         // 6. Embed the contents
-        const contents = try util.readAllZ2(self.basedir, destName, self.allocator);
-        defer self.allocator.free(contents);
-        try self.vectors.embedText(id, "", contents);
+        var bufsz: usize = 128;
+        var buf = try self.allocator.alloc(u8, bufsz);
+        defer self.allocator.free(buf);
+        while (true) {
+            const sz = self.readAll(id, buf[0..bufsz]) catch |e| switch (e) {
+                Error.BufferTooSmall => {
+                    bufsz = try std.math.mul(usize, bufsz, 2);
+                    buf = self.allocator.realloc(buf, bufsz) catch |alloc_e| {
+                        std.log.err("Failed to resize to {d}: {}\n", .{ bufsz, alloc_e });
+                        return OutOfMemory;
+                    };
+                    continue;
+                },
+                else => |leftover_err| return leftover_err,
+            };
+            try self.vectors.embedText(id, "", buf[0..sz]);
+            break;
+        }
 
         return id;
     }
@@ -1044,6 +1059,7 @@ const expectEqual = std.testing.expectEqual;
 const File = std.fs.File;
 const FileNotFound = std.fs.File.OpenError.FileNotFound;
 const json = std.json;
+const OutOfMemory = std.mem.Allocator.Error.OutOfMemory;
 const PATH_MAX = std.posix.PATH_MAX;
 const testing_allocator = std.testing.allocator;
 const expectError = std.testing.expectError;
