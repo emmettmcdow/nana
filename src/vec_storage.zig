@@ -231,6 +231,9 @@ pub const Storage = struct {
     }
 
     pub fn save(self: Self, path: []const u8) !void {
+        const zone = tracy.beginZone(@src(), .{ .name = "vec_storage.zig:save" });
+        defer zone.end();
+
         var f = self.dir.openFile(path, .{ .mode = .write_only }) catch |err| switch (err) {
             std.fs.File.OpenError.FileNotFound => try self.dir.createFile(path, .{}),
             else => return err,

@@ -417,6 +417,8 @@ pub const DB = struct {
         start_i: usize,
         end_i: usize,
     ) !void {
+        const zone = tracy.beginZone(@src(), .{ .name = "model.zig:appendVector" });
+        defer zone.end();
         assert(self.is_ready());
 
         // Get head of list

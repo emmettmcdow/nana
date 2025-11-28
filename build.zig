@@ -121,6 +121,12 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
     });
+    _ = Tracy.create(.{
+        .b = b,
+        .dest = model_unit_tests,
+        .target = x86_target,
+        .optimize = optimize,
+    });
     const run_model_unit_tests = b.addRunArtifact(model_unit_tests);
     const test_model = b.step("test-model", "run the tests for src/model.zig");
     test_model.dependOn(&run_model_unit_tests.step);
@@ -161,6 +167,12 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
         .filters = &.{"vec_storage"},
+    });
+    _ = Tracy.create(.{
+        .b = b,
+        .dest = vec_storage_unit_tests,
+        .target = x86_target,
+        .optimize = optimize,
     });
     vec_storage_unit_tests.root_module.addOptions("config", vec_storage_options);
     const run_vec_storage_unit_tests = b.addRunArtifact(vec_storage_unit_tests);

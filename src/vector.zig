@@ -29,6 +29,9 @@ pub const DB = struct {
     }
 
     pub fn search(self: *Self, query: []const u8, buf: []c_int) !usize {
+        const zone = tracy.beginZone(@src(), .{ .name = "vector.zig:search" });
+        defer zone.end();
+
         const query_vec_slice = (try self.embedder.embed(query)) orelse return 0;
         defer self.allocator.free(query_vec_slice);
         const query_vec: Vector = query_vec_slice[0..vec_sz].*;
@@ -58,7 +61,7 @@ pub const DB = struct {
         old_contents: []const u8,
         new_contents: []const u8,
     ) !void {
-        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:embedText" });
+        const zone = tracy.beginZone(@src(), .{ .name = "vector.zig:embedText" });
         defer zone.end();
 
         assert(new_contents.len < MAX_NOTE_LEN);
@@ -70,8 +73,11 @@ pub const DB = struct {
         const old_vecs = try self.relational.vecsForNote(arena.allocator(), note_id);
         var new_vecs = std.ArrayList(VectorRow).init(arena.allocator());
 
+        var embedded: usize = 0;
+        var recycled: usize = 0;
         for ((try diffSplit(old_contents, new_contents, arena.allocator())).items) |sentence| {
             if (sentence.new) {
+                embedded += 1;
                 const vec_id = if (try self.embedder.embed(sentence.contents)) |vec_slice| block: {
                     defer self.allocator.free(vec_slice);
                     const new_vec: Vector = vec_slice[0..vec_sz].*;
@@ -85,6 +91,7 @@ pub const DB = struct {
                     .end_i = sentence.off + sentence.contents.len,
                 });
             } else {
+                recycled += 1;
                 var found = false;
                 for (old_vecs) |old_v| {
                     const old_v_contents = old_contents[old_v.start_i..old_v.end_i];
@@ -107,10 +114,19 @@ pub const DB = struct {
         }
         try self.vecs.save(VECTOR_DB_PATH);
 
+        const ratio: usize = blk: {
+            const num: f64 = @floatFromInt(recycled);
+            const denom: f64 = @floatFromInt(recycled + embedded);
+            if (denom == 0) break :blk 100;
+            break :blk @intFromFloat((num / denom) * 100);
+        };
+        std.log.info("Recycled Ratio: {d}%, Embedded: {d}, Recycled: {d}\n", .{ ratio, embedded, recycled });
         return;
     }
 
     fn clearVecsForNote(self: *Self, id: NoteID) !void {
+        const zone = tracy.beginZone(@src(), .{ .name = "vector.zig:clearVecsForNote" });
+        defer zone.end();
         const vecs = try self.relational.vecsForNote(self.allocator, id);
         defer self.allocator.free(vecs);
         for (vecs) |v| try self.delete(v.vector_id);
