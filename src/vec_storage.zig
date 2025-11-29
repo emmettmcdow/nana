@@ -19,9 +19,7 @@ pub inline fn writeSlice(
 ) !void {
     const zone = tracy.beginZone(@src(), .{ .name = "vec_storage.zig:writeSlice" });
     defer zone.end();
-    for (slice) |byte| {
-        try w.writeByte(byte);
-    }
+    return w.writeAll(slice);
 }
 
 pub inline fn readSlice(
@@ -55,14 +53,18 @@ pub inline fn readVec(v: *Vector, r: *FileReader, endian: std.builtin.Endian) !v
 pub inline fn writeVec(w: *FileWriter, v: Vector, endian: std.builtin.Endian) !void {
     const zone = tracy.beginZone(@src(), .{ .name = "vec_storage.zig:writeVec" });
     defer zone.end();
-    const array: [vec_sz]vec_type = v;
-    for (array) |elem| {
-        try w.writeInt(
-            v1_meta.vec_type.stored_as(),
-            @bitCast(elem),
-            endian,
-        );
+
+    const native_endian = @import("builtin").cpu.arch.endian();
+    var buf: [vec_sz]v1_meta.vec_type.stored_as() = undefined;
+    for (0..vec_sz) |i| {
+        const as_int: u32 = @bitCast(v[i]);
+        buf[i] = if (endian != native_endian)
+            @byteSwap(as_int)
+        else
+            as_int;
     }
+
+    return w.writeAll(std.mem.asBytes(&buf));
 }
 
 // **************************************************************************************** Storage
