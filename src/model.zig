@@ -456,6 +456,42 @@ pub const DB = struct {
         });
     }
 
+    const CLEAR_ALL_VECS = "DELETE FROM vectors WHERE note_id = ?;";
+    const ADD_ALL_VECS = "";
+    pub fn setVectors(self: *Self, noteID: NoteID, vecs: []const VectorRow) !void {
+        const zone = tracy.beginZone(@src(), .{ .name = "model.zig:setVectors" });
+        defer zone.end();
+        try self.startTX();
+        errdefer self.dropTX();
+        {
+            var diags = sqlite.Diagnostics{};
+            var stmt = self.db.prepareWithDiags(CLEAR_ALL_VECS, .{ .diags = &diags }) catch |err| {
+                std.log.err("unable to prepare statement. Error: {}. Diag.: {s}", .{ err, diags });
+                return err;
+            };
+            defer stmt.deinit();
+            try stmt.exec(.{}, .{ .note_id = noteID });
+        }
+        for (vecs) |vec| {
+            var diags = sqlite.Diagnostics{};
+            var stmt = self.db.prepareWithDiags(APPEND_VECTOR, .{ .diags = &diags }) catch |err| {
+                std.log.err("unable to prepare statement. Error: {}. Diag.: {s}", .{ err, diags });
+                return err;
+            };
+            defer stmt.deinit();
+            try stmt.exec(.{}, .{
+                .vector_id = castVecID(vec.vector_id),
+                .note_id = noteID,
+                .next_vec_id = castVecID(vec.next_vec_id),
+                .last_vec_id = castVecID(vec.last_vec_id),
+                .start_i = vec.start_i,
+                .end_i = vec.end_i,
+            });
+        }
+
+        self.commitTX();
+    }
+
     pub fn vecToNote(self: *Self, vectorID: VectorID) !NoteID {
         assert(self.is_ready());
 
@@ -1057,6 +1093,49 @@ test "backup" {
     );
     try tmpD.dir.access(backup_name, .{});
     try expect(try equalData(&tmpD.dir, DB_FILENAME, backup_name));
+}
+
+test "set vectors" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var db = try DB.init(testing_allocator, .{ .mem = true, .basedir = tmpD.dir });
+    defer db.deinit();
+
+    const noteID = try db.create();
+    // This should get deleted
+    try db.appendVector(noteID, 1, 0, 2);
+
+    const want: [3]VectorRow = .{
+        .{
+            .note_id = noteID,
+            .vector_id = 2,
+            .next_vec_id = 3,
+            .last_vec_id = null,
+            .start_i = 0,
+            .end_i = 2,
+        },
+        .{
+            .note_id = noteID,
+            .vector_id = 3,
+            .next_vec_id = 4,
+            .last_vec_id = 2,
+            .start_i = 2,
+            .end_i = 4,
+        },
+        .{
+            .note_id = noteID,
+            .vector_id = 4,
+            .next_vec_id = null,
+            .last_vec_id = 3,
+            .start_i = 4,
+            .end_i = 6,
+        },
+    };
+    try db.setVectors(noteID, want[0..]);
+
+    const got = try db.vecsForNote(testing_allocator, noteID);
+    defer testing_allocator.free(got);
+    try expectEqualSlices(VectorRow, &want, got);
 }
 
 const std = @import("std");

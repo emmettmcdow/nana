@@ -102,7 +102,6 @@ pub const DB = struct {
                     if (!std.mem.eql(u8, sentence.contents, old_v_contents)) continue;
                     used_list[i] = true;
                     try new_vecs.append(VectorRow{
-                        // .vector_id = try self.vecs.copy(old_v.vector_id),
                         .vector_id = old_v.vector_id,
                         .note_id = note_id,
                         .start_i = sentence.off,
@@ -114,14 +113,20 @@ pub const DB = struct {
                 assert(found);
             }
         }
-        try self.clearVecsForNote(note_id);
+        var last_vec_id: ?VectorID = null;
+        for (0..new_vecs.items.len) |i| {
+            new_vecs.items[i].last_vec_id = last_vec_id;
+            last_vec_id = new_vecs.items[i].vector_id;
+            if (i + 1 < new_vecs.items.len) {
+                new_vecs.items[i].next_vec_id = new_vecs.items[i].vector_id;
+            }
+        }
+
+        try self.relational.setVectors(note_id, new_vecs.items);
         for (0..used_list.len) |i| {
             if (!used_list[i]) {
                 try self.vecs.rm(old_vecs[i].vector_id);
             }
-        }
-        for (new_vecs.items) |v| {
-            try self.relational.appendVector(v.note_id, v.vector_id, v.start_i, v.end_i);
         }
         try self.vecs.save(VECTOR_DB_PATH);
 
@@ -135,17 +140,8 @@ pub const DB = struct {
         return;
     }
 
-    fn clearVecsForNote(self: *Self, id: NoteID) !void {
-        const zone = tracy.beginZone(@src(), .{ .name = "vector.zig:clearVecsForNote" });
-        defer zone.end();
-        const vecs = try self.relational.vecsForNote(self.allocator, id);
-        defer self.allocator.free(vecs);
-        for (vecs) |v| try self.delete(v.vector_id);
-    }
-
     fn delete(self: *Self, id: VectorID) !void {
         try self.relational.deleteVec(id);
-        // try self.vecs.rm(id);
     }
 
     fn debugSearchHeader(query: []const u8) void {
