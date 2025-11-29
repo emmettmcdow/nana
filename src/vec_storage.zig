@@ -50,7 +50,7 @@ pub inline fn readVec(v: *Vector, r: *FileReader, endian: std.builtin.Endian) !v
     }
 }
 
-pub inline fn writeVec(v: Vector, w: *FileWriter, endian: std.builtin.Endian) !void {
+pub inline fn writeVec(w: *FileWriter, v: Vector, endian: std.builtin.Endian) !void {
     const array: [vec_sz]vec_type = v;
     for (array) |elem| {
         try w.writeInt(
@@ -161,7 +161,7 @@ pub const Storage = struct {
 
     pub fn put(self: *Self, v: Vector) !VectorID {
         const new_id = self.nextIndex();
-        assert(self.index[new_id] == 0);
+        assert(!self.isOccupied(new_id));
         self.meta.vec_n += 1;
 
         try self.grow();
@@ -173,14 +173,16 @@ pub const Storage = struct {
     fn putAt(self: *Self, v: Vector, id: usize) void {
         assert(id != self.nullVec());
         self.vectors[id] = v;
-        self.index[id] = 1;
+        self.setOccupied(id, true);
+        self.setDirty(id, true);
     }
 
     pub fn rm(self: *Self, id: VectorID) !void {
         if (id == self.nullVec()) return;
-        if (self.index[id] == 0) return Error.MultipleRemove;
+        if (!self.isOccupied(id)) return Error.MultipleRemove;
         assert(self.meta.vec_n > 0);
-        self.index[id] = 0;
+        self.setOccupied(id, false);
+        self.setDirty(id, false);
         self.meta.vec_n -= 1;
     }
 
@@ -230,7 +232,7 @@ pub const Storage = struct {
         std.debug.print("    ID({d}) similarity: {d}\n", .{ vecID, similar });
     }
 
-    pub fn save(self: Self, path: []const u8) !void {
+    pub fn save(self: *Self, path: []const u8) !void {
         const zone = tracy.beginZone(@src(), .{ .name = "vec_storage.zig:save" });
         defer zone.end();
 
@@ -239,11 +241,31 @@ pub const Storage = struct {
             else => return err,
         };
         defer f.close();
+
         var writer = f.writer();
         try writer.writeStructEndian(self.meta, self.meta.endianness());
-        try writeSlice(&writer, self.index);
+
+        var index_copy = try self.allocator.dupe(u8, self.index);
+        defer self.allocator.free(index_copy);
+        for (0..index_copy.len) |i| {
+            index_copy[i] &= ~DIRTY_MASK;
+        }
+        try writeSlice(&writer, index_copy);
+
+        const vec_width: i64 = @intCast(vec_sz * @sizeOf(vec_type));
         for (0..end_i(self.index)) |i| {
-            try writeVec(self.vectors[i], &writer, self.meta.endianness());
+            if (self.isDirty(i)) {
+                try writeVec(&writer, self.vectors[i], self.meta.endianness());
+                self.setDirty(i, false);
+            } else {
+                f.seekBy(vec_width) catch |e| switch (e) {
+                    std.fs.File.SeekError.Unseekable => {
+                        std.debug.print("Unseekable!\n", .{});
+                        return;
+                    },
+                    else => return e,
+                };
+            }
         }
 
         return;
@@ -279,7 +301,8 @@ pub const Storage = struct {
 
         for (0..end_i(self.index)) |i| {
             var v: Vector = undefined;
-            if (self.index[i] == 0) continue;
+            if (!self.isOccupied(i)) continue;
+            assert(!self.isDirty(i));
             try readVec(&v, &reader, endian);
             self.putAt(v, i);
         }
@@ -289,7 +312,7 @@ pub const Storage = struct {
     pub fn copy(self: *Self, id: VectorID) !VectorID {
         if (id == self.nullVec()) return self.nullVec();
         const new_id = self.nextIndex();
-        assert(self.index[new_id] == 0);
+        assert(!self.isOccupied(new_id));
         self.meta.vec_n += 1;
 
         try self.grow();
@@ -326,6 +349,32 @@ pub const Storage = struct {
         self.vectors = try self.allocator.realloc(self.vectors, sz);
         @memset(self.vectors[self.capacity..], std.mem.zeroes(Vector));
         self.capacity = sz;
+    }
+
+    const DIRTY_SHIFT: u8 = 1;
+    const DIRTY_MASK: u8 = 1 << DIRTY_SHIFT;
+    pub fn isDirty(self: Self, i: usize) bool {
+        return ((self.index[i] & DIRTY_MASK) >> DIRTY_SHIFT) == 1;
+    }
+    pub fn setDirty(self: *Self, i: usize, set: bool) void {
+        if (set) {
+            self.index[i] = self.index[i] | DIRTY_MASK;
+        } else {
+            self.index[i] = self.index[i] & ~DIRTY_MASK;
+        }
+    }
+
+    const OCCUPIED_SHIFT: u8 = 0;
+    const OCCUPIED_MASK: u8 = 1 << OCCUPIED_SHIFT;
+    pub fn isOccupied(self: Self, i: usize) bool {
+        return ((self.index[i] & OCCUPIED_MASK) >> OCCUPIED_SHIFT) == 1;
+    }
+    pub fn setOccupied(self: *Self, i: usize, set: bool) void {
+        if (set) {
+            self.index[i] = self.index[i] | OCCUPIED_MASK;
+        } else {
+            self.index[i] = self.index[i] & ~OCCUPIED_MASK;
+        }
     }
 };
 
@@ -419,16 +468,16 @@ test "re Storage index" {
     for (vecs, 0..) |vec, i| {
         ids[i] = try inst.put(vec);
     }
-    for (inst.index[0..4]) |val| {
-        try expect(val != 0);
+    for (0..4) |i| {
+        try expect(inst.isOccupied(i));
     }
     try inst.rm(ids[0]);
     try inst.rm(ids[2]);
 
-    try expect(inst.index[0] == 0);
-    try expect(inst.index[1] == 1);
-    try expect(inst.index[2] == 0);
-    try expect(inst.index[3] == 1);
+    try expect(!inst.isOccupied(0));
+    try expect(inst.isOccupied(1));
+    try expect(!inst.isOccupied(2));
+    try expect(inst.isOccupied(3));
     try expect(inst.meta.vec_n == vecs.len - 2);
     try inst.save("temp.db");
     inst.deinit();
@@ -437,10 +486,10 @@ test "re Storage index" {
     defer inst2.deinit();
     try inst2.load("temp.db");
     try expect(inst2.meta.vec_n == vecs.len - 2);
-    try expect(inst2.index[0] == 0);
-    try expect(inst2.index[1] == 1);
-    try expect(inst2.index[2] == 0);
-    try expect(inst2.index[3] == 1);
+    try expect(!inst2.isOccupied(0));
+    try expect(inst2.isOccupied(1));
+    try expect(!inst2.isOccupied(2));
+    try expect(inst2.isOccupied(3));
 }
 
 test "test put resize" {
@@ -500,10 +549,10 @@ test "grow" {
     try expect(inst.capacity == 4);
     try expect(inst.vectors.len == 4);
     try expect(inst.index.len == 4);
-    try expect(inst.index[0] == 1);
-    try expect(inst.index[1] == 1);
-    try expect(inst.index[2] == 1);
-    try expect(inst.index[3] == 0);
+    try expect(inst.isOccupied(0));
+    try expect(inst.isOccupied(1));
+    try expect(inst.isOccupied(2));
+    try expect(!inst.isOccupied(3));
 }
 
 test "copy" {
@@ -519,6 +568,66 @@ test "copy" {
     try expect(old_id != new_id);
     const vec2 = inst.get(new_id);
     try expect(@reduce(.And, vec1 == vec2));
+}
+
+test "dirty and occupied" {
+    var tmpD = tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    var inst = try Storage.init(arena.allocator(), tmpD.dir, .{});
+    defer inst.deinit();
+
+    const vec1 = Vector{ 1, 1, 1 };
+    const id1 = try inst.put(vec1);
+    try expect(inst.isOccupied(id1));
+    try expect(inst.isDirty(id1));
+    try inst.save("temp.db");
+    try expect(!inst.isDirty(id1));
+    try expect(inst.isOccupied(id1));
+
+    const vec2 = Vector{ 2, 2, 2 };
+    const id2 = try inst.put(vec2);
+    try expect(inst.isOccupied(id2));
+    try expect(inst.isDirty(id2));
+    try inst.rm(id2);
+    try expect(!inst.isDirty(id2));
+    try expect(!inst.isOccupied(id2));
+    try inst.save("temp.db");
+    try expect(!inst.isDirty(id2));
+    try expect(!inst.isOccupied(id2));
+}
+
+test "no write dirty" {
+    var tmpD = tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    // This change should be persisted
+    var inst = try Storage.init(arena.allocator(), tmpD.dir, .{});
+    defer inst.deinit();
+    const vec1_a = Vector{ 1, 1, 1 };
+    const id = try inst.put(vec1_a);
+    try inst.save("temp.db");
+
+    // This change should not be persisted
+    var inst2 = try Storage.init(arena.allocator(), tmpD.dir, .{});
+    defer inst2.deinit();
+    try inst2.load("temp.db");
+
+    const vec2 = Vector{ 2, 2, 2 };
+    inst2.putAt(vec2, id);
+    inst2.setDirty(id, false);
+    try inst2.save("temp.db");
+
+    // Verify that the vector present on disk is vec1_a, not vec2
+    var inst3 = try Storage.init(arena.allocator(), tmpD.dir, .{});
+    defer inst3.deinit();
+    try inst3.load("temp.db");
+    const vec1_b = inst3.get(id);
+    try expect(@reduce(.And, vec1_a == vec1_b));
 }
 
 // **************************************************************************************** Vectors

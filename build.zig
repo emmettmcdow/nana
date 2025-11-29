@@ -319,6 +319,7 @@ pub fn build(b: *std.Build) !void {
     const lint_cmd = b.step("lint", "Lint source code.");
     lint_cmd.dependOn(step: {
         var builder = zlinter.builder(b, .{});
+        builder.addPaths(.{ .exclude = &.{b.path("testing/")} });
         builder.addRule(.{ .builtin = .max_positional_args }, .{});
         builder.addRule(.{ .builtin = .no_unused }, .{});
         builder.addRule(.{ .builtin = .no_orelse_unreachable }, .{});
