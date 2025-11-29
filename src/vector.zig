@@ -73,6 +73,10 @@ pub const DB = struct {
         const old_vecs = try self.relational.vecsForNote(arena.allocator(), note_id);
         var new_vecs = std.ArrayList(VectorRow).init(arena.allocator());
 
+        var used_list = try self.allocator.alloc(bool, old_vecs.len);
+        defer self.allocator.free(used_list);
+        for (0..used_list.len) |i| used_list[i] = false;
+
         var embedded: usize = 0;
         var recycled: usize = 0;
         for ((try diffSplit(old_contents, new_contents, arena.allocator())).items) |sentence| {
@@ -93,11 +97,13 @@ pub const DB = struct {
             } else {
                 recycled += 1;
                 var found = false;
-                for (old_vecs) |old_v| {
+                for (old_vecs, 0..) |old_v, i| {
                     const old_v_contents = old_contents[old_v.start_i..old_v.end_i];
                     if (!std.mem.eql(u8, sentence.contents, old_v_contents)) continue;
+                    used_list[i] = true;
                     try new_vecs.append(VectorRow{
-                        .vector_id = try self.vecs.copy(old_v.vector_id),
+                        // .vector_id = try self.vecs.copy(old_v.vector_id),
+                        .vector_id = old_v.vector_id,
                         .note_id = note_id,
                         .start_i = sentence.off,
                         .end_i = sentence.off + sentence.contents.len,
@@ -109,6 +115,11 @@ pub const DB = struct {
             }
         }
         try self.clearVecsForNote(note_id);
+        for (0..used_list.len) |i| {
+            if (!used_list[i]) {
+                try self.vecs.rm(old_vecs[i].vector_id);
+            }
+        }
         for (new_vecs.items) |v| {
             try self.relational.appendVector(v.note_id, v.vector_id, v.start_i, v.end_i);
         }
@@ -134,7 +145,7 @@ pub const DB = struct {
 
     fn delete(self: *Self, id: VectorID) !void {
         try self.relational.deleteVec(id);
-        try self.vecs.rm(id);
+        // try self.vecs.rm(id);
     }
 
     fn debugSearchHeader(query: []const u8) void {
