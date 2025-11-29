@@ -17,6 +17,8 @@ pub inline fn writeSlice(
     w: *FileWriter,
     slice: []u8,
 ) !void {
+    const zone = tracy.beginZone(@src(), .{ .name = "vec_storage.zig:writeSlice" });
+    defer zone.end();
     for (slice) |byte| {
         try w.writeByte(byte);
     }
@@ -51,6 +53,8 @@ pub inline fn readVec(v: *Vector, r: *FileReader, endian: std.builtin.Endian) !v
 }
 
 pub inline fn writeVec(w: *FileWriter, v: Vector, endian: std.builtin.Endian) !void {
+    const zone = tracy.beginZone(@src(), .{ .name = "vec_storage.zig:writeVec" });
+    defer zone.end();
     const array: [vec_sz]vec_type = v;
     for (array) |elem| {
         try w.writeInt(
@@ -300,6 +304,7 @@ pub const Storage = struct {
         try readSlice(&reader, self.index);
 
         for (0..end_i(self.index)) |i| {
+            defer self.setDirty(i, false);
             var v: Vector = undefined;
             if (!self.isOccupied(i)) continue;
             assert(!self.isDirty(i));
@@ -628,6 +633,29 @@ test "no write dirty" {
     try inst3.load("temp.db");
     const vec1_b = inst3.get(id);
     try expect(@reduce(.And, vec1_a == vec1_b));
+}
+
+test "loaded not dirty" {
+    var tmpD = tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    var inst = try Storage.init(arena.allocator(), tmpD.dir, .{});
+    defer inst.deinit();
+    var ids: [10]VectorID = undefined;
+    for (0..10) |i| {
+        ids[i] = try inst.put(Vector{ 1, 1, 1 });
+        try expect(inst.isDirty(ids[i]));
+    }
+    try inst.save("temp.db");
+
+    var inst2 = try Storage.init(arena.allocator(), tmpD.dir, .{});
+    defer inst2.deinit();
+    try inst2.load("temp.db");
+    for (ids) |id| {
+        try expect(!inst2.isDirty(id));
+    }
 }
 
 // **************************************************************************************** Vectors
