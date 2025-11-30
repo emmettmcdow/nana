@@ -236,6 +236,27 @@ export fn nana_parse_markdown(content: [*:0]const u8) [*:0]const u8 {
     return @ptrCast(zig_out.ptr);
 }
 
+/// Gets the first 64 non-empty characters of a file.
+/// Note, make sure that the size of the buffer is at least 65.
+/// Input: noteID, outbuf
+/// Output: see description
+export fn nana_preview(noteID: c_int, outbuf: [*:0]u8) [*:0]const u8 {
+    mutex.lock();
+    defer mutex.unlock();
+    std.log.info("nana_preview {d}", .{noteID});
+
+    var input_slice = std.mem.sliceTo(outbuf, 0);
+    const output = rt.preview(@intCast(noteID), input_slice[0..nana.PREVIEW_BUF_LEN]) catch |e| {
+        std.log.err("Failed to get preview: {}\n", .{e});
+        input_slice[0] = 0;
+        return input_slice;
+    };
+
+    std.debug.print("Output: {s}\n", .{output});
+    input_slice[output.len] = 0;
+    return @ptrCast(output.ptr);
+}
+
 /// Resets metadata to a functioning state, returns list of notes to be re-imported.
 /// Returns a double-null-terminated string: "path1\0path2\0\0"
 export fn nana_doctor(basedir_path: [*:0]const u8) [*:0]const u8 {

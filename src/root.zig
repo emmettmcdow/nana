@@ -1,5 +1,9 @@
 pub const Error = error{ NotFound, BufferTooSmall, MalformedPath, NotNote, IncoherentDB };
 
+pub const PREVIEW_BUF_LEN = 64;
+pub const ELLIPSIS_LEN = 3;
+pub const PREVIEW_LEN = PREVIEW_BUF_LEN - ELLIPSIS_LEN;
+
 pub const Runtime = struct {
     basedir: std.fs.Dir,
     db: *model.DB,
@@ -278,6 +282,56 @@ pub const Runtime = struct {
         try json.stringify(try self.markdown.parse(content), .{}, self.lastParsedMD.?.writer());
         try self.lastParsedMD.?.writer().writeByte(0);
         return self.lastParsedMD.?.items;
+    }
+
+    pub fn preview(self: *Runtime, noteID: NoteID, buf: []u8) ![]const u8 {
+        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:preview" });
+        defer zone.end();
+
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const note = try self.get(noteID, arena.allocator());
+
+        const f = try self.basedir.openFile(note.path, .{});
+        defer f.close();
+
+        assert(buf.len == PREVIEW_BUF_LEN);
+
+        var reader = f.reader();
+
+        var pos: usize = 0;
+        var skipping = true;
+        while (pos < PREVIEW_LEN) {
+            const c = reader.readByte() catch |err| switch (err) {
+                error.EndOfStream => break,
+                else => return err,
+            };
+
+            switch (c) {
+                '\n' => {
+                    // Only get the first line
+                    break;
+                },
+                '#', ' ' => {
+                    // Skip leading # and spaces
+                    if (skipping) continue;
+                },
+                else => {
+                    skipping = false;
+                },
+            }
+
+            buf[pos] = c;
+            pos += 1;
+        }
+        if (pos == PREVIEW_LEN) {
+            buf[PREVIEW_BUF_LEN - 3] = '.';
+            buf[PREVIEW_BUF_LEN - 2] = '.';
+            buf[PREVIEW_BUF_LEN - 1] = '.';
+            return buf[0..PREVIEW_BUF_LEN];
+        }
+
+        return buf[0..pos];
     }
 
     fn migrate(self: *Runtime) !void {
@@ -1049,6 +1103,50 @@ test "doctor" {
     try expect(std.mem.eql(u8, names[1], "note2.md"));
     try expect(std.mem.eql(u8, names[2], "1234"));
     try expect(!std.mem.eql(u8, names[0], names[1]));
+}
+
+test "preview" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .basedir = tmpD.dir,
+    });
+    defer rt.deinit();
+
+    const id = try rt.create();
+    {
+        var buf: [PREVIEW_BUF_LEN]u8 = undefined;
+        try rt.writeAll(id, "Hello world!");
+        try expectEqlStrings("Hello world!", try rt.preview(id, buf[0..PREVIEW_BUF_LEN]));
+    }
+    {
+        // Only the first line
+        var buf: [PREVIEW_BUF_LEN]u8 = undefined;
+        try rt.writeAll(id, "Hello world!\n foo bar baz");
+        try expectEqlStrings("Hello world!", try rt.preview(id, buf[0..PREVIEW_BUF_LEN]));
+    }
+    {
+        // Strip markdown headers
+        var buf: [PREVIEW_BUF_LEN]u8 = undefined;
+        try rt.writeAll(id, "# Hello world!");
+        try expectEqlStrings("Hello world!", try rt.preview(id, buf[0..PREVIEW_BUF_LEN]));
+    }
+    {
+        var buf: [PREVIEW_BUF_LEN]u8 = undefined;
+        try rt.writeAll(id, "####### Hello world!");
+        try expectEqlStrings("Hello world!", try rt.preview(id, buf[0..PREVIEW_BUF_LEN]));
+    }
+    {
+        // Truncate past PREVIEW_BUF_LEN
+        var buf: [PREVIEW_BUF_LEN]u8 = undefined;
+        try rt.writeAll(id, "******************************************************************");
+        try expectEqlStrings(
+            "*************************************************************...",
+            try rt.preview(id, buf[0..PREVIEW_BUF_LEN]),
+        );
+    }
 }
 
 const std = @import("std");

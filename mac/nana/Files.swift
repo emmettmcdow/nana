@@ -124,7 +124,7 @@ struct ResultRow: View {
         let palette = Palette.forPreference(preference, colorScheme: colorScheme)
 
         HStack {
-            Text(self.note.content)
+            Text(note.preview)
                 .lineLimit(3)
                 .foregroundStyle(palette.foreground)
             Spacer()
@@ -158,13 +158,13 @@ let li3 = "Aenean at mauris est. Etiam felis velit, tempor a ipsum quis, ornare 
 
 #Preview("Notes") {
     @Previewable @State var notes: [Note] = [
-        Note(id: 0, content: li1, created: Date(), modified: Date()),
-        Note(id: 1, content: li2, created: Date(), modified: Date()),
-        Note(id: 2, content: li3, created: Date(), modified: Date()),
-        Note(id: 3, content: li3, created: Date(), modified: Date()),
-        Note(id: 4, content: li3, created: Date(), modified: Date()),
-        Note(id: 5, content: li3, created: Date(), modified: Date()),
-        Note(id: 6, content: li3, created: Date(), modified: Date()),
+        Note(id: 0, created: Date(), modified: Date(), content: li1, preview: "foo"),
+        Note(id: 1, created: Date(), modified: Date(), content: li2, preview: "foo"),
+        Note(id: 2, created: Date(), modified: Date(), content: li3, preview: "foo"),
+        Note(id: 3, created: Date(), modified: Date(), content: li3, preview: "foo"),
+        Note(id: 4, created: Date(), modified: Date(), content: li3, preview: "foo"),
+        Note(id: 5, created: Date(), modified: Date(), content: li3, preview: "foo"),
+        Note(id: 6, created: Date(), modified: Date(), content: li3, preview: "foo"),
     ]
     FileList(notes: $notes, onSelect: { (n: Note) in print(n.id) }, onChange: { (q: String) in print(q) }, closeList: { () in print("closed") })
 }

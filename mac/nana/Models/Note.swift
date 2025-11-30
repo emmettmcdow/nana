@@ -34,15 +34,22 @@ import Foundation
     private func nana_write_all_with_time(_: Int32, _: String) -> Int64 {
         return Int64(Date().timeIntervalSince1970) // Return current timestamp
     }
+
+    private func nana_preview(_: Int32, _: inout [Int8]) -> UnsafePointer<Int8>? {
+        return nil
+    }
+
+    let PREVIEW_BUF_SZ = 32
 #else
     import NanaKit
 #endif
 
 struct Note: Identifiable, Equatable {
     var id: Int32
-    var content: String
     var created: Date
     var modified: Date
+    var content: String
+    var preview: String
 }
 
 // 1MB
@@ -51,9 +58,10 @@ extension Note {
     init(id: Int32) {
         if id == -1 {
             self.id = id
-            content = ""
             created = Date.now
             modified = Date.now
+            content = ""
+            preview = ""
             return
         }
         let create = nana_create_time(id)
@@ -75,10 +83,17 @@ extension Note {
         }
         assert(sz >= 0, "Failed to read content")
 
+        var preview_buf = [Int8](repeating: 1, count: Int(PREVIEW_BUF_SZ) + 1)
+        preview_buf[Int(PREVIEW_BUF_SZ)] = 0
+        // I do not understand the Swift GC / Zig --release=safe interaction, but in release mode
+        // the result of preview does not work. Therefore we have to use the original buffer.
+        _ = nana_preview(id, &preview_buf)
+
         self.id = id
         created = Date(timeIntervalSince1970: TimeInterval(create))
         modified = Date(timeIntervalSince1970: TimeInterval(mod))
         content = String(cString: content_buf, encoding: .utf8) ?? ""
+        preview = String(cString: preview_buf) ?? ""
     }
 
     static func == (lhs: Note, rhs: Note) -> Bool {
