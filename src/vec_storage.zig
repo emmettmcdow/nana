@@ -183,7 +183,7 @@ pub const Storage = struct {
         self.setDirty(id, true);
     }
 
-    pub fn rm(self: *Self, id: VectorID) !void {
+    pub fn rm(self: *Self, id: VectorID) Error!void {
         if (id == self.nullVec()) return;
         if (!self.isOccupied(id)) return Error.MultipleRemove;
         assert(self.meta.vec_n > 0);
@@ -334,8 +334,8 @@ pub const Storage = struct {
 
     /// Locates the next empty index for a vector. Prioritizes filling holes in the arrays.
     fn nextIndex(self: *Self) usize {
-        for (self.index, 0..) |v, i| {
-            if (v == 0) {
+        for (0..self.index.len) |i| {
+            if (!self.isOccupied(i)) {
                 assert(self.nullVec() != i);
                 return i;
             }

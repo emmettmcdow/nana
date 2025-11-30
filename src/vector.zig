@@ -125,7 +125,10 @@ pub const DB = struct {
         try self.relational.setVectors(note_id, new_vecs.items);
         for (0..used_list.len) |i| {
             if (!used_list[i]) {
-                try self.vecs.rm(old_vecs[i].vector_id);
+                self.vecs.rm(old_vecs[i].vector_id) catch |e| switch (e) {
+                    MultipleRemove => continue,
+                    else => unreachable,
+                };
             }
         }
         try self.vecs.save(VECTOR_DB_PATH);
@@ -391,6 +394,25 @@ test "embedText handle newlines" {
     try std.testing.expect(@reduce(.And, initial_vecs[2] == updated_vecs[2]));
 }
 
+test "handle multiple remove gracefully" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer rel.deinit();
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    defer db.deinit();
+
+    const noteID = try rel.create();
+
+    const initial_content = "foo.\nfoo.\nfoo.";
+    const updated_content = "bar.\nbar.\nbar.";
+    try db.embedText(noteID, "", initial_content);
+    try db.embedText(noteID, initial_content, initial_content);
+    try db.embedText(noteID, initial_content, updated_content);
+}
+
 const std = @import("std");
 const testing_allocator = std.testing.allocator;
 const expectEqual = std.testing.expectEqual;
@@ -405,6 +427,7 @@ const embed = @import("embed.zig");
 const model = @import("model.zig");
 const Note = model.Note;
 const VectorRow = model.VectorRow;
+const MultipleRemove = vec_storage.Error.MultipleRemove;
 const NoteID = model.NoteID;
 const types = @import("types.zig");
 const Vector = types.Vector;
