@@ -144,18 +144,30 @@ export fn nana_mod_time(noteID: c_int) c_long {
     return @intCast(@divTrunc(note.modified, 1_000_000));
 }
 
-export fn nana_search(query: [*:0]const u8, outbuf: [*c]c_int, sz: c_uint, ignore: c_int) c_int {
+/// Semantic vector search all notes.
+export fn nana_search(query: [*:0]const u8, outbuf: [*c]c_int, sz: c_uint) c_int {
     mutex.lock();
     defer mutex.unlock();
     std.log.info("nana_search {s}", .{std.mem.sliceTo(query, 0)});
     const convQuery: []const u8 = std.mem.sliceTo(query, 0);
 
-    const igParam: ?u64 = if (ignore == -1) null else @intCast(ignore);
-    const written = rt.search(convQuery, outbuf[0..sz], igParam) catch |err| {
+    const written = rt.search(convQuery, outbuf[0..sz]) catch |err| {
         std.log.err("Failed to search with query '{s}': {}\n", .{ query, err });
         return @intFromEnum(CError.GenericFail);
     };
 
+    return @intCast(written);
+}
+
+/// List in chronological order the n most recently modified notes.
+export fn nana_index(outbuf: [*c]c_int, sz: c_uint, ignore: c_int) c_int {
+    std.log.info("nana_index (ignore {d})", .{ignore});
+
+    const igParam: ?u64 = if (ignore == -1) null else @intCast(ignore);
+    const written = rt.index(outbuf[0..sz], igParam) catch |err| {
+        std.log.err("Failed to index: {}\n", .{err});
+        return @intFromEnum(CError.GenericFail);
+    };
     return @intCast(written);
 }
 
@@ -252,7 +264,6 @@ export fn nana_preview(noteID: c_int, outbuf: [*:0]u8) [*:0]const u8 {
         return input_slice;
     };
 
-    std.debug.print("Output: {s}\n", .{output});
     input_slice[output.len] = 0;
     return @ptrCast(output.ptr);
 }

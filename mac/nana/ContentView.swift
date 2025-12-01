@@ -14,7 +14,7 @@ import SwiftUI
         return Int32.random(in: 1 ... 1000)
     }
 
-    private func nana_search(_: String, _ ids: inout [Int32], _ maxCount: Int, _: Int32) -> Int32 {
+    private func nana_search(_: String, _ ids: inout [Int32], _ maxCount: Int) -> Int32 {
         // Return some sample note IDs for preview
         let sampleIds: [Int32] = [1, 2, 3, 4, 5]
         let returnCount = min(sampleIds.count, maxCount)
@@ -23,6 +23,17 @@ import SwiftUI
         }
         return Int32(returnCount)
     }
+
+    private func nana_index(_ ids: inout [Int32], _ maxCount: Int, _: Int32) -> Int32 {
+        // Return some sample note IDs for preview
+        let sampleIds: [Int32] = [1, 2, 3, 4, 5]
+        let returnCount = min(sampleIds.count, maxCount)
+        for i in 0 ..< returnCount {
+            ids[i] = sampleIds[i]
+        }
+        return Int32(returnCount)
+    }
+
 #else
     import NanaKit
 #endif
@@ -69,7 +80,11 @@ class NotesManager: ObservableObject {
     func search(query: String) {
         queriedNotes = []
         var ids = [Int32](repeating: 0, count: MAX_ITEMS)
-        let n = min(Int(nana_search(query, &ids, numericCast(ids.count), currentNote.id)), MAX_ITEMS)
+        let n = if query.isEmpty {
+            min(Int(nana_index(&ids, numericCast(ids.count), currentNote.id)), MAX_ITEMS)
+        } else {
+            min(Int(nana_search(query, &ids, numericCast(ids.count))), MAX_ITEMS)
+        }
         if n < 0 {
             print("Some error occurred while searching: ", n)
             return

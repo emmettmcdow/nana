@@ -258,18 +258,19 @@ pub const Runtime = struct {
 
     /// Search does an embedding vector distance comparison to find the most semantically similar
     /// notes. Takes a `query`, writes to `buf`, and returns the number of results found.
-    /// Optionally it can ignore a single `NoteID`. This is so that the current note does not show
-    /// up in the search results.
-    pub fn search(self: *Runtime, query: []const u8, buf: []c_int, ignore: ?NoteID) !usize {
+    pub fn search(self: *Runtime, query: []const u8, buf: []c_int) !usize {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:search" });
         defer zone.end();
 
-        if (query.len == 0) {
-            std.log.info("Searching with no query\n", .{});
-            return self.db.searchNoQuery(buf, ignore);
-        }
-
         return self.vectors.search(query, buf);
+    }
+
+    /// Index lists notes in reverse chronological order by modify time. Can optionally ignore a
+    /// single note. Writes to `buf` and returns the number of found results.
+    pub fn index(self: *Runtime, buf: []c_int, ignore: ?NoteID) !usize {
+        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:search" });
+        defer zone.end();
+        return self.db.searchNoQuery(buf, ignore);
     }
 
     /// Takes the contents of a note and returns a JSON spec of how it should be formatted.
@@ -569,7 +570,7 @@ test "no modify on read" {
     try expect(n2.created == n2.modified);
 }
 
-test "no modify on search" {
+test "no modify on index" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
@@ -586,9 +587,9 @@ test "no modify on search" {
     try expect(n1.created == n1.modified);
 
     var buf2: [20]c_int = undefined;
-    _ = try rt.search("", &buf2, 420);
+    _ = try rt.index(&buf2, 420);
     const n2 = try rt.get(noteID, arena.allocator());
-    try expect(n2.created == n2.modified);
+    try expectEqual(n2.created, n2.modified);
 }
 
 test "r/w-all note" {
@@ -679,7 +680,7 @@ test "delete only if exists" {
     try rt.delete(noteID);
 }
 
-test "search no query" {
+test "index no query" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
@@ -699,12 +700,11 @@ test "search no query" {
     }
 
     var buffer: [10]c_int = undefined;
-    const written = try rt.search("", &buffer, null);
-    try expect(written == 9);
+    try expectEqual(9, try rt.index(&buffer, null));
 
     i = 0;
     while (i < 9) : (i += 1) {
-        try expect(buffer[8 - i] == @as(c_int, @intCast(i + 1)));
+        try expectEqual(@as(c_int, @intCast(i + 1)), buffer[8 - i]);
     }
 }
 
@@ -726,18 +726,17 @@ test "search no query orderby modified" {
     _ = try rt.writeAll(noteID2, "norecycle");
 
     var buffer: [10]c_int = undefined;
-    const written = try rt.search("", &buffer, null);
-    try expect(written == 2);
-    try expect(buffer[0] == @as(c_int, @intCast(noteID2)));
-    try expect(buffer[1] == @as(c_int, @intCast(noteID1)));
+    try expectEqual(2, try rt.index(&buffer, null));
+    try expectEqual(@as(c_int, @intCast(noteID2)), buffer[0]);
+    try expectEqual(@as(c_int, @intCast(noteID1)), buffer[1]);
 
     try rt.update(noteID1);
 
     var buffer2: [10]c_int = undefined;
-    const written2 = try rt.search("", &buffer2, null);
-    try expect(written2 == 2);
-    try expect(buffer2[0] == @as(c_int, @intCast(noteID1)));
-    try expect(buffer2[1] == @as(c_int, @intCast(noteID2)));
+    const written2 = try rt.index(&buffer2, null);
+    try expectEqual(2, written2);
+    try expectEqual(@as(c_int, @intCast(noteID1)), buffer2[0]);
+    try expectEqual(@as(c_int, @intCast(noteID2)), buffer2[1]);
 }
 
 test "exclude param 'empty search'" {
@@ -758,9 +757,9 @@ test "exclude param 'empty search'" {
     _ = try rt.writeAll(noteID2, "norecycle");
 
     var buffer: [10]c_int = undefined;
-    const written = try rt.search("", &buffer, noteID1);
-    try expect(written == 1);
-    try expect(buffer[0] == @as(c_int, @intCast(noteID2)));
+    const written = try rt.index(&buffer, noteID1);
+    try expectEqual(1, written);
+    try expectEqual(@as(c_int, @intCast(noteID2)), buffer[0]);
 }
 
 test "exclude param 'empty search' - 2" {
@@ -781,9 +780,9 @@ test "exclude param 'empty search' - 2" {
     _ = try rt.writeAll(noteID2, "norecycle");
 
     var buffer: [10]c_int = undefined;
-    const written = try rt.search("", &buffer, noteID2);
-    try expect(written == 1);
-    try expect(buffer[0] == @as(c_int, @intCast(noteID1)));
+    const written = try rt.index(&buffer, noteID2);
+    try expectEqual(1, written);
+    try expectEqual(@as(c_int, @intCast(noteID1)), buffer[0]);
 }
 
 test "exclude from 'empty search' unmodifieds" {
@@ -803,9 +802,9 @@ test "exclude from 'empty search' unmodifieds" {
     _ = try rt.create();
 
     var buffer: [10]c_int = undefined;
-    const written = try rt.search("", &buffer, null);
-    try expect(written == 1);
-    try expect(buffer[0] == @as(c_int, @intCast(noteID1)));
+    const written = try rt.index(&buffer, null);
+    try expectEqual(1, written);
+    try expectEqual(@as(c_int, @intCast(noteID1)), buffer[0]);
 }
 
 test "import" {
@@ -888,7 +887,7 @@ test "import run embedding" {
     const id = try rt.import(path, .{ .copy = true });
 
     var buf: [1]c_int = undefined;
-    const results = try rt.search("hello", &buf, null);
+    const results = try rt.search("hello", &buf);
 
     try expect(results == 1);
     try expect(buf[0] == id);
