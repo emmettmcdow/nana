@@ -384,7 +384,7 @@
 				CODE_SIGN_ENTITLEMENTS = nana/nana.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_ASSET_PATHS = "\"nana/Preview Content\"";
 				DEVELOPMENT_TEAM = GMAF223AB9;
@@ -609,7 +609,7 @@
 				CODE_SIGN_ENTITLEMENTS = nana/nana.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_ASSET_PATHS = "\"nana/Preview Content\"";
 				DEVELOPMENT_TEAM = GMAF223AB9;
@@ -665,7 +665,7 @@
 				CODE_SIGN_ENTITLEMENTS = nana/nanaRelease.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_ASSET_PATHS = "\"nana/Preview Content\"";
 				DEVELOPMENT_TEAM = GMAF223AB9;
 				ENABLE_HARDENED_RUNTIME = NO;
