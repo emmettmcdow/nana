@@ -2,6 +2,28 @@ const VECTOR_DB_PATH = "vecs.db";
 
 const MAX_NOTE_LEN: usize = std.math.maxInt(u32);
 
+pub const CSearchResult = extern struct {
+    id: c_int,
+    start_i: c_uint,
+    end_i: c_uint,
+};
+
+pub const SearchResult = struct {
+    id: NoteID,
+    start_i: usize,
+    end_i: usize,
+
+    const Self = @This();
+
+    pub fn toC(self: Self) CSearchResult {
+        return .{
+            .id = @as(c_int, @intCast(self.id)),
+            .start_i = @as(c_uint, @intCast(self.start_i)),
+            .end_i = @as(c_uint, @intCast(self.end_i)),
+        };
+    }
+};
+
 pub const DB = struct {
     const Self = @This();
 
@@ -28,7 +50,7 @@ pub const DB = struct {
         self.embedder.deinit();
     }
 
-    pub fn search(self: *Self, query: []const u8, buf: []c_int) !usize {
+    pub fn search(self: *Self, query: []const u8, buf: []SearchResult) !usize {
         const zone = tracy.beginZone(@src(), .{ .name = "vector.zig:search" });
         defer zone.end();
 
@@ -44,11 +66,15 @@ pub const DB = struct {
 
         var unique_found_n: usize = 0;
         outer: for (0..@min(found_n, buf.len)) |i| {
-            const noteID = @as(c_int, @intCast(try self.relational.vecToNote(vec_ids[i])));
+            const vec = try self.relational.getVec(vec_ids[i]);
             for (0..unique_found_n) |j| {
-                if (buf[j] == noteID) continue :outer;
+                if (buf[j].id == vec.note_id) continue :outer;
             }
-            buf[unique_found_n] = noteID;
+            buf[unique_found_n] = SearchResult{
+                .id = vec.note_id,
+                .start_i = vec.start_i,
+                .end_i = vec.end_i,
+            };
             unique_found_n += 1;
         }
         std.log.info("Found {d} results searching with {s}\n", .{ unique_found_n, query });
@@ -187,11 +213,12 @@ test "embedText hello" {
     const text = "hello";
     try db.embedText(id, "", text);
 
-    var buf: [1]c_int = undefined;
-    const results = try db.search(text, &buf);
+    var buf: [1]SearchResult = undefined;
+    try expectEqual(1, try db.search(text, &buf));
 
-    try expectEqual(1, results);
-    try expectEqual(@as(c_int, @intCast(id)), buf[0]);
+    try expectEqualSlices(SearchResult, &[_]SearchResult{
+        .{ .id = id, .start_i = 0, .end_i = 5 },
+    }, buf[0..1]);
 }
 
 test "embedText skip empties" {
@@ -224,7 +251,7 @@ test "embedText clear previous" {
 
     try db.embedText(id, "", "hello");
 
-    var buf: [1]c_int = undefined;
+    var buf: [1]SearchResult = undefined;
     try expectEqual(1, try db.search("hello", &buf));
 
     try db.embedText(id, "hello", "flatiron");
@@ -244,10 +271,11 @@ test "search remove duplicates" {
     const noteID1 = try rel.create();
     _ = try db.embedText(noteID1, "", "pizza. pizza. pizza.");
 
-    var buffer: [10]c_int = undefined;
-    const n = try db.search("pizza", &buffer);
-    try expectEqual(1, n);
-    try expectEqual(@as(c_int, @intCast(noteID1)), buffer[0]);
+    var buffer: [10]SearchResult = undefined;
+    try expectEqual(1, try db.search("pizza", &buffer));
+    try expectEqualSlices(SearchResult, &[_]SearchResult{
+        .{ .id = noteID1, .start_i = 0, .end_i = 5 },
+    }, buffer[0..1]);
 }
 
 fn getVectorsForNote(db: *DB, rel: *model.DB, noteID: NoteID, vecs: []Vector) !usize {
@@ -416,6 +444,7 @@ test "handle multiple remove gracefully" {
 const std = @import("std");
 const testing_allocator = std.testing.allocator;
 const expectEqual = std.testing.expectEqual;
+const expectEqualSlices = std.testing.expectEqualSlices;
 const assert = std.debug.assert;
 
 const config = @import("config");

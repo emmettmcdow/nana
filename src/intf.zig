@@ -145,16 +145,27 @@ export fn nana_mod_time(noteID: c_int) c_long {
 }
 
 /// Semantic vector search all notes.
-export fn nana_search(query: [*:0]const u8, outbuf: [*c]c_int, sz: c_uint) c_int {
+export fn nana_search(query: [*:0]const u8, outbuf: [*c]CSearchResult, sz: c_uint) c_int {
     mutex.lock();
     defer mutex.unlock();
-    std.log.info("nana_search {s}", .{std.mem.sliceTo(query, 0)});
     const convQuery: []const u8 = std.mem.sliceTo(query, 0);
+    std.log.info("nana_search {s}", .{convQuery});
 
-    const written = rt.search(convQuery, outbuf[0..sz]) catch |err| {
+    var arena = std.heap.ArenaAllocator.init(gpa.allocator());
+    defer arena.deinit();
+    var tmp_buf = arena.allocator().alloc(SearchResult, sz) catch |err| {
+        std.log.err("Failed alloc in search: {}\n", .{err});
+        return @intFromEnum(CError.GenericFail);
+    };
+
+    const written = rt.search(convQuery, tmp_buf[0..sz]) catch |err| {
         std.log.err("Failed to search with query '{s}': {}\n", .{ query, err });
         return @intFromEnum(CError.GenericFail);
     };
+
+    for (tmp_buf[0..written], 0..) |sr, i| {
+        outbuf[i] = sr.toC();
+    }
 
     return @intCast(written);
 }
@@ -317,3 +328,5 @@ const PATH_MAX = std.posix.PATH_MAX;
 
 const nana = @import("root.zig");
 const doctor = nana.doctor;
+const SearchResult = nana.SearchResult;
+const CSearchResult = nana.CSearchResult;

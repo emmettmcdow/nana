@@ -40,7 +40,6 @@ const VECTOR_SCHEMA =
     \\);
 ;
 const SHOW_VECTOR = "SELECT * from vectors;";
-const GET_NOTEID_FROM_VECID = "SELECT note_id FROM vectors WHERE vector_id = ?;";
 const DELETE_VEC = "DELETE FROM vectors WHERE vector_id = ?;";
 const GET_VECS_FROM_NOTEID =
     \\SELECT vector_id, note_id, next_vec_id, last_vec_id, start_i, end_i
@@ -494,24 +493,29 @@ pub const DB = struct {
 
     pub fn vecToNote(self: *Self, vectorID: VectorID) !NoteID {
         assert(self.is_ready());
+        const vec = self.getVec(vectorID) catch return Error.NotFound;
+        return vec.note_id;
+    }
+
+    const GET_VEC =
+        \\SELECT vector_id, note_id, next_vec_id, last_vec_id, start_i, end_i
+        \\FROM vectors WHERE vector_id = ? LIMIT 1;
+    ;
+    pub fn getVec(self: *Self, vectorID: VectorID) !VectorRow {
+        assert(self.is_ready());
 
         var diags = sqlite.Diagnostics{};
-        const query = GET_NOTEID_FROM_VECID;
-        var stmt = self.db.prepareWithDiags(query, .{ .diags = &diags }) catch |err| {
+        var stmt = self.db.prepareWithDiags(GET_VEC, .{ .diags = &diags }) catch |err| {
             std.log.err("unable to prepare statement. Error: {}. Diag.: {s}", .{ err, diags });
             return err;
         };
-
         defer stmt.deinit();
 
-        const row = try stmt.one(NoteID, .{}, .{
-            .id = castVecID(vectorID),
+        const row = try stmt.one(VectorRowDB, .{}, .{
+            .vector_id = castVecID(vectorID),
         });
 
-        if (row) |id| {
-            return id;
-        }
-        return Error.NotFound;
+        return if (row) |vec| return vec.toVectorRow() else Error.NotFound;
     }
 
     pub fn vecsForNote(self: *Self, allocator: std.mem.Allocator, noteID: NoteID) ![]VectorRow {
@@ -876,12 +880,13 @@ test "appendVector + vec2note simple" {
     defer db.deinit();
 
     const noteID = try db.create();
+    const largest_vecid = std.math.maxInt(VectorID) - 1;
     try db.appendVector(noteID, 420, 0, 0);
-    try db.appendVector(noteID, 69, 0, 0);
+    try db.appendVector(noteID, largest_vecid, 0, 0);
     try db.appendVector(noteID, 42, 0, 0);
 
     try expect(noteID == try db.vecToNote(420));
-    try expect(noteID == try db.vecToNote(69));
+    try expect(noteID == try db.vecToNote(largest_vecid));
     try expect(noteID == try db.vecToNote(42));
     // not found case
     try expect(9000 == db.vecToNote(1234) catch 9000);

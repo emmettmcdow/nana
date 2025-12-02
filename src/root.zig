@@ -258,7 +258,7 @@ pub const Runtime = struct {
 
     /// Search does an embedding vector distance comparison to find the most semantically similar
     /// notes. Takes a `query`, writes to `buf`, and returns the number of results found.
-    pub fn search(self: *Runtime, query: []const u8, buf: []c_int) !usize {
+    pub fn search(self: *Runtime, query: []const u8, buf: []SearchResult) !usize {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:search" });
         defer zone.end();
 
@@ -886,11 +886,11 @@ test "import run embedding" {
 
     const id = try rt.import(path, .{ .copy = true });
 
-    var buf: [1]c_int = undefined;
-    const results = try rt.search("hello", &buf);
-
-    try expect(results == 1);
-    try expect(buf[0] == id);
+    var buf: [1]SearchResult = undefined;
+    try expectEqual(1, try rt.search("hello", &buf));
+    try expectEqualSlices(SearchResult, &[_]SearchResult{
+        .{ .id = id, .start_i = 0, .end_i = 5 },
+    }, buf[0..1]);
 }
 
 test "import skip unrecognized file extensions" {
@@ -1153,6 +1153,7 @@ const assert = std.debug.assert;
 const expect = std.testing.expect;
 const expectEqlStrings = std.testing.expectEqualStrings;
 const expectEqual = std.testing.expectEqual;
+const expectEqualSlices = std.testing.expectEqualSlices;
 const File = std.fs.File;
 const FileNotFound = std.fs.File.OpenError.FileNotFound;
 const json = std.json;
@@ -1163,10 +1164,12 @@ const expectError = std.testing.expectError;
 
 const tracy = @import("tracy");
 
+pub const CSearchResult = vector.CSearchResult;
 const markdown = @import("markdown.zig");
 const model = @import("model.zig");
 const Note = model.Note;
 const NoteID = model.NoteID;
+pub const SearchResult = vector.SearchResult;
 const types = @import("types.zig");
 const vec_sz = types.vec_sz;
 const vec_type = types.vec_type;
