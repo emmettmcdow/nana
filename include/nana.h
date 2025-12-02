@@ -17,7 +17,7 @@ typedef struct {
     unsigned int end_i;
 } CSearchResult;
 
-#define PREVIEW_BUF_SZ 64
+#define TITLE_BUF_SZ 64
 
 int nana_init(const char *);
 int nana_deinit(void);
@@ -30,7 +30,7 @@ int nana_index(int *, unsigned int, int);
 int nana_write_all(int, const char *);
 long nana_write_all_with_time(int, const char *);
 int nana_read_all(int, char *, unsigned int);
-const char * nana_preview(int, char *);
+const char * nana_title(int, char *);
 const char * nana_doctor(const char *);
 void nana_doctor_finish(void);
 void nana_doctor_finish2(void);

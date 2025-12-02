@@ -35,11 +35,11 @@ import Foundation
         return Int64(Date().timeIntervalSince1970) // Return current timestamp
     }
 
-    private func nana_preview(_: Int32, _: inout [Int8]) -> UnsafePointer<Int8>? {
+    private func nana_title(_: Int32, _: inout [Int8]) -> UnsafePointer<Int8>? {
         return nil
     }
 
-    let PREVIEW_BUF_SZ = 32
+    let TITLE_BUF_SZ = 32
 #else
     import NanaKit
 #endif
@@ -49,7 +49,7 @@ struct Note: Identifiable, Equatable {
     var created: Date
     var modified: Date
     var content: String
-    var preview: String
+    var title: String
 }
 
 // 1MB
@@ -61,7 +61,7 @@ extension Note {
             created = Date.now
             modified = Date.now
             content = ""
-            preview = ""
+            title = ""
             return
         }
         let create = nana_create_time(id)
@@ -83,17 +83,17 @@ extension Note {
         }
         assert(sz >= 0, "Failed to read content")
 
-        var preview_buf = [Int8](repeating: 1, count: Int(PREVIEW_BUF_SZ) + 1)
-        preview_buf[Int(PREVIEW_BUF_SZ)] = 0
+        var title_buf = [Int8](repeating: 1, count: Int(TITLE_BUF_SZ) + 1)
+        title_buf[Int(TITLE_BUF_SZ)] = 0
         // I do not understand the Swift GC / Zig --release=safe interaction, but in release mode
-        // the result of preview does not work. Therefore we have to use the original buffer.
-        _ = nana_preview(id, &preview_buf)
+        // the result of title does not work. Therefore we have to use the original buffer.
+        _ = nana_title(id, &title_buf)
 
         self.id = id
         created = Date(timeIntervalSince1970: TimeInterval(create))
         modified = Date(timeIntervalSince1970: TimeInterval(mod))
         content = String(cString: content_buf, encoding: .utf8) ?? ""
-        preview = String(cString: preview_buf) ?? ""
+        title = String(cString: title_buf) ?? ""
     }
 
     static func == (lhs: Note, rhs: Note) -> Bool {

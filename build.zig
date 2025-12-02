@@ -326,6 +326,7 @@ pub fn build(b: *std.Build) !void {
         builder.addRule(.{ .builtin = .no_hidden_allocations }, .{});
         builder.addRule(.{ .builtin = .no_swallow_error }, .{});
         builder.addRule(.{ .builtin = .require_errdefer_dealloc }, .{});
+        builder.addRule(.{ .builtin = .no_todo }, .{});
         // builder.addRule(.{ .builtin = .declaration_naming }, .{});
         // builder.addRule(.{ .builtin = .field_ordering }, .{});
         // builder.addRule(.{ .builtin = .field_naming }, .{});
@@ -339,7 +340,6 @@ pub fn build(b: *std.Build) !void {
         // builder.addRule(.{ .builtin = .no_literal_args }, .{});
         // builder.addRule(.{ .builtin = .no_literal_only_bool_expression }, .{});
         // builder.addRule(.{ .builtin = .no_panic }, .{});
-        // builder.addRule(.{ .builtin = .no_todo }, .{});
         // builder.addRule(.{ .builtin = .no_undefined }, .{});
         // builder.addRule(.{ .builtin = .require_braces }, .{});
         // builder.addRule(.{ .builtin = .require_doc_comment }, .{});

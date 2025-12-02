@@ -1,8 +1,8 @@
 pub const Error = error{ NotFound, BufferTooSmall, MalformedPath, NotNote, IncoherentDB };
 
-pub const PREVIEW_BUF_LEN = 64;
+pub const TITLE_BUF_LEN = 64;
 pub const ELLIPSIS_LEN = 3;
-pub const PREVIEW_LEN = PREVIEW_BUF_LEN - ELLIPSIS_LEN;
+pub const TITLE_LEN = TITLE_BUF_LEN - ELLIPSIS_LEN;
 
 pub const Runtime = struct {
     basedir: std.fs.Dir,
@@ -285,8 +285,8 @@ pub const Runtime = struct {
         return self.lastParsedMD.?.items;
     }
 
-    pub fn preview(self: *Runtime, noteID: NoteID, buf: []u8) ![]const u8 {
-        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:preview" });
+    pub fn title(self: *Runtime, noteID: NoteID, buf: []u8) ![]const u8 {
+        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:title" });
         defer zone.end();
 
         var arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -296,13 +296,13 @@ pub const Runtime = struct {
         const f = try self.basedir.openFile(note.path, .{});
         defer f.close();
 
-        assert(buf.len == PREVIEW_BUF_LEN);
+        assert(buf.len == TITLE_BUF_LEN);
 
         var reader = f.reader();
 
         var pos: usize = 0;
         var skipping = true;
-        while (pos < PREVIEW_LEN) {
+        while (pos < TITLE_LEN) {
             const c = reader.readByte() catch |err| switch (err) {
                 error.EndOfStream => break,
                 else => return err,
@@ -325,11 +325,11 @@ pub const Runtime = struct {
             buf[pos] = c;
             pos += 1;
         }
-        if (pos == PREVIEW_LEN) {
-            buf[PREVIEW_BUF_LEN - 3] = '.';
-            buf[PREVIEW_BUF_LEN - 2] = '.';
-            buf[PREVIEW_BUF_LEN - 1] = '.';
-            return buf[0..PREVIEW_BUF_LEN];
+        if (pos == TITLE_LEN) {
+            buf[TITLE_BUF_LEN - 3] = '.';
+            buf[TITLE_BUF_LEN - 2] = '.';
+            buf[TITLE_BUF_LEN - 1] = '.';
+            return buf[0..TITLE_BUF_LEN];
         }
 
         return buf[0..pos];
@@ -1104,7 +1104,7 @@ test "doctor" {
     try expect(!std.mem.eql(u8, names[0], names[1]));
 }
 
-test "preview" {
+test "title" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
@@ -1116,34 +1116,34 @@ test "preview" {
 
     const id = try rt.create();
     {
-        var buf: [PREVIEW_BUF_LEN]u8 = undefined;
+        var buf: [TITLE_BUF_LEN]u8 = undefined;
         try rt.writeAll(id, "Hello world!");
-        try expectEqlStrings("Hello world!", try rt.preview(id, buf[0..PREVIEW_BUF_LEN]));
+        try expectEqlStrings("Hello world!", try rt.title(id, buf[0..TITLE_BUF_LEN]));
     }
     {
         // Only the first line
-        var buf: [PREVIEW_BUF_LEN]u8 = undefined;
+        var buf: [TITLE_BUF_LEN]u8 = undefined;
         try rt.writeAll(id, "Hello world!\n foo bar baz");
-        try expectEqlStrings("Hello world!", try rt.preview(id, buf[0..PREVIEW_BUF_LEN]));
+        try expectEqlStrings("Hello world!", try rt.title(id, buf[0..TITLE_BUF_LEN]));
     }
     {
         // Strip markdown headers
-        var buf: [PREVIEW_BUF_LEN]u8 = undefined;
+        var buf: [TITLE_BUF_LEN]u8 = undefined;
         try rt.writeAll(id, "# Hello world!");
-        try expectEqlStrings("Hello world!", try rt.preview(id, buf[0..PREVIEW_BUF_LEN]));
+        try expectEqlStrings("Hello world!", try rt.title(id, buf[0..TITLE_BUF_LEN]));
     }
     {
-        var buf: [PREVIEW_BUF_LEN]u8 = undefined;
+        var buf: [TITLE_BUF_LEN]u8 = undefined;
         try rt.writeAll(id, "####### Hello world!");
-        try expectEqlStrings("Hello world!", try rt.preview(id, buf[0..PREVIEW_BUF_LEN]));
+        try expectEqlStrings("Hello world!", try rt.title(id, buf[0..TITLE_BUF_LEN]));
     }
     {
-        // Truncate past PREVIEW_BUF_LEN
-        var buf: [PREVIEW_BUF_LEN]u8 = undefined;
+        // Truncate past TITLE_BUF_LEN
+        var buf: [TITLE_BUF_LEN]u8 = undefined;
         try rt.writeAll(id, "******************************************************************");
         try expectEqlStrings(
             "*************************************************************...",
-            try rt.preview(id, buf[0..PREVIEW_BUF_LEN]),
+            try rt.title(id, buf[0..TITLE_BUF_LEN]),
         );
     }
 }

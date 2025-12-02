@@ -8,8 +8,8 @@
 import SwiftUI
 
 struct FileList: View {
-    @Binding var notes: [Note]
-    var onSelect: (Note) -> Void
+    @Binding var results: [SearchResult]
+    var onSelect: (SearchResult) -> Void
     var onChange: (String) -> Void
     var closeList: () -> Void
 
@@ -66,7 +66,7 @@ struct FileList: View {
                     }
                     .padding()
 
-                    Results(notes: notes, onSelect: onSelect)
+                    Results(results: results, onSelect: onSelect)
                 }
                 .frame(idealWidth: 300, maxWidth: min(geometry.size.width * 0.6, 500), maxHeight: geometry.size.height * 0.6)
                 .background(palette.background)
@@ -97,24 +97,23 @@ struct FileList: View {
 }
 
 struct Results: View {
-    var notes: [Note]
-    var onSelect: (Note) -> Void
+    var results: [SearchResult]
+    var onSelect: (SearchResult) -> Void
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
-            LazyVStack(alignment: .leading) {
-                ForEach(notes) { note in
-                    ResultRow(note: note, onSelect: onSelect)
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(results) { result in
+                    ResultRow(result: result, onSelect: onSelect)
                 }
             }
-            .listStyle(.plain)
         }
     }
 }
 
 struct ResultRow: View {
-    var note: Note
-    var onSelect: (Note) -> Void
+    var result: SearchResult
+    var onSelect: (SearchResult) -> Void
     @State private var isHovered = false
 
     @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
@@ -122,24 +121,37 @@ struct ResultRow: View {
 
     var body: some View {
         let palette = Palette.forPreference(preference, colorScheme: colorScheme)
+        let ROW_SPACE = 3.0
 
         HStack {
-            Text(note.preview)
-                .lineLimit(3)
-                .foregroundStyle(palette.foreground)
+            VStack(alignment: .leading) {
+                Text(result.note.title)
+                    .foregroundStyle(palette.foreground)
+                    .bold()
+                Text(result.preview)
+                    .lineLimit(3)
+                    .foregroundStyle(palette.tertiary)
+                    .italic()
+            }
+            .padding(.horizontal)
+            .padding(.vertical, ROW_SPACE)
             Spacer()
-            Text(note.modified.formatted(date: .long, time: .omitted))
-                .foregroundStyle(palette.tertiary)
-                .italic()
+            VStack {
+                Text(result.note.modified.formatted(date: .long, time: .omitted))
+                    .foregroundStyle(palette.tertiary)
+                    .italic()
+                Spacer()
+            }
+            .padding(.horizontal)
+            .padding(.vertical, ROW_SPACE)
         }
         .background(palette.background.mix(with: palette.foreground, by: isHovered ? 0.1 : 0.0))
         .onHover { _ in
             isHovered.toggle()
         }
         .onTapGesture {
-            onSelect(self.note)
+            onSelect(self.result)
         }
-        .padding([.leading, .trailing])
         .preferredColorScheme({
             switch preference {
             case .light: .light
@@ -147,6 +159,7 @@ struct ResultRow: View {
             case .system: nil
             }
         }())
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 
@@ -157,14 +170,17 @@ let li2 = "Pellentesque non iaculis purus. Maecenas laoreet feugiat massa in vol
 let li3 = "Aenean at mauris est. Etiam felis velit, tempor a ipsum quis, ornare ornare orci. Phasellus vehicula fermentum justo quis dictum. Sed sollicitudin quam augue, placerat gravida libero lacinia vitae. Vivamus lobortis mollis libero quis cursus. Vestibulum erat arcu, tincidunt ac lacus vel, luctus tincidunt magna. Duis rutrum at sapien et finibus. Proin lectus lacus, laoreet vitae auctor vitae, congue at nisi. Phasellus orci nisl, imperdiet ac magna eget, ornare dignissim sapien. Nullam ultricies dui ornare ante eleifend, at faucibus quam facilisis. Nulla tempus eros tincidunt porttitor hendrerit."
 
 #Preview("Notes") {
-    @Previewable @State var notes: [Note] = [
-        Note(id: 0, created: Date(), modified: Date(), content: li1, preview: "foo"),
-        Note(id: 1, created: Date(), modified: Date(), content: li2, preview: "foo"),
-        Note(id: 2, created: Date(), modified: Date(), content: li3, preview: "foo"),
-        Note(id: 3, created: Date(), modified: Date(), content: li3, preview: "foo"),
-        Note(id: 4, created: Date(), modified: Date(), content: li3, preview: "foo"),
-        Note(id: 5, created: Date(), modified: Date(), content: li3, preview: "foo"),
-        Note(id: 6, created: Date(), modified: Date(), content: li3, preview: "foo"),
+    @Previewable @State var results: [SearchResult] = [
+        SearchResult(note: Note(id: 0, created: Date(), modified: Date(), content: li1, title: "How to train your dragon"), preview: "It's a pretty ok movie"),
+        SearchResult(note: Note(id: 1, created: Date(), modified: Date(), content: li2, title: "Goodfellas"), preview: "Also pretty good."),
+        SearchResult(note: Note(id: 2, created: Date(), modified: Date(), content: li3, title: "Toy Story"), preview: "Now we're talking baby. This is CINEMA."),
+        SearchResult(note: Note(id: 3, created: Date(), modified: Date(), content: li3, title: "foo"), preview: "zim"),
+        SearchResult(note: Note(id: 4, created: Date(), modified: Date(), content: li3, title: "foo"), preview: "zam"),
+        SearchResult(note: Note(id: 5, created: Date(), modified: Date(), content: li3, title: "foo"), preview: "zot"),
+        SearchResult(note: Note(id: 6, created: Date(), modified: Date(), content: li3, title: "foo"), preview: "zing"),
     ]
-    FileList(notes: $notes, onSelect: { (n: Note) in print(n.id) }, onChange: { (q: String) in print(q) }, closeList: { () in print("closed") })
+    FileList(results: $results,
+             onSelect: { (n: SearchResult) in print(n.note.id) },
+             onChange: { (q: String) in print(q) },
+             closeList: { () in print("closed") })
 }

@@ -4,6 +4,22 @@ import SwiftUI
     private func nana_import(_: UnsafePointer<Int8>, _: Bool, _: Bool) -> Int32 {
         return 1 // Success
     }
+
+    private func nana_deinit() -> Int32 {
+        return 0 // Success
+    }
+
+    private func nana_doctor(_: UnsafePointer<Int8>) -> UnsafePointer<Int8>? {
+        return nil // No files to import
+    }
+
+    private func nana_init(_: UnsafePointer<Int8>) -> Int32 {
+        return 0 // Success
+    }
+
+    private func nana_doctor_finish() {
+        // No-op
+    }
 #else
     import NanaKit
 #endif

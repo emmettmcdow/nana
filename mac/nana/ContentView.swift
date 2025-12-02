@@ -9,6 +9,13 @@ import Combine
 import SwiftUI
 
 #if DISABLE_NANAKIT
+
+    struct CSearchResult {
+        var id: UInt32
+        var start_i: UInt32
+        var end_i: UInt32
+    }
+
     // Stub implementations for SwiftUI Previews
     private func nana_create() -> Int32 {
         return Int32.random(in: 1 ... 1000)
@@ -19,7 +26,7 @@ import SwiftUI
         let sampleIds: [Int32] = [1, 2, 3, 4, 5]
         let returnCount = min(sampleIds.count, maxCount)
         for i in 0 ..< returnCount {
-            ids[i] = CSearchresult(id: sampleIds[i], start_i: 0, end_i: 5)
+            ids[i] = CSearchResult(id: UInt32(sampleIds[i]), start_i: 0, end_i: 5)
         }
         return Int32(returnCount)
     }
@@ -38,11 +45,17 @@ import SwiftUI
     import NanaKit
 #endif
 
+struct SearchResult: Identifiable {
+    var note: Note
+    var preview: String
+    let id = UUID()
+}
+
 let MAX_ITEMS = 100
 
 class NotesManager: ObservableObject {
     @Published var currentNote: Note
-    @Published var queriedNotes: [Note] = []
+    @Published var queriedNotes: [SearchResult] = []
     @Published var searchVisible = false
 
     private var cancellables = Set<AnyCancellable>()
@@ -79,25 +92,36 @@ class NotesManager: ObservableObject {
 
     func search(query: String) {
         queriedNotes = []
-        var ids = [Int32](repeating: 0, count: MAX_ITEMS)
         var n = 0
         if query.isEmpty {
+            var ids = [Int32](repeating: 0, count: MAX_ITEMS)
             n = min(Int(nana_index(&ids, numericCast(ids.count), currentNote.id)), MAX_ITEMS)
-        } else {
-            var results = [CSearchResult](repeating: CSearchResult(), count: MAX_ITEMS)
-            n = min(Int(nana_search(query, &results, numericCast(ids.count))), MAX_ITEMS)
-            for i in 0 ..< n {
-                ids[i] = Int32(results[i].id)
+            if n < 0 {
+                print("Some error occurred while searching: ", n)
+                return
             }
-        }
-        if n < 0 {
-            print("Some error occurred while searching: ", n)
-            return
-        }
-        if n > 0 {
-            for i in 0 ... (n - 1) {
-                let id = ids[i]
-                queriedNotes.append(Note(id: id))
+            for i in 0 ..< n {
+                let result = ids[i]
+                let note = Note(id: Int32(result))
+                let preview = note.content
+                queriedNotes.append(SearchResult(note: note, preview: preview))
+            }
+        } else {
+            var results = [CSearchResult](repeating: CSearchResult(id: 0, start_i: 0, end_i: 0),
+                                          count: MAX_ITEMS)
+            n = min(Int(nana_search(query, &results, numericCast(MAX_ITEMS))), MAX_ITEMS)
+            if n < 0 {
+                print("Some error occurred while searching: ", n)
+                return
+            }
+            for i in 0 ..< n {
+                let result = results[i]
+                let note = Note(id: Int32(result.id))
+                let content = note.content
+                let startIndex = content.index(content.startIndex, offsetBy: Int(result.start_i), limitedBy: content.endIndex) ?? content.startIndex
+                let endIndex = content.index(content.startIndex, offsetBy: Int(result.end_i), limitedBy: content.endIndex) ?? content.endIndex
+                let preview = String(content[startIndex..<endIndex])
+                queriedNotes.append(SearchResult(note: note, preview: preview))
             }
         }
     }
@@ -125,9 +149,9 @@ struct ContentView: View {
             Editor(note: $notesManager.currentNote, palette: palette)
 
             if notesManager.searchVisible {
-                FileList(notes: $notesManager.queriedNotes,
-                         onSelect: { (selected: Note) in
-                             notesManager.currentNote = selected
+                FileList(results: $notesManager.queriedNotes,
+                         onSelect: { (selected: SearchResult) in
+                             notesManager.currentNote = selected.note
                              notesManager.searchVisible.toggle()
                          }, onChange: { (q: String) in
                              search(q: q)
