@@ -120,7 +120,7 @@ class NotesManager: ObservableObject {
                 let content = note.content
                 let startIndex = content.index(content.startIndex, offsetBy: Int(result.start_i), limitedBy: content.endIndex) ?? content.startIndex
                 let endIndex = content.index(content.startIndex, offsetBy: Int(result.end_i), limitedBy: content.endIndex) ?? content.endIndex
-                let preview = String(content[startIndex..<endIndex])
+                let preview = String(content[startIndex ..< endIndex])
                 queriedNotes.append(SearchResult(note: note, preview: preview))
             }
         }
@@ -166,11 +166,11 @@ struct ContentView: View {
                         SearchButton(onClick: {
                             notesManager.searchVisible.toggle()
                         })
-                        .keyboardShortcut("k")
+                        .keyboardShortcut("s")
                         CircularPlusButton(action: {
                             notesManager.createNewNote()
                         })
-                        .keyboardShortcut("a")
+                        .keyboardShortcut("p")
                     }
                 }.padding()
             }

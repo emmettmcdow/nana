@@ -117,12 +117,12 @@ struct GeneralSettingsView: View {
                             HStack {
                                 Text("New Note:")
                                 Spacer()
-                                Text("⌘a").bold().monospaced()
+                                Text("⌘p").bold().monospaced()
                             }
                             HStack {
                                 Text("Search:")
                                 Spacer()
-                                Text("⌘k").bold().monospaced()
+                                Text("⌘s").bold().monospaced()
                             }
                             HStack {
                                 Text("Exit Search:")
