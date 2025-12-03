@@ -81,8 +81,41 @@ struct Palette {
     }
 }
 
+struct StylePreview: View {
+    var palette: Palette
+    var sz: Double
+
+    var body: some View {
+        ZStack {
+            HStack {
+                VStack {
+                    Text("The quick brown fox jumped over the lazy dog")
+                        .font(.system(size: sz))
+                        .foregroundStyle(palette.foreground)
+                    Spacer()
+                }
+                Spacer()
+            }
+            HStack {
+                Spacer()
+                VStack {
+                    Spacer()
+                    SearchButton(onClick: {})
+                    CircularPlusButton(action: {})
+                }
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(palette.background)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .shadow(radius: 5)
+    }
+}
+
 struct GeneralSettingsView: View {
     @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
+    @Environment(\.colorScheme) private var colorScheme
     @AppStorage("fontSize") private var fontSize: Double = 14
 
     @State var showFileImporter = false
@@ -97,22 +130,25 @@ struct GeneralSettingsView: View {
         HStack {
             TabView {
                 Tab("Appearance", systemImage: "paintpalette") {
-                    // Section(header: Text("Appearance")) {
-                    Picker("Color Scheme:", selection: $preference) {
-                        ForEach(ColorSchemePreference.allCases) { option in
-                            Text(option.description).tag(option)
+                    Form {
+                        Section(header: Text("Font and Color")) {
+                            Picker("Color Scheme:", selection: $preference) {
+                                ForEach(ColorSchemePreference.allCases) { option in
+                                    Text(option.description).tag(option)
+                                }
+                            }
+                            .pickerStyle(.inline)
+                            Stepper("Font Size: \(fontSize.formatted())px", value: $fontSize, in: 1 ... 64)
+                        }
+                        Section(header: Text("Preview")) {
+                            StylePreview(palette: Palette.forPreference(preference, colorScheme: colorScheme), sz: fontSize)
+                                .padding()
                         }
                     }
-                    .pickerStyle(.inline)
-                    HStack {
-                        Stepper("Font Size: \(fontSize.formatted())px", value: $fontSize, in: 1 ... 64)
-                    }
-                    Text("Preview:")
-                    Text("The quick brown fox jumped over the lazy dog")
-                        .font(.system(size: fontSize))
+                    .formStyle(.grouped)
                 }
                 Tab("Shortcuts", systemImage: "keyboard") {
-                    List {
+                    Form {
                         Section(header: Text("Control")) {
                             HStack {
                                 Text("New Note:")
@@ -143,37 +179,49 @@ struct GeneralSettingsView: View {
                             }
                         }
                     }
+                    .formStyle(.grouped)
                 }
                 Tab("Data", systemImage: "document") {
-                    VStack {
-                        Button {
-                            action = "import"
-                            showFileImporter = true
-                        } label: {
-                            Label("Import Obsidian Vault", systemImage: "square.and.arrow.down")
-                        }
-                        .fileImporter(
-                            isPresented: $showFileImporter,
-                            allowedContentTypes: [.directory],
-                            allowsMultipleSelection: false
-                        ) { result in
-                            Task {
-                                try await import_from_dir(result: result, onProgress: onProgress)
+                    Form {
+                        Section(header: Text("Data Mangement")) {
+                            HStack {
+                                Button {
+                                    action = "import"
+                                    showFileImporter = true
+                                } label: {
+                                    Label("Import Obsidian Vault", systemImage: "square.and.arrow.down")
+                                }
+                                .fileImporter(
+                                    isPresented: $showFileImporter,
+                                    allowedContentTypes: [.directory],
+                                    allowsMultipleSelection: false
+                                ) { result in
+                                    Task {
+                                        try await import_from_dir(result: result, onProgress: onProgress)
+                                    }
+                                }
+                                Spacer()
+                                Text("Load Obsidian notes into nana")
+                            }
+                            HStack {
+                                Button {
+                                    action = "doctor"
+                                    Task {
+                                        await import_from_doctor(onProgress: onProgress)
+                                    }
+                                } label: {
+                                    Label("Doctor", systemImage: "stethoscope")
+                                }
+                                Spacer()
+                                Text("Fix problems with your data")
                             }
                         }
-                        Button {
-                            action = "doctor"
-                            Task {
-                                await import_from_doctor(onProgress: onProgress)
-                            }
-                        } label: {
-                            Label("Fix problems with data", systemImage: "stethoscope")
-                        }
-                        Spacer()
-                        Progress(action: action,
-                                 files: files)
                     }
-                    .padding()
+                    .formStyle(.grouped)
+                    Spacer()
+                    Progress(action: action,
+                             files: files)
+                        .padding()
                 }
             }.frame(minWidth: 250, maxWidth: .infinity, minHeight: 250, maxHeight: .infinity)
         }
