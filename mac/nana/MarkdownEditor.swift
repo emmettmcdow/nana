@@ -47,6 +47,10 @@ struct MarkdownEditor: NSViewRepresentable {
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.updateBaseFontSize(font.pointSize)
 
+        textView.selectedTextAttributes = [
+            NSAttributedString.Key.backgroundColor: palette.NStert(), // Change background color
+        ]
+
         // Add padding to prevent text from interfering with buttons
         textView.textContainerInset = NSSize(width: 60, height: 30)
         textView.typingAttributes = [
