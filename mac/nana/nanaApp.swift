@@ -20,8 +20,10 @@ import SwiftUI
 @main
 struct nanaApp: App {
     @State private var startupRun: Bool = false
+    @State private var notesManager: NotesManager?
 
     @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
+    @AppStorage("fontSize") private var fontSize: Double = 14
     @Environment(\.colorScheme) private var colorScheme
 
     private nonisolated func onStartup() async {
@@ -50,6 +52,7 @@ struct nanaApp: App {
             fatalError("Failed to init libnana! With error:\(err)")
         }
         await MainActor.run {
+            self.notesManager = NotesManager()
             self.startupRun = true
         }
     }
@@ -68,8 +71,9 @@ struct nanaApp: App {
                         Spacer()
                     }
                     .background(palette.background)
-                } else {
+                } else if let notesManager = notesManager {
                     ContentView()
+                        .environmentObject(notesManager)
                         .disabled(!startupRun)
                 }
             }
@@ -78,7 +82,28 @@ struct nanaApp: App {
                     await onStartup()
                 }
             }
-        }.windowStyle(HiddenTitleBarWindowStyle())
+        }
+        .windowStyle(HiddenTitleBarWindowStyle())
+        .commands {
+            CommandGroup(after: .newItem) {
+                Button("New Note") {
+                    notesManager?.createNewNote()
+                }
+                .keyboardShortcut("p")
+            }
+
+            CommandGroup(before: .toolbar) {
+                Button("Increase Font Size") {
+                    fontSize = min(fontSize + 1, 64)
+                }
+                .keyboardShortcut("+")
+                Button("Decrease Font Size") {
+                    fontSize = max(fontSize - 1, 1)
+                }
+                .keyboardShortcut("-")
+                Divider()
+            }
+        }
 
         #if os(macOS)
             Settings {

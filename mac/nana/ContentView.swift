@@ -128,7 +128,7 @@ class NotesManager: ObservableObject {
 }
 
 struct ContentView: View {
-    @StateObject private var notesManager = NotesManager()
+    @EnvironmentObject private var notesManager: NotesManager
     @State private var searchTimer: Timer?
     @State private var hover: Bool = false
 
@@ -170,7 +170,6 @@ struct ContentView: View {
                         CircularPlusButton(action: {
                             notesManager.createNewNote()
                         })
-                        .keyboardShortcut("p")
                     }
                 }.padding()
             }
@@ -193,13 +192,6 @@ struct Editor: View {
 
     var body: some View {
         ZStack {
-            Group {
-                Button("") { fontSize = min(fontSize + 1, 64) }.keyboardShortcut("+")
-                Button("") { fontSize = max(fontSize - 1, 1) }.keyboardShortcut("-")
-            }
-            .opacity(0)
-            .hidden()
-
             MarkdownEditor(
                 text: $note.content,
                 palette: palette,
@@ -211,4 +203,5 @@ struct Editor: View {
 
 #Preview("Editor") {
     ContentView()
+        .environmentObject(NotesManager())
 }
