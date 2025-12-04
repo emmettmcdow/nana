@@ -134,6 +134,7 @@ struct ContentView: View {
 
     @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage("fontSize") private var fontSize: Double = 14
 
     private func search(q: String) {
         searchTimer?.invalidate()
@@ -146,8 +147,18 @@ struct ContentView: View {
         let palette = Palette.forPreference(preference, colorScheme: colorScheme)
 
         ZStack {
-            Editor(note: $notesManager.currentNote, palette: palette)
-
+            MarkdownEditor(
+                text: $notesManager.currentNote.content,
+                palette: palette,
+                font: NSFont.systemFont(ofSize: fontSize)
+            ).mask(
+                LinearGradient(gradient: Gradient(stops: [
+                    .init(color: .clear, location: 0), // Top fade
+                    .init(color: .black, location: 0.05), // Start opaque
+                    .init(color: .black, location: 0.95), // End opaque
+                    .init(color: .clear, location: 1), // Bottom fade
+                ]), startPoint: .top, endPoint: .bottom)
+            )
             if notesManager.searchVisible {
                 FileList(results: $notesManager.queriedNotes,
                          onSelect: { (selected: SearchResult) in
@@ -182,22 +193,6 @@ struct ContentView: View {
             case .system: nil
             }
         }())
-    }
-}
-
-struct Editor: View {
-    @Binding var note: Note
-    let palette: Palette
-    @AppStorage("fontSize") private var fontSize: Double = 14
-
-    var body: some View {
-        ZStack {
-            MarkdownEditor(
-                text: $note.content,
-                palette: palette,
-                font: NSFont.systemFont(ofSize: fontSize)
-            )
-        }
     }
 }
 

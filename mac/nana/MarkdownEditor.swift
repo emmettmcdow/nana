@@ -20,7 +20,7 @@ struct MarkdownEditor: NSViewRepresentable {
         layoutManager.addTextContainer(textContainer)
 
         // Configure text container to prevent horizontal scrolling
-        textContainer.widthTracksTextView = true
+        textContainer.widthTracksTextView = false // We'll manage width manually to account for insets
         textContainer.heightTracksTextView = false
         textContainer.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         textContainer.lineFragmentPadding = 0
@@ -46,6 +46,9 @@ struct MarkdownEditor: NSViewRepresentable {
         textView.minSize = NSSize(width: 0, height: 0)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.updateBaseFontSize(font.pointSize)
+
+        // Add padding to prevent text from interfering with buttons
+        textView.textContainerInset = NSSize(width: 60, height: 30)
         textView.typingAttributes = [
             .font: font,
             .foregroundColor: palette.NSfg(),
@@ -55,11 +58,17 @@ struct MarkdownEditor: NSViewRepresentable {
         textStorage.setAttributedString(NSAttributedString(string: text))
         textView.refreshMarkdownFormatting()
 
+        // Set up frame change observer to update text container width when resizing
+        context.coordinator.setupFrameObserver(for: scrollView, textView: textView)
+
         return scrollView
     }
 
-    func updateNSView(_ scrollView: NSScrollView, context _: Context) {
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? MarkdownTextView else { return }
+
+        // Ensure text container width is correct (important for first render)
+        context.coordinator.updateTextContainerWidth(scrollView: scrollView, textView: textView)
 
         // Update text if it changed externally
         let textChanged = textView.string != text
@@ -81,9 +90,47 @@ struct MarkdownEditor: NSViewRepresentable {
 
     class Coordinator: NSObject, NSTextViewDelegate {
         let parent: MarkdownEditor
+        private var frameObserver: NSObjectProtocol?
 
         init(_ parent: MarkdownEditor) {
             self.parent = parent
+        }
+
+        deinit {
+            if let observer = frameObserver {
+                NotificationCenter.default.removeObserver(observer)
+            }
+        }
+
+        func setupFrameObserver(for scrollView: NSScrollView, textView: NSTextView) {
+            // Update container width initially
+            updateTextContainerWidth(scrollView: scrollView, textView: textView)
+
+            // Observe frame changes
+            frameObserver = NotificationCenter.default.addObserver(
+                forName: NSView.frameDidChangeNotification,
+                object: scrollView,
+                queue: .main
+            ) { [weak textView] _ in
+                guard let textView = textView,
+                      let scrollView = textView.enclosingScrollView else { return }
+                self.updateTextContainerWidth(scrollView: scrollView, textView: textView)
+            }
+        }
+
+        func updateTextContainerWidth(scrollView: NSScrollView, textView: NSTextView) {
+            guard let textContainer = textView.textContainer else { return }
+
+            // Calculate available width: scroll view's content width minus text insets
+            let scrollViewWidth = scrollView.contentView.bounds.width
+            let horizontalInset = textView.textContainerInset.width * 2 // Inset on both sides
+            let availableWidth = max(0, scrollViewWidth - horizontalInset)
+
+            // Update text container width
+            textContainer.containerSize = NSSize(
+                width: availableWidth,
+                height: CGFloat.greatestFiniteMagnitude
+            )
         }
 
         func textDidChange(_ notification: Notification) {

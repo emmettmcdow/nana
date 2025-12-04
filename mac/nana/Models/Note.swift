@@ -18,7 +18,17 @@ import Foundation
     }
 
     private func nana_read_all(_: Int32, _ buffer: inout [Int8], _ bufferSize: Int) -> Int32 {
-        let sampleContent = "Sample note content for preview"
+        let sampleContent =
+            """
+            Sample note content for preview. Foo bar baz bop bing bang boom yap yip
+            zing zang zip soop I pledge allegiance to the united states of america and to the republic
+            for which it stands one nation under god indivisibile with liberty and justice for all. the
+            quick brown fox jumped over the lazy dog.
+            Sample note content for preview. Foo bar baz bop bing bang boom yap yip
+            zing zang zip soop I pledge allegiance to the united states of america and to the republic
+            for which it stands one nation under god indivisibile with liberty and justice for all. the
+            quick brown fox jumped over the lazy dog.
+            """
         let utf8Array = Array(sampleContent.utf8.map { Int8(bitPattern: $0) }) + [0]
 
         // If buffer is too small, return -1 to signal error
