@@ -144,6 +144,7 @@ struct GeneralSettingsView: View {
                             StylePreview(palette: Palette.forPreference(preference, colorScheme: colorScheme), sz: fontSize)
                                 .padding()
                         }
+                        
                     }
                     .formStyle(.grouped)
                 }
@@ -223,7 +224,7 @@ struct GeneralSettingsView: View {
                              files: files)
                         .padding()
                 }
-            }.frame(minWidth: 250, maxWidth: .infinity, minHeight: 250, maxHeight: .infinity)
+            }.frame(minWidth: 250, maxWidth: .infinity, minHeight: 400, maxHeight: .infinity)
         }
     }
 }
