@@ -83,8 +83,11 @@ struct Palette {
 
 struct StylePreview: View {
     var sz: Double
+    @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        let palette = Palette.forPreference(preference, colorScheme: colorScheme)
         ZStack {
             HStack {
                 VStack {
@@ -105,8 +108,17 @@ struct StylePreview: View {
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .preferredColorScheme({
+            switch preference {
+            case .light: .light
+            case .dark: .dark
+            case .system: nil
+            }
+        }())
+        .background(palette.background)
+        .foregroundStyle(palette.foreground)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .shadow(radius: 5)
+        .shadow(radius: 10)
     }
 }
 
@@ -124,14 +136,6 @@ struct GeneralSettingsView: View {
     }
 
     var body: some View {
-        // When preference is .system, get the actual system color scheme
-        let effectiveColorScheme: ColorScheme = {
-            if preference == .system {
-                return NSApp.effectiveAppearance.name == .darkAqua ? .dark : .light
-            }
-            return colorScheme
-        }()
-        let palette = Palette.forPreference(preference, colorScheme: effectiveColorScheme)
         TabView {
             Tab("Appearance", systemImage: "paintpalette") {
                 Form {
@@ -148,8 +152,6 @@ struct GeneralSettingsView: View {
                     }
                     Section(header: Text("Preview")) {
                         StylePreview(sz: fontSize)
-                            .background(palette.background)
-                            .foregroundStyle(palette.foreground)
                             .padding()
                     }
                 }
@@ -233,13 +235,7 @@ struct GeneralSettingsView: View {
             }
         }
         .frame(minWidth: 250, maxWidth: .infinity, minHeight: 400, maxHeight: .infinity)
-        .preferredColorScheme({
-            switch preference {
-            case .light: .light
-            case .dark: .dark
-            case .system: nil
-            }
-        }())
+        .preferredColorScheme(nil)
     }
 }
 
