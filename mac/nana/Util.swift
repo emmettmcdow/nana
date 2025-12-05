@@ -223,17 +223,21 @@ struct Progress: View {
         let failed = files.filter { $0.status == .fail }
         let complete = files.filter { $0.status == .success }
 
-        VStack(alignment: .leading) {
-            if nCompleted != files.count {
-                Text("\(action.capitalized)ing \(files.count) files...")
-                ProgressView(value: Float(nCompleted), total: Float(files.count))
-                    .progressViewStyle(.linear)
-                    .padding(.horizontal)
-            } else if files.count != 0 {
-                Text("Finished \(action)ing \(files.count) files")
-                ImportReport(status: ImportStatus.success, files: complete)
-                ImportReport(status: ImportStatus.skip, files: skipped)
-                ImportReport(status: ImportStatus.fail, files: failed)
+        if files.count != 0 {
+            Section(header: Text("Progress")) {
+                VStack(alignment: .leading) {
+                    if nCompleted != files.count {
+                        Text("\(action.capitalized)ing \(files.count) files...")
+                        ProgressView(value: Float(nCompleted), total: Float(files.count))
+                            .progressViewStyle(.linear)
+                            .padding(.horizontal)
+                    } else {
+                        Text("Finished \(action)ing \(files.count) files")
+                        ImportReport(status: ImportStatus.success, files: complete)
+                        ImportReport(status: ImportStatus.skip, files: skipped)
+                        ImportReport(status: ImportStatus.fail, files: failed)
+                    }
+                }
             }
         }
     }

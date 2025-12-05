@@ -109,6 +109,7 @@ struct nanaApp: App {
             Settings {
                 GeneralSettingsView()
             }
+            .defaultSize(width: 600, height: 500)
         #endif
     }
 }

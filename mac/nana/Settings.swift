@@ -82,7 +82,6 @@ struct Palette {
 }
 
 struct StylePreview: View {
-    var palette: Palette
     var sz: Double
 
     var body: some View {
@@ -91,7 +90,6 @@ struct StylePreview: View {
                 VStack {
                     Text("The quick brown fox jumped over the lazy dog")
                         .font(.system(size: sz))
-                        .foregroundStyle(palette.foreground)
                     Spacer()
                 }
                 Spacer()
@@ -107,7 +105,6 @@ struct StylePreview: View {
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(palette.background)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .shadow(radius: 5)
     }
@@ -127,105 +124,122 @@ struct GeneralSettingsView: View {
     }
 
     var body: some View {
-        HStack {
-            TabView {
-                Tab("Appearance", systemImage: "paintpalette") {
-                    Form {
-                        Section(header: Text("Font and Color")) {
-                            Picker("Color Scheme:", selection: $preference) {
-                                ForEach(ColorSchemePreference.allCases) { option in
-                                    Text(option.description).tag(option)
-                                }
+        // When preference is .system, get the actual system color scheme
+        let effectiveColorScheme: ColorScheme = {
+            if preference == .system {
+                return NSApp.effectiveAppearance.name == .darkAqua ? .dark : .light
+            }
+            return colorScheme
+        }()
+        let palette = Palette.forPreference(preference, colorScheme: effectiveColorScheme)
+        TabView {
+            Tab("Appearance", systemImage: "paintpalette") {
+                Form {
+                    Section(header: Text("Font and Color")) {
+                        Picker("Color Scheme:", selection: $preference) {
+                            ForEach(ColorSchemePreference.allCases) { option in
+                                Text(option.description).tag(option)
                             }
-                            .pickerStyle(.inline)
-                            Stepper("Font Size: \(fontSize.formatted())px", value: $fontSize, in: 1 ... 64)
                         }
-                        Section(header: Text("Preview")) {
-                            StylePreview(palette: Palette.forPreference(preference, colorScheme: colorScheme), sz: fontSize)
-                                .padding()
-                        }
-                        
+                        .pickerStyle(.inline)
+                        Stepper("Font Size: \(fontSize.formatted())px",
+                                value: $fontSize,
+                                in: 1 ... 64)
                     }
-                    .formStyle(.grouped)
+                    Section(header: Text("Preview")) {
+                        StylePreview(sz: fontSize)
+                            .background(palette.background)
+                            .foregroundStyle(palette.foreground)
+                            .padding()
+                    }
                 }
-                Tab("Shortcuts", systemImage: "keyboard") {
-                    Form {
-                        Section(header: Text("Control")) {
-                            HStack {
-                                Text("New Note:")
-                                Spacer()
-                                Text("⌘p").bold().monospaced()
-                            }
-                            HStack {
-                                Text("Search:")
-                                Spacer()
-                                Text("⌘s").bold().monospaced()
-                            }
-                            HStack {
-                                Text("Exit Search:")
-                                Spacer()
-                                Text("esc").bold().monospaced()
-                            }
+                .formStyle(.grouped)
+            }
+            Tab("Shortcuts", systemImage: "keyboard") {
+                Form {
+                    Section(header: Text("Control")) {
+                        HStack {
+                            Text("New Note:")
+                            Spacer()
+                            Text("⌘p").bold().monospaced()
                         }
-                        Section(header: Text("Display")) {
-                            HStack {
-                                Text("Increase Font Size:")
-                                Spacer()
-                                Text("⌘+").bold().monospaced()
-                            }
-                            HStack {
-                                Text("Decrease Font Size:")
-                                Spacer()
-                                Text("⌘-").bold().monospaced()
-                            }
+                        HStack {
+                            Text("Search:")
+                            Spacer()
+                            Text("⌘s").bold().monospaced()
+                        }
+                        HStack {
+                            Text("Exit Search:")
+                            Spacer()
+                            Text("esc").bold().monospaced()
                         }
                     }
-                    .formStyle(.grouped)
+                    Section(header: Text("Display")) {
+                        HStack {
+                            Text("Increase Font Size:")
+                            Spacer()
+                            Text("⌘+").bold().monospaced()
+                        }
+                        HStack {
+                            Text("Decrease Font Size:")
+                            Spacer()
+                            Text("⌘-").bold().monospaced()
+                        }
+                    }
                 }
-                Tab("Data", systemImage: "document") {
-                    Form {
-                        Section(header: Text("Data Mangement")) {
-                            HStack {
-                                Button {
-                                    action = "import"
-                                    showFileImporter = true
-                                } label: {
-                                    Label("Import Obsidian Vault", systemImage: "square.and.arrow.down")
-                                }
-                                .fileImporter(
-                                    isPresented: $showFileImporter,
-                                    allowedContentTypes: [.directory],
-                                    allowsMultipleSelection: false
-                                ) { result in
-                                    Task {
-                                        try await import_from_dir(result: result, onProgress: onProgress)
-                                    }
-                                }
-                                Spacer()
-                                Text("Load Obsidian notes into nana")
+                .formStyle(.grouped)
+            }
+            Tab("Data", systemImage: "document") {
+                Form {
+                    Section(header: Text("Data Mangement")) {
+                        HStack {
+                            Button {
+                                action = "import"
+                                showFileImporter = true
+                            } label: {
+                                Label("Import Obsidian Vault",
+                                      systemImage: "square.and.arrow.down")
                             }
-                            HStack {
-                                Button {
-                                    action = "doctor"
-                                    Task {
-                                        await import_from_doctor(onProgress: onProgress)
-                                    }
-                                } label: {
-                                    Label("Doctor", systemImage: "stethoscope")
+                            .fileImporter(
+                                isPresented: $showFileImporter,
+                                allowedContentTypes: [.directory],
+                                allowsMultipleSelection: false
+                            ) { result in
+                                Task {
+                                    try await import_from_dir(result: result,
+                                                              onProgress: onProgress)
                                 }
-                                Spacer()
-                                Text("Fix problems with your data")
                             }
+                            Spacer()
+                            Text("Load Obsidian notes into nana")
+                        }
+                        HStack {
+                            Button {
+                                action = "doctor"
+                                Task {
+                                    await import_from_doctor(onProgress: onProgress)
+                                }
+                            } label: {
+                                Label("Doctor", systemImage: "stethoscope")
+                            }
+                            Spacer()
+                            Text("Fix problems with your data")
                         }
                     }
-                    .formStyle(.grouped)
-                    Spacer()
                     Progress(action: action,
                              files: files)
-                        .padding()
                 }
-            }.frame(minWidth: 250, maxWidth: .infinity, minHeight: 400, maxHeight: .infinity)
+                .formStyle(.grouped)
+            }
         }
+        .frame(minWidth: 250, maxWidth: .infinity, minHeight: 400, maxHeight: .infinity)
+        .preferredColorScheme({
+            switch preference {
+            case .light: .light
+            case .dark: .dark
+            case .system: nil
+            }
+        }())
     }
 }
 
