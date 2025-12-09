@@ -36,6 +36,7 @@ pub fn build(b: *std.Build) !void {
     const vector_file = b.path("src/vector.zig");
     const benchmark_file = b.path("src/benchmark.zig");
     const profile_file = b.path("src/profile.zig");
+    const markdown_file = b.path("src/markdown.zig");
 
     ///////////////////
     // Build the Lib //
@@ -179,6 +180,27 @@ pub fn build(b: *std.Build) !void {
     const test_vec_storage = b.step("test-vec_storage", "run the tests for src/vec_storage.zig");
     test_vec_storage.dependOn(&run_vec_storage_unit_tests.step);
 
+    // Vector Storage
+    const markdown_options = b.addOptions();
+    markdown_options.addOption(usize, "vec_sz", 3);
+    markdown_options.addOption(bool, "debug", debug);
+    const markdown_unit_tests = b.addTest(.{
+        .root_source_file = markdown_file,
+        .target = x86_target,
+        .optimize = optimize,
+        .filters = &.{"markdown"},
+    });
+    _ = Tracy.create(.{
+        .b = b,
+        .dest = markdown_unit_tests,
+        .target = x86_target,
+        .optimize = optimize,
+    });
+    markdown_unit_tests.root_module.addOptions("config", markdown_options);
+    const run_markdown_unit_tests = b.addRunArtifact(markdown_unit_tests);
+    const test_markdown = b.step("test-markdown", "run the tests for src/markdown.zig");
+    test_markdown.dependOn(&run_markdown_unit_tests.step);
+
     // Vector DB
     const vec_options = b.addOptions();
     vec_options.addOption(usize, "vec_sz", VEC_SZ);
@@ -300,6 +322,7 @@ pub fn build(b: *std.Build) !void {
     test_step.dependOn(test_vec_storage);
     test_step.dependOn(test_vec);
     test_step.dependOn(test_diff);
+    test_step.dependOn(test_markdown);
     // Enable this to see benchmark output
     // test_step.dependOn(test_benchmark);
 

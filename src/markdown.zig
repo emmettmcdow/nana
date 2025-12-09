@@ -90,6 +90,12 @@ pub const Markdown = struct {
                 if (!found) {
                     self.popToken();
                 }
+            } else if (self.match(.ITALIC)) |_| {
+                try self.pushToken(.ITALIC, 1);
+                const found = self.consumeUntil("__", .{ .newlineBreak = true });
+                if (!found) {
+                    self.popToken();
+                }
             } else if (self.match(.BLOCK_CODE)) |_| {
                 try self.pushToken(.BLOCK_CODE, 1);
                 const found = self.consumeUntil("```", .{});
@@ -160,6 +166,12 @@ pub const Markdown = struct {
                 if (self.peek(0) != '*') return null;
                 if (self.peek(1) != '*') return null;
                 if (self.peek(2) == '*') return null; // Emphasis, not bold
+                return 1;
+            },
+            .ITALIC => {
+                if (self.peek(0) != '_') return null;
+                if (self.peek(1) != '_') return null;
+                if (self.peek(2) == '_') return null; // Emphasis, not italic
                 return 1;
             },
             .BLOCK_CODE => {
@@ -312,6 +324,37 @@ test "bold" {
     try expectEqualDeep(&[_]Token{
         .{ .tType = .PLAIN, .contents = "ab**\ne", .startI = i, .endI = plusEq(&i, 6) },
         .{ .tType = .BOLD, .contents = "**f**", .startI = i, .endI = plusEq(&i, 5) },
+        .{ .tType = .PLAIN, .contents = "g\n", .startI = i, .endI = plusEq(&i, 2) },
+    }, output);
+}
+
+test "italic" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var l = Markdown.init(arena.allocator());
+
+    var i: usize = 0;
+    var output = try l.parse("a__b__c__d__e");
+    try expectEqualDeep(&[_]Token{
+        .{ .tType = .PLAIN, .contents = "a", .startI = i, .endI = plusEq(&i, 1) },
+        .{ .tType = .ITALIC, .contents = "__b__", .startI = i, .endI = plusEq(&i, 5) },
+        .{ .tType = .PLAIN, .contents = "c", .startI = i, .endI = plusEq(&i, 1) },
+        .{ .tType = .ITALIC, .contents = "__d__", .startI = i, .endI = plusEq(&i, 5) },
+        .{ .tType = .PLAIN, .contents = "e", .startI = i, .endI = plusEq(&i, 1) },
+    }, output);
+
+    i = 0;
+    output = try l.parse("ab__cd");
+    try expectEqualDeep(&[_]Token{
+        .{ .tType = .PLAIN, .contents = "ab__cd", .startI = i, .endI = plusEq(&i, 6) },
+    }, output);
+
+    i = 0;
+    output = try l.parse("ab__\ne__f__g\n");
+    try expectEqualDeep(&[_]Token{
+        .{ .tType = .PLAIN, .contents = "ab__\ne", .startI = i, .endI = plusEq(&i, 6) },
+        .{ .tType = .ITALIC, .contents = "__f__", .startI = i, .endI = plusEq(&i, 5) },
         .{ .tType = .PLAIN, .contents = "g\n", .startI = i, .endI = plusEq(&i, 2) },
     }, output);
 }
