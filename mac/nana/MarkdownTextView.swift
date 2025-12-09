@@ -203,10 +203,16 @@ class MarkdownTextView: NSTextView {
             }
 
         case .CODE:
-            let backgroundColor = NSColor.controlBackgroundColor
+            // Use palette colors but make them slightly darker
+            let originalBackground = paletteBackgroundColor ?? NSColor.textBackgroundColor
+            let originalForeground = paletteTextColor ?? NSColor.textColor
+            // Darken the background slightly for code blocks
+            let codeBackgroundColor = originalBackground.blended(withFraction: 0.15, of: NSColor.black) ?? originalBackground
+            let codeTextColor = originalForeground
 
             attributes[.font] = codeFont
-            attributes[.backgroundColor] = backgroundColor
+            attributes[.foregroundColor] = codeTextColor
+            attributes[.backgroundColor] = codeBackgroundColor
 
         case .UNORDERED_LIST:
             attributes[.font] = listFont

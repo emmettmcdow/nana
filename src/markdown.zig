@@ -102,6 +102,12 @@ pub const Markdown = struct {
                 if (!found) {
                     self.popToken();
                 }
+            } else if (self.match(.CODE)) |_| {
+                try self.pushToken(.CODE, 1);
+                const found = self.consumeUntil("`", .{ .newlineBreak = true });
+                if (!found) {
+                    self.popToken();
+                }
             } else if (self.match(.BLOCK_CODE)) |_| {
                 try self.pushToken(.BLOCK_CODE, 1);
                 const found = self.consumeUntil("```", .{});
@@ -184,6 +190,11 @@ pub const Markdown = struct {
                 if (self.peek(0) != '_') return null;
                 if (self.peek(1) != '_') return null;
                 if (self.peek(2) == '_') return null; // Emphasis, not italic
+                return 1;
+            },
+            .CODE => {
+                if (self.peek(0) != '`') return null;
+                if (self.peek(1) == '`') return null; // Either block code or closed immediately
                 return 1;
             },
             .BLOCK_CODE => {
@@ -398,6 +409,37 @@ test "emphasis" {
     try expectEqualDeep(&[_]Token{
         .{ .tType = .PLAIN, .contents = "ab***\ne", .startI = i, .endI = plusEq(&i, 7) },
         .{ .tType = .EMPHASIS, .contents = "***f***", .startI = i, .endI = plusEq(&i, 7) },
+        .{ .tType = .PLAIN, .contents = "g\n", .startI = i, .endI = plusEq(&i, 2) },
+    }, output);
+}
+
+test "inline code" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var l = Markdown.init(arena.allocator());
+
+    var i: usize = 0;
+    var output = try l.parse("a`b`c`d`e");
+    try expectEqualDeep(&[_]Token{
+        .{ .tType = .PLAIN, .contents = "a", .startI = i, .endI = plusEq(&i, 1) },
+        .{ .tType = .CODE, .contents = "`b`", .startI = i, .endI = plusEq(&i, 3) },
+        .{ .tType = .PLAIN, .contents = "c", .startI = i, .endI = plusEq(&i, 1) },
+        .{ .tType = .CODE, .contents = "`d`", .startI = i, .endI = plusEq(&i, 3) },
+        .{ .tType = .PLAIN, .contents = "e", .startI = i, .endI = plusEq(&i, 1) },
+    }, output);
+
+    i = 0;
+    output = try l.parse("ab`cd");
+    try expectEqualDeep(&[_]Token{
+        .{ .tType = .PLAIN, .contents = "ab`cd", .startI = i, .endI = plusEq(&i, 5) },
+    }, output);
+
+    i = 0;
+    output = try l.parse("ab`\ne`f`g\n");
+    try expectEqualDeep(&[_]Token{
+        .{ .tType = .PLAIN, .contents = "ab`\ne", .startI = i, .endI = plusEq(&i, 5) },
+        .{ .tType = .CODE, .contents = "`f`", .startI = i, .endI = plusEq(&i, 3) },
         .{ .tType = .PLAIN, .contents = "g\n", .startI = i, .endI = plusEq(&i, 2) },
     }, output);
 }
