@@ -231,6 +231,11 @@ class MarkdownTextView: NSTextView {
 
         case .HORZ_RULE:
             // Could add special formatting for horizontal rules
+
+            // https://stackoverflow.com/questions/11286674/horizontal-hr-like-separator-in-nsattributedstring
+            // We likely need unicode support to  do this.
+            // let hr = NSAttributedString(string: "\n\r\u{00A0} \u{0009} \u{00A0}\n\n", attributes: [.strikethroughStyle: NSUnderlineStyle.single.rawValue, .strikethroughColor: UIColor.gray])
+
             let ruleColor = NSColor.separatorColor
             attributes[.foregroundColor] = ruleColor
         }
