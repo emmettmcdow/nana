@@ -463,6 +463,7 @@ pub const DB = struct {
         try self.startTX();
         errdefer self.dropTX();
         {
+            // Note: should I want to improve the perf, this block is the slowest part of this fn.
             var diags = sqlite.Diagnostics{};
             var stmt = self.db.prepareWithDiags(CLEAR_ALL_VECS, .{ .diags = &diags }) catch |err| {
                 std.log.err("unable to prepare statement. Error: {}. Diag.: {s}", .{ err, diags });
