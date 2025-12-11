@@ -84,6 +84,9 @@ pub const Markdown = struct {
             if (self.match(.HEADER)) |degree| {
                 try self.pushToken(.HEADER, degree);
                 _ = self.consumeUntil("\n", .{});
+            } else if (self.match(.QUOTE)) |degree| {
+                try self.pushToken(.QUOTE, degree);
+                _ = self.consumeUntil("\n", .{});
             } else if (self.match(.EMPHASIS)) |_| {
                 try self.pushToken(.EMPHASIS, 1);
                 const found = self.consumeUntil("***", .{ .newlineBreak = true });
@@ -170,6 +173,14 @@ pub const Markdown = struct {
                 if (!self.startOrEndLine()) return null;
                 var i: u8 = 0;
                 while (self.peek(i) == '#') i += 1;
+                if (i < 1 or i > 6) return null;
+                if (self.peek(i) != ' ') return null;
+                return i;
+            },
+            .QUOTE => {
+                if (!self.startOrEndLine()) return null;
+                var i: u8 = 0;
+                while (self.peek(i) == '>') i += 1;
                 if (i < 1 or i > 6) return null;
                 if (self.peek(i) != ' ') return null;
                 return i;
@@ -317,6 +328,64 @@ test "header plain" {
         \\##### 5
         \\###### 6
         \\####### plain
+    ));
+}
+
+test "quote plain" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var l = Markdown.init(arena.allocator());
+
+    try expectEqualDeep(&[_]Token{
+        .{ .tType = .QUOTE, .contents = "> quote\n", .startI = 0, .endI = 8 },
+        .{ .tType = .PLAIN, .contents = "plain text.", .startI = 8, .endI = 19 },
+    }, try l.parse(
+        \\> quote
+        \\plain text.
+    ));
+    try expectEqualSlices(Token, &[_]Token{
+        .{
+            .tType = .QUOTE,
+            .contents = "> quote with > in the middle",
+            .startI = 0,
+            .endI = 28,
+        },
+    }, try l.parse(
+        \\> quote with > in the middle
+    ));
+    try expectEqualDeep(&[_]Token{
+        .{ .tType = .PLAIN, .contents = "Plain with > in the middle", .startI = 0, .endI = 26 },
+    }, try l.parse(
+        \\Plain with > in the middle
+    ));
+    try expectEqualDeep(&[_]Token{
+        .{ .tType = .QUOTE, .contents = "> A\n", .startI = 0, .endI = 4 },
+        .{ .tType = .PLAIN, .contents = "B\n", .startI = 4, .endI = 6 },
+        .{ .tType = .QUOTE, .contents = "> C", .startI = 6, .endI = 9 },
+    }, try l.parse(
+        \\> A
+        \\B
+        \\> C
+    ));
+
+    var i: usize = 0;
+    try expectEqualDeep(&[_]Token{
+        .{ .tType = .QUOTE, .degree = 1, .contents = "> 1\n", .startI = i, .endI = plusEq(&i, 4) },
+        .{ .tType = .QUOTE, .degree = 2, .contents = ">> 2\n", .startI = i, .endI = plusEq(&i, 5) },
+        .{ .tType = .QUOTE, .degree = 3, .contents = ">>> 3\n", .startI = i, .endI = plusEq(&i, 6) },
+        .{ .tType = .QUOTE, .degree = 4, .contents = ">>>> 4\n", .startI = i, .endI = plusEq(&i, 7) },
+        .{ .tType = .QUOTE, .degree = 5, .contents = ">>>>> 5\n", .startI = i, .endI = plusEq(&i, 8) },
+        .{ .tType = .QUOTE, .degree = 6, .contents = ">>>>>> 6\n", .startI = i, .endI = plusEq(&i, 9) },
+        .{ .tType = .PLAIN, .degree = 1, .contents = ">>>>>>> plain", .startI = i, .endI = plusEq(&i, 13) },
+    }, try l.parse(
+        \\> 1
+        \\>> 2
+        \\>>> 3
+        \\>>>> 4
+        \\>>>>> 5
+        \\>>>>>> 6
+        \\>>>>>>> plain
     ));
 }
 
