@@ -36,6 +36,7 @@ pub const TokenType = enum {
     EMPHASIS,
     CODE,
     BLOCK_CODE,
+    LINK,
     PLAIN,
 };
 
@@ -91,36 +92,41 @@ pub const Markdown = struct {
                 try self.pushToken(.EMPHASIS, 1);
                 const found = self.consumeUntil("***", .{ .newlineBreak = true });
                 if (!found) {
-                    self.popToken();
+                    try self.resetAndAddPlain();
                 }
             } else if (self.match(.BOLD)) |_| {
                 try self.pushToken(.BOLD, 1);
                 const found = self.consumeUntil("**", .{ .newlineBreak = true });
                 if (!found) {
-                    self.popToken();
+                    try self.resetAndAddPlain();
                 }
             } else if (self.match(.ITALIC)) |_| {
                 try self.pushToken(.ITALIC, 1);
                 const found = self.consumeUntil("__", .{ .newlineBreak = true });
                 if (!found) {
-                    self.popToken();
+                    try self.resetAndAddPlain();
                 }
             } else if (self.match(.CODE)) |_| {
                 try self.pushToken(.CODE, 1);
                 const found = self.consumeUntil("`", .{ .newlineBreak = true });
                 if (!found) {
-                    self.popToken();
+                    try self.resetAndAddPlain();
                 }
             } else if (self.match(.BLOCK_CODE)) |_| {
                 try self.pushToken(.BLOCK_CODE, 1);
                 const found = self.consumeUntil("```", .{});
                 if (!found or !self.startOrEndLine()) { // See #closing-code-blocks
-                    self.popToken();
-                    continue;
+                    try self.resetAndAddPlain();
                 }
             } else if (self.match(.UNORDERED_LIST)) |degree| {
                 try self.pushToken(.UNORDERED_LIST, degree);
                 _ = self.consumeUntil("\n", .{ .newlineBreak = true });
+            } else if (self.match(.LINK)) |_| {
+                try self.pushToken(.LINK, 1);
+                const found = self.consumeUntil(")", .{ .newlineBreak = true });
+                if (!found) {
+                    try self.resetAndAddPlain();
+                }
             } else {
                 // Is PLAIN
                 const isEmpty = self.tokens.getLastOrNull() == null;
@@ -161,6 +167,18 @@ pub const Markdown = struct {
         const pop_zone = tracy.beginZone(@src(), .{ .name = "markdown.zig:popToken" });
         defer pop_zone.end();
         _ = self.tokens.pop();
+    }
+
+    fn resetAndAddPlain(self: *Self) !void {
+        const failed = self.tokens.pop();
+        assert(failed != null);
+        self.i = failed.?.startI;
+
+        const isEmpty = self.tokens.getLastOrNull() == null;
+        if (isEmpty or self.tokens.getLast().tType != .PLAIN) {
+            try self.pushToken(.PLAIN, 1);
+        }
+        self.i += 1;
     }
 
     /// Determines if this is the start of a token. Returns null if not a match, degree otherwise.
@@ -225,6 +243,20 @@ pub const Markdown = struct {
                 if (self.peek(i) != '-') return null;
                 if (self.peek(i + 1) != ' ') return null;
                 return degree;
+            },
+            .LINK => {
+                if (self.peek(0) != '[') return null;
+                for (1..std.math.maxInt(usize)) |i| {
+                    switch (self.peek(i)) {
+                        ']' => {
+                            if (self.peek(i + 1) == '(') return 1 else return null;
+                        },
+                        '\n' => return null,
+                        0 => return null,
+                        else => continue,
+                    }
+                }
+                unreachable;
             },
             else => unreachable,
         }
@@ -567,6 +599,92 @@ test "unordered list" {
         .{ .tType = .UNORDERED_LIST, .contents = "\t\t\t\t- 5\n", .startI = i, .endI = plusEq(&i, 8), .degree = 5 },
         .{ .tType = .UNORDERED_LIST, .contents = "\t\t\t\t\t- 6", .startI = i, .endI = plusEq(&i, 8), .degree = 6 },
     }, output);
+}
+
+test "link" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var l = Markdown.init(arena.allocator());
+
+    {
+        const input = "[label](https://google.com)";
+        const output = try l.parse(input);
+        var i: usize = 0;
+        try expectEqualDeep(&[_]Token{
+            .{ .tType = .LINK, .contents = input, .startI = i, .endI = plusEq(&i, input.len) },
+        }, output);
+    }
+    {
+        const input = "foo[label](https://google.com";
+        const output = try l.parse(input);
+        var i: usize = 0;
+        try expectEqualDeep(&[_]Token{
+            .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len) },
+        }, output);
+    }
+    {
+        const input = "[label]\n(https://google.com)";
+        const output = try l.parse(input);
+        var i: usize = 0;
+        try expectEqualDeep(&[_]Token{
+            .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len) },
+        }, output);
+    }
+}
+
+test "failed reset to last position" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var l = Markdown.init(arena.allocator());
+
+    {
+        const input = "[label](https://google.com";
+        const output = try l.parse(input);
+        var i: usize = 0;
+        try expectEqualDeep(&[_]Token{
+            .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len) },
+        }, output);
+    }
+    {
+        const input = "**unclosed bold";
+        const output = try l.parse(input);
+        var i: usize = 0;
+        try expectEqualDeep(&[_]Token{
+            .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len) },
+        }, output);
+    }
+    {
+        const input = "__unclosed italic";
+        const output = try l.parse(input);
+        var i: usize = 0;
+        try expectEqualDeep(&[_]Token{
+            .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len) },
+        }, output);
+    }
+    {
+        const input = "***unclosed emphasis";
+        const output = try l.parse(input);
+        var i: usize = 0;
+        try expectEqualDeep(&[_]Token{
+            .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len) },
+        }, output);
+    }
+    {
+        const input = "`unclosed code";
+        const output = try l.parse(input);
+        var i: usize = 0;
+        try expectEqualDeep(&[_]Token{
+            .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len) },
+        }, output);
+    }
+    {
+        const input = "```unclosed block code";
+        const output = try l.parse(input);
+        var i: usize = 0;
+        try expectEqualDeep(&[_]Token{
+            .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len) },
+        }, output);
+    }
 }
 
 fn plusEq(a: *usize, b: usize) usize {

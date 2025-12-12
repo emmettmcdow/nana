@@ -19,6 +19,7 @@ enum TokenType: String, Codable {
     case EMPHASIS
     case CODE
     case BLOCK_CODE
+    case LINK
     case PLAIN
 }
 
