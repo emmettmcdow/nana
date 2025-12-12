@@ -138,7 +138,36 @@ pub const Markdown = struct {
         }
         try self.pushToken(null, null);
 
+        try self.unicodePostprocess();
         return self.tokens.items;
+    }
+
+    fn unicodePostprocess(self: *Self) !void {
+        var byteIndex: usize = 0;
+        var codepointIndex: usize = 0;
+
+        for (self.tokens.items) |*token| {
+            // Advance to this token's start
+            while (byteIndex < token.startI) {
+                const byte = self.src[byteIndex];
+                // Only count leading bytes (not continuation bytes 10xxxxxx)
+                if (byte & 0xC0 != 0x80) {
+                    codepointIndex += 1;
+                }
+                byteIndex += 1;
+            }
+            token.startI = codepointIndex;
+
+            // Advance to this token's end
+            while (byteIndex < token.endI) {
+                const byte = self.src[byteIndex];
+                if (byte & 0xC0 != 0x80) {
+                    codepointIndex += 1;
+                }
+                byteIndex += 1;
+            }
+            token.endI = codepointIndex;
+        }
     }
 
     /// Completes the token at the end of the list and optionally adds a new one of type newType.
@@ -687,6 +716,26 @@ test "failed reset to last position" {
     }
 }
 
+test "unicode handling" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var l = Markdown.init(arena.allocator());
+
+    {
+        const input = "**brave❤️**__good🐶__***🔗wax***";
+        const output = try l.parse(input);
+        var i: usize = 0;
+        // Codepoint counts: **brave (7) + ❤️ (2: heart + variation selector) + ** (2) = 11
+        // __good (6) + 🐶 (1) + __ (2) = 9
+        // *** (3) + 🔗 (1) + wax*** (6) = 10
+        try expectEqualDeep(&[_]Token{
+            .{ .tType = .BOLD, .contents = "**brave❤️**", .startI = i, .endI = plusEq(&i, 11) },
+            .{ .tType = .ITALIC, .contents = "__good🐶__", .startI = i, .endI = plusEq(&i, 9) },
+            .{ .tType = .EMPHASIS, .contents = "***🔗wax***", .startI = i, .endI = plusEq(&i, 10) },
+        }, output);
+    }
+}
+
 fn plusEq(a: *usize, b: usize) usize {
     a.* += b;
     return a.*;
@@ -732,5 +781,6 @@ const ArrayList = std.ArrayList;
 const expect = std.expect;
 const expectEqualDeep = std.testing.expectEqualDeep;
 const expectEqualSlices = std.testing.expectEqualSlices;
+const utf8CountCodepoints = std.unicode.utf8CountCodepoints;
 
 const tracy = @import("tracy");
