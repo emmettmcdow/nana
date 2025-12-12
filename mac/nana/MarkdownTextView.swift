@@ -238,6 +238,16 @@ class MarkdownTextView: NSTextView {
 
             let ruleColor = NSColor.separatorColor
             attributes[.foregroundColor] = ruleColor
+
+        case .LINK:
+            let linkColor = NSColor.linkColor
+            attributes[.foregroundColor] = linkColor
+            attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
+
+            if let urlString = extractURL(from: token.contents),
+               let url = URL(string: urlString) {
+                attributes[.link] = url
+            }
         }
 
         // Apply all attributes in a single call
@@ -266,5 +276,15 @@ class MarkdownTextView: NSTextView {
         paletteBackgroundColor = palette.NSbg()
 
         insertionPointColor = palette.NStert()
+    }
+
+    private func extractURL(from linkContent: String) -> String? {
+        guard let openParen = linkContent.lastIndex(of: "("),
+              let closeParen = linkContent.lastIndex(of: ")"),
+              openParen < closeParen else {
+            return nil
+        }
+        let urlStart = linkContent.index(after: openParen)
+        return String(linkContent[urlStart..<closeParen])
     }
 }
