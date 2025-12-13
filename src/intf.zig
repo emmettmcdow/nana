@@ -82,18 +82,21 @@ export fn nana_create() c_int {
     return @intCast(id);
 }
 
-/// Output: CError on failure, NoteID if success
-export fn nana_import(path: [*:0]const u8, copy: bool, addExt: bool) c_int {
+/// Output: CError on failure, NoteID if success, 0 if file was imported but is not a note
+export fn nana_import(path: [*:0]const u8, destPathBuf: ?[*]u8, destPathBufLen: c_uint) c_int {
     mutex.lock();
     defer mutex.unlock();
 
     const path_slice = std.mem.sliceTo(path, 0);
 
-    std.log.info("nana_import {s}, copy={}, addExt={}", .{ path_slice, copy, addExt });
+    std.log.info("nana_import {s}", .{path_slice});
     if (!init) {
         return @intFromEnum(CError.NotInit);
     }
-    const id = rt.import(path_slice, .{ .copy = copy, .addExt = addExt }) catch |err| {
+
+    const destBuf: ?[]u8 = if (destPathBuf) |buf| buf[0..destPathBufLen] else null;
+
+    const maybeId = rt.import(path_slice, destBuf) catch |err| {
         std.log.err("Failed to import note: {}\n", .{err});
         switch (err) {
             nana.Error.NotNote => {
@@ -105,7 +108,11 @@ export fn nana_import(path: [*:0]const u8, copy: bool, addExt: bool) c_int {
         }
     };
 
-    return @intCast(id);
+    if (maybeId) |id| {
+        return @intCast(id);
+    } else {
+        return 0;
+    }
 }
 
 /// Input: NoteID

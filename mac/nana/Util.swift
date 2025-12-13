@@ -1,7 +1,7 @@
 import SwiftUI
 
 #if DISABLE_NANAKIT
-    private func nana_import(_: UnsafePointer<Int8>, _: Bool, _: Bool) -> Int32 {
+    private func nana_import(_: UnsafePointer<Int8>, _: UnsafeMutablePointer<Int8>?, _: UInt32) -> Int32 {
         return 1 // Success
     }
 
@@ -82,8 +82,6 @@ func import_from_dir(result: Result<[URL], any Error>,
     }
 
     importFiles(files: files,
-                copy: true,
-                addExt: false,
                 onProgress: onProgress)
 }
 
@@ -140,8 +138,6 @@ func doctor(basedir: URL,
 
     importFiles(
         files: files,
-        copy: true,
-        addExt: true,
         onProgress: onProgress
     )
 
@@ -150,21 +146,22 @@ func doctor(basedir: URL,
 
 func importFiles(
     files: [ImportItem],
-    copy: Bool,
-    addExt: Bool,
     onProgress: @escaping (_ files: [ImportItem]) -> Void
 ) {
     var newFiles = files
     for i in files.indices {
         let res = files[i].filename.withCString { cString in
-            nana_import(cString, copy, addExt)
+            nana_import(cString, nil, 0)
         }
 
         if res > 0 {
             newFiles[i].status = .success
-        } else if res == -13 {
+        } else if res == 0 {
             newFiles[i].status = .skip
             newFiles[i].message = "File isn't a note."
+        } else if res == -13 {
+            newFiles[i].status = .skip
+            newFiles[i].message = "Invalid filetype."
         } else {
             newFiles[i].status = .fail
             newFiles[i].message = "Failed to import note with error: \(res)"

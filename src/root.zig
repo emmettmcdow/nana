@@ -78,26 +78,39 @@ pub const Runtime = struct {
         return self.db.create();
     }
 
-    const ImportOpts = struct {
-        /// Whether to `copy` the file to the `basedir` or just use the original absolute path.
-        copy: bool = false,
-        /// Whether to add an '.md' extension to the newly copied file. Path must be a number.
-        addExt: bool = false,
-    };
-
     /// Create a new note, but use the contents of another file specified by `path`.
-    pub fn import(self: *Runtime, path: []const u8, opts: ImportOpts) !NoteID {
+    /// Overall rules:
+    ///    - If it has a note extension, import it as a note.
+    ///    - If it does not have a note extension, do not add as a note. Just make sure it is in
+    ///      the basedir, copy if necessary.
+    ///    - Never accept .db extension, this is a critical failure.
+    ///    - Modify the name if:
+    ///      - It matches the auto-generated id names (e.g. 123.md)
+    ///      - There is a collision
+    ///    - Only embed if we import as a note. Otherwise skip embedding.
+    ///    - If we see an absolute path, we copy in. If it is relative, assert it is present in the
+    ///      basedir.
+    ///    - Use transactions. If there is a failure to import, we want to clean up our work in
+    ///      both the relational DB and the vector DB.
+    ///    - TOD_O: we want to re-write notes which point to external assets(images, etc). Their
+    ///      paths should be updated to point to their relative paths. Do not implement this yet.
+    ///      This needs to be done carefully.
+    ///
+    pub fn import(self: *Runtime, path: []const u8, destPathBuf: ?[]u8) !?NoteID {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:import" });
         defer zone.end();
 
-        assert(!opts.addExt or (opts.addExt and opts.copy));
+        const sourceName = std.fs.path.basename(path);
+        const isAbsolute = std.fs.path.isAbsolute(path);
 
-        const isNote = opts.addExt or hasNoteExtension(path);
-        if (!isNote and shouldIgnoreFile(path)) return Error.NotNote;
+        if (hasDbExtension(sourceName)) return Error.NotNote;
+        if (shouldIgnoreFile(sourceName)) return Error.NotNote;
+
+        const isNote = hasNoteExtension(sourceName);
 
         // 1. Open the source file
         var f: std.fs.File = undefined;
-        if (std.fs.path.isAbsolute(path)) {
+        if (isAbsolute) {
             f = try std.fs.openFileAbsolute(path, .{});
         } else {
             f = try self.basedir.openFile(path, .{});
@@ -107,29 +120,29 @@ pub const Runtime = struct {
         // 2. Read the metadata
         const created: i64 = @intCast(@divTrunc((try f.metadata()).created().?, 1000));
         const modified: i64 = @intCast(@divTrunc((try f.metadata()).modified(), 1000));
-        if (!opts.copy) {
-            if (!isNote) return Error.NotNote;
-            return self.db.import(created, modified, .{ .path = path });
-        }
 
-        // 3. Modify the filename if necessary
-        const sourceName = std.fs.path.basename(path);
+        // 3. Compute destination name (rename if matches auto-generated id pattern or collision)
         var destBuf: [PATH_MAX]u8 = undefined;
-        const needsExtension = opts.addExt and !hasNoteExtension(sourceName);
         const needsUnderscore = allNums(sourceName);
-        const destName = if (needsExtension and needsUnderscore) blk: {
-            if (sourceName.len + 4 >= PATH_MAX) return Error.MalformedPath;
-            break :blk try std.fmt.bufPrint(&destBuf, "_{s}.md", .{sourceName});
-        } else if (needsExtension) blk: {
-            if (sourceName.len + 3 >= PATH_MAX) return Error.MalformedPath;
-            break :blk try std.fmt.bufPrint(&destBuf, "{s}.md", .{sourceName});
-        } else if (needsUnderscore) blk: {
+        var destName = if (needsUnderscore) blk: {
             if (sourceName.len + 1 >= PATH_MAX) return Error.MalformedPath;
             break :blk try std.fmt.bufPrint(&destBuf, "_{s}", .{sourceName});
         } else sourceName;
 
-        // 4. Copy the file if necessary
-        if (std.fs.path.isAbsolute(path)) {
+        // Handle collision: if file already exists in basedir, prefix with underscore
+        if (isAbsolute) {
+            var collisionBuf: [PATH_MAX]u8 = undefined;
+            while (self.basedir.access(destName, .{})) |_| {
+                if (destName.len + 1 >= PATH_MAX) return Error.MalformedPath;
+                destName = try std.fmt.bufPrint(&collisionBuf, "_{s}", .{destName});
+            } else |e| switch (e) {
+                error.FileNotFound => {},
+                else => return e,
+            }
+        }
+
+        // 4. Copy the file if absolute path
+        if (isAbsolute) {
             const sourceDirPath = std.fs.path.dirname(path) orelse return Error.MalformedPath;
             var sourceDir = try std.fs.openDirAbsolute(sourceDirPath, .{});
             defer sourceDir.close();
@@ -139,12 +152,21 @@ pub const Runtime = struct {
             try self.basedir.deleteFile(sourceName);
         }
 
-        // 5. Import into the DB
-        if (!isNote) return Error.NotNote;
+        // 5. Write the destination path to the output buffer if provided
+        if (destPathBuf) |outBuf| {
+            if (destName.len > outBuf.len) return Error.BufferTooSmall;
+            @memcpy(outBuf[0..destName.len], destName);
+            @memset(outBuf[destName.len..], 0);
+        }
+
+        // 6. If not a note, just return null (file is now in basedir but not tracked as a note)
+        if (!isNote) return null;
+
+        // 7. Import into the DB
         const id = try self.db.import(created, modified, .{ .path = destName });
         if (self.skipEmbed) return id;
 
-        // 6. Embed the contents
+        // 8. Embed the contents
         var bufsz: usize = 128;
         var buf = try self.allocator.alloc(u8, bufsz);
         defer self.allocator.free(buf);
@@ -407,6 +429,10 @@ const NOTE_EXT = [_][]const u8{ ".md", ".txt" };
 fn hasNoteExtension(path: []const u8) bool {
     for (NOTE_EXT) |ext| if (endsWith(path, ext)) return true;
     return false;
+}
+
+fn hasDbExtension(path: []const u8) bool {
+    return endsWith(path, ".db");
 }
 
 fn endsWith(path: []const u8, ext: []const u8) bool {
@@ -829,7 +855,7 @@ test "import" {
     const modified: i64 = @intCast(@divTrunc((try f2.metadata()).modified(), 1000));
     f2.close();
 
-    const id = try rt.import(path, .{});
+    const id = (try rt.import(path, null)).?;
     const note = try rt.get(id, arena.allocator());
 
     try expect(note.created == created);
@@ -859,7 +885,7 @@ test "import copy" {
     const modified: i64 = @intCast(@divTrunc((try f2.metadata()).modified(), 1000));
     f2.close();
 
-    const id = try rt.import(path, .{ .copy = true });
+    const id = (try rt.import(path, null)).?;
     try std.fs.deleteFileAbsolute(path);
     const note = try rt.get(id, arena.allocator());
 
@@ -884,7 +910,7 @@ test "import run embedding" {
     defer f.close();
     try f.writeAll("hello");
 
-    const id = try rt.import(path, .{ .copy = true });
+    const id = (try rt.import(path, null)).?;
 
     var buf: [1]SearchResult = undefined;
     try expectEqual(1, try rt.search("hello", &buf));
@@ -933,19 +959,19 @@ test "import skip unrecognized file extensions" {
     f.close();
 
     for ([_][]const u8{ txt, md }) |path| {
-        _ = try rt.import(path, .{ .copy = true });
+        try expect((try rt.import(path, null)) != null);
         (try tmpD.dir.openFile(std.fs.path.basename(path), .{})).close();
     }
     for ([_][]const u8{ png, tar, pdf }) |path| {
-        try expectError(Error.NotNote, rt.import(path, .{ .copy = true }));
+        try expect((try rt.import(path, null)) == null);
         (try tmpD.dir.openFile(std.fs.path.basename(path), .{})).close();
     }
     for ([_][]const u8{ds_store}) |path| {
-        try expectError(Error.NotNote, rt.import(path, .{ .copy = true }));
+        try expectError(Error.NotNote, rt.import(path, null));
         try expectError(FileNotFound, tmpD.dir.openFile(std.fs.path.basename(path), .{}));
     }
 }
-test "import copy addExt" {
+test "import auto-rename numeric filenames" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
@@ -957,41 +983,123 @@ test "import copy addExt" {
     });
     defer rt.deinit();
 
-    const cases = [_]struct { src: []const u8, dest: []const u8, oldExist: bool }{
-        .{ .src = "/tmp/1", .dest = "_1.md", .oldExist = true },
-        .{ .src = "/tmp/_2", .dest = "_2.md", .oldExist = true },
-        .{ .src = "/tmp/3.md", .dest = "_2.md", .oldExist = true },
-        .{ .src = "4", .dest = "_4.md", .oldExist = false },
-        .{ .src = "a", .dest = "a.md", .oldExist = false },
+    const cases = [_]struct { src: []const u8, dest: []const u8, srcDeleted: bool }{
+        .{ .src = "/tmp/123.md", .dest = "_123.md", .srcDeleted = false },
+        .{ .src = "456.txt", .dest = "_456.txt", .srcDeleted = true },
+        .{ .src = "normal.md", .dest = "normal.md", .srcDeleted = false },
     };
 
     for (cases) |case| {
         const src_is_absolute = case.src[0] == '/';
 
-        // Create source
         if (src_is_absolute) {
             (try std.fs.createFileAbsolute(case.src, .{})).close();
         } else {
             (try rt.basedir.createFile(case.src, .{})).close();
         }
 
-        // Run the import
-        _ = try rt.import(case.src, .{ .copy = true, .addExt = true });
+        try expect((try rt.import(case.src, null)) != null);
 
-        // New file
         (try rt.basedir.openFile(case.dest, .{})).close();
 
-        // Old File
         const maybe_f = if (src_is_absolute)
             std.fs.openFileAbsolute(case.src, .{})
         else
             rt.basedir.openFile(case.src, .{});
 
-        if (case.oldExist) {
-            (try maybe_f).close();
-        } else {
+        if (case.srcDeleted) {
             try expectError(FileNotFound, maybe_f);
+        } else {
+            (try maybe_f).close();
         }
+    }
+}
+
+test "import collision handling" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
+    defer rt.deinit();
+
+    (try rt.basedir.createFile("existing.md", .{})).close();
+
+    const path = "/tmp/existing.md";
+    (try std.fs.createFileAbsolute(path, .{})).close();
+
+    const id = (try rt.import(path, null)).?;
+    const note = try rt.get(id, arena.allocator());
+
+    try expectEqlStrings("_existing.md", note.path);
+    (try rt.basedir.openFile("existing.md", .{})).close();
+    (try rt.basedir.openFile("_existing.md", .{})).close();
+}
+
+test "import reject db extension" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
+    defer rt.deinit();
+
+    const path = "/tmp/something.db";
+    (try std.fs.createFileAbsolute(path, .{})).close();
+    defer std.fs.deleteFileAbsolute(path) catch {};
+
+    try expectError(Error.NotNote, rt.import(path, null));
+}
+
+test "import returns dest path in buffer" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
+    defer rt.deinit();
+
+    {
+        const path = "/tmp/test_import_destbuf.md";
+        (try std.fs.createFileAbsolute(path, .{})).close();
+        defer std.fs.deleteFileAbsolute(path) catch {};
+
+        var destBuf: [PATH_MAX]u8 = undefined;
+        _ = try rt.import(path, &destBuf);
+        try expectEqlStrings("test_import_destbuf.md", std.mem.sliceTo(&destBuf, 0));
+    }
+
+    {
+        const path = "/tmp/123.md";
+        (try std.fs.createFileAbsolute(path, .{})).close();
+        defer std.fs.deleteFileAbsolute(path) catch {};
+
+        var destBuf: [PATH_MAX]u8 = undefined;
+        _ = try rt.import(path, &destBuf);
+        try expectEqlStrings("_123.md", std.mem.sliceTo(&destBuf, 0));
+    }
+
+    {
+        (try rt.basedir.createFile("collision.md", .{})).close();
+        const path = "/tmp/collision.md";
+        (try std.fs.createFileAbsolute(path, .{})).close();
+        defer std.fs.deleteFileAbsolute(path) catch {};
+
+        var destBuf: [PATH_MAX]u8 = undefined;
+        _ = try rt.import(path, &destBuf);
+        try expectEqlStrings("_collision.md", std.mem.sliceTo(&destBuf, 0));
     }
 }
 

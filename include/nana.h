@@ -22,7 +22,7 @@ typedef struct {
 int nana_init(const char *);
 int nana_deinit(void);
 int nana_create(void);
-int nana_import(const char *, bool, bool);
+int nana_import(const char *, char *, unsigned int);
 long nana_create_time(int);
 long nana_mod_time(int);
 int nana_search(const char *, CSearchResult *, unsigned int);
