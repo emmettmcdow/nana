@@ -28,10 +28,11 @@ struct MarkdownToken: Codable {
     let startI: Int
     let endI: Int
     let contents: String
+    let rendered: String
     let degree: Int
 
     enum CodingKeys: String, CodingKey {
-        case tType, startI, endI, contents, degree
+        case tType, startI, endI, contents, rendered, degree
     }
 }
 

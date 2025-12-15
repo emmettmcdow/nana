@@ -58,9 +58,8 @@ struct MarkdownEditor: NSViewRepresentable {
             .foregroundColor: palette.NSfg(),
         ]
 
-        // Set initial text content
-        textStorage.setAttributedString(NSAttributedString(string: text))
-        textView.refreshMarkdownFormatting()
+        // Set initial text content via sourceString
+        textView.sourceString = text
 
         // Set up frame change observer to update text container width when resizing
         context.coordinator.setupFrameObserver(for: scrollView, textView: textView)
@@ -75,16 +74,15 @@ struct MarkdownEditor: NSViewRepresentable {
         context.coordinator.updateTextContainerWidth(scrollView: scrollView, textView: textView)
 
         // Update text if it changed externally
-        let textChanged = textView.string != text
+        let textChanged = textView.sourceString != text
         let sizeChanged = font.pointSize != textView.baseFontSize()
         let fgChanged = textView.textColor != palette.NSfg()
         let bgChanged = textView.backgroundColor != palette.NSbg()
         if textChanged || sizeChanged || fgChanged || bgChanged {
-            textView.string = text
+            textView.sourceString = text
             textView.font = font
             textView.updateBaseFontSize(font.pointSize)
             textView.setPalette(palette: palette)
-            textView.refreshMarkdownFormatting()
         }
     }
 
@@ -138,11 +136,11 @@ struct MarkdownEditor: NSViewRepresentable {
         }
 
         func textDidChange(_ notification: Notification) {
-            guard let textView = notification.object as? NSTextView else { return }
+            guard let textView = notification.object as? MarkdownTextView else { return }
 
-            // Update the binding
+            // Update the binding with sourceString (the real markdown, not display text)
             DispatchQueue.main.async {
-                self.parent.text = textView.string
+                self.parent.text = textView.sourceString
             }
         }
 

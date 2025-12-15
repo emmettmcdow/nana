@@ -48,6 +48,8 @@ pub const Token = struct {
     endI: usize,
     /// The entirety of the token, including start and end delimiters.
     contents: []const u8 = "",
+    /// What the rendered token should be rendered as. Delimiters should be removed.
+    rendered: []const u8 = "",
     /// Specifies which level of indentation or size a token is.
     /// HEADER with a degree of 2 is a `##`.
     /// *LIST with a degree of 2 is a singly indented sub-list.
@@ -138,6 +140,7 @@ pub const Markdown = struct {
         }
         try self.pushToken(null, null);
 
+        try self.render();
         try self.unicodePostprocess();
         return self.tokens.items;
     }
@@ -291,6 +294,32 @@ pub const Markdown = struct {
         }
     }
 
+    /// Removes control characters from the tokens.
+    fn render(self: *Self) !void {
+        const match_zone = tracy.beginZone(@src(), .{ .name = "markdown.zig:render" });
+        defer match_zone.end();
+
+        for (self.tokens.items) |*t| {
+            switch (t.tType) {
+                .HEADER => {
+                    self.i = t.startI;
+                    assert(self.consumeUntil(" ", .{})); // Skip past #s
+                    t.rendered = self.src[self.i..t.endI];
+                },
+                .QUOTE => {},
+                .EMPHASIS => {},
+                .BOLD => {},
+                .ITALIC => {},
+                .CODE => {},
+                .BLOCK_CODE => {},
+                .UNORDERED_LIST => {},
+                .LINK => {},
+                .PLAIN => {},
+                else => unreachable,
+            }
+        }
+    }
+
     fn startOrEndLine(self: Self) bool {
         const nl_zone = tracy.beginZone(@src(), .{ .name = "markdown.zig:startOrEndLine" });
         defer nl_zone.end();
@@ -341,16 +370,17 @@ test "header plain" {
     var l = Markdown.init(arena.allocator());
 
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .HEADER, .contents = "# Header\n", .startI = 0, .endI = 9 },
+        .{ .tType = .HEADER, .contents = "# Header\n", .rendered = "Header\n", .startI = 0, .endI = 9 },
         .{ .tType = .PLAIN, .contents = "plain text.", .startI = 9, .endI = 20 },
     }, try l.parse(
         \\# Header
         \\plain text.
     ));
-    try expectEqualSlices(Token, &[_]Token{
+    try expectEqualDeep(&[_]Token{
         .{
             .tType = .HEADER,
             .contents = "# Header with # in the middle",
+            .rendered = "Header with # in the middle",
             .startI = 0,
             .endI = 29,
         },
@@ -363,9 +393,9 @@ test "header plain" {
         \\Plain with # in the middle
     ));
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .HEADER, .contents = "# A\n", .startI = 0, .endI = 4 },
+        .{ .tType = .HEADER, .contents = "# A\n", .rendered = "A\n", .startI = 0, .endI = 4 },
         .{ .tType = .PLAIN, .contents = "B\n", .startI = 4, .endI = 6 },
-        .{ .tType = .HEADER, .contents = "# C", .startI = 6, .endI = 9 },
+        .{ .tType = .HEADER, .contents = "# C", .rendered = "C", .startI = 6, .endI = 9 },
     }, try l.parse(
         \\# A
         \\B
@@ -374,12 +404,12 @@ test "header plain" {
 
     var i: usize = 0;
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .HEADER, .degree = 1, .contents = "# 1\n", .startI = i, .endI = plusEq(&i, 4) },
-        .{ .tType = .HEADER, .degree = 2, .contents = "## 2\n", .startI = i, .endI = plusEq(&i, 5) },
-        .{ .tType = .HEADER, .degree = 3, .contents = "### 3\n", .startI = i, .endI = plusEq(&i, 6) },
-        .{ .tType = .HEADER, .degree = 4, .contents = "#### 4\n", .startI = i, .endI = plusEq(&i, 7) },
-        .{ .tType = .HEADER, .degree = 5, .contents = "##### 5\n", .startI = i, .endI = plusEq(&i, 8) },
-        .{ .tType = .HEADER, .degree = 6, .contents = "###### 6\n", .startI = i, .endI = plusEq(&i, 9) },
+        .{ .tType = .HEADER, .degree = 1, .contents = "# 1\n", .rendered = "1\n", .startI = i, .endI = plusEq(&i, 4) },
+        .{ .tType = .HEADER, .degree = 2, .contents = "## 2\n", .rendered = "2\n", .startI = i, .endI = plusEq(&i, 5) },
+        .{ .tType = .HEADER, .degree = 3, .contents = "### 3\n", .rendered = "3\n", .startI = i, .endI = plusEq(&i, 6) },
+        .{ .tType = .HEADER, .degree = 4, .contents = "#### 4\n", .rendered = "4\n", .startI = i, .endI = plusEq(&i, 7) },
+        .{ .tType = .HEADER, .degree = 5, .contents = "##### 5\n", .rendered = "5\n", .startI = i, .endI = plusEq(&i, 8) },
+        .{ .tType = .HEADER, .degree = 6, .contents = "###### 6\n", .rendered = "6\n", .startI = i, .endI = plusEq(&i, 9) },
         .{ .tType = .PLAIN, .degree = 1, .contents = "####### plain", .startI = i, .endI = plusEq(&i, 13) },
     }, try l.parse(
         \\# 1

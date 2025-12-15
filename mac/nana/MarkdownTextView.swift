@@ -7,6 +7,20 @@ class MarkdownTextView: NSTextView {
     private var paletteTextColor: NSColor?
     private var paletteBackgroundColor: NSColor?
 
+    private var selectedLineIndices: Set<Int> = []
+    private var cachedTokens: [MarkdownToken] = []
+    private var isSwappingText = false
+
+    private var _sourceText: String = ""
+
+    var sourceString: String {
+        get { return _sourceText }
+        set {
+            _sourceText = newValue
+            syncDisplayFromSource()
+        }
+    }
+
     override func awakeFromNib() {
         super.awakeFromNib()
         setupTextView()
@@ -68,6 +82,7 @@ class MarkdownTextView: NSTextView {
         return super.becomeFirstResponder()
     }
 
+    // This is called when a change is made to the text. It has the chars changed and where.
     override func shouldChangeText(in affectedCharRange: NSRange, replacementString: String?) -> Bool {
         // Set typing attributes from previous character before insertion
         if !isUpdatingFormatting, affectedCharRange.location > 0, let textStorage = textStorage {
@@ -80,31 +95,193 @@ class MarkdownTextView: NSTextView {
         return super.shouldChangeText(in: affectedCharRange, replacementString: replacementString)
     }
 
+    // This callback is called whenever the text is edited.
     override func didChangeText() {
         super.didChangeText()
-        if !isUpdatingFormatting {
+        if !isUpdatingFormatting && !isSwappingText {
+            syncSourceFromDisplay()
             DispatchQueue.main.async { [weak self] in
                 self?.updateMarkdownFormatting()
             }
         }
     }
 
+    // This callback is called whenever the cursor is moved.
+    override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting: Bool) {
+        super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
+        if !isUpdatingFormatting && !isSwappingText {
+            updateSelectedLines()
+        }
+    }
+
     private func updateMarkdownFormatting() {
-        guard let textStorage = textStorage else { return }
+        guard textStorage != nil else { return }
         isUpdatingFormatting = true
         defer { isUpdatingFormatting = false }
 
-        let text = string
-        let formatting = MarkdownParser.parse(text)
+        cachedTokens = MarkdownParser.parse(_sourceText).tokens
+        rebuildDisplayText()
+    }
+
+    // This func and the next func are doing the reverse of each other.
+    // This is from the external world to the display.
+    private func syncDisplayFromSource() {
+        guard let textStorage = textStorage else { return }
+        isSwappingText = true
+        defer { isSwappingText = false }
+
+        cachedTokens = MarkdownParser.parse(_sourceText).tokens
+
+        let displayText = buildDisplayString()
 
         textStorage.beginEditing()
-        defer { textStorage.endEditing() }
-        resetAllFormatting(textStorage: textStorage)
-        for token in formatting.tokens {
-            let range = NSRange(location: token.startI, length: token.endI - token.startI)
-            guard range.location >= 0 && NSMaxRange(range) <= text.count else { continue }
-            applyTokenFormatting(token: token, range: range, to: textStorage)
+        let fullRange = NSRange(location: 0, length: textStorage.length)
+        textStorage.replaceCharacters(in: fullRange, with: displayText)
+        textStorage.endEditing()
+
+        rebuildDisplayText()
+    }
+
+    // This is from display to the external world.
+    private func syncSourceFromDisplay() {
+        let displayText = string
+        var sourceText = ""
+        var displayIndex = 0
+
+        for token in cachedTokens {
+            let tokenLineIndex = lineIndex(forCharacterIndex: token.startI, in: _sourceText)
+            let isLineSelected = selectedLineIndices.contains(tokenLineIndex)
+            let usesRendered = token.tType == .HEADER && !isLineSelected && !token.rendered.isEmpty
+
+            let displayTokenLength = usesRendered ? token.rendered.count : token.contents.count
+            let displayTokenEnd = displayIndex + displayTokenLength
+
+            if displayIndex < displayText.count {
+                let startIdx = displayText.index(displayText.startIndex, offsetBy: displayIndex)
+                let endIdx = displayText.index(displayText.startIndex, offsetBy: min(displayTokenEnd, displayText.count))
+                let displayedToken = String(displayText[startIdx ..< endIdx])
+
+                if usesRendered {
+                    let prefixLength = token.contents.count - token.rendered.count
+                    let prefix = String(token.contents.prefix(prefixLength))
+                    sourceText += prefix + displayedToken
+                } else {
+                    sourceText += displayedToken
+                }
+            }
+
+            displayIndex = displayTokenEnd
         }
+
+        if displayIndex < displayText.count {
+            let startIdx = displayText.index(displayText.startIndex, offsetBy: displayIndex)
+            sourceText += String(displayText[startIdx...])
+        }
+
+        _sourceText = sourceText
+    }
+
+    private func buildDisplayString() -> String {
+        var displayText = ""
+
+        for token in cachedTokens {
+            let tokenLineIndex = lineIndex(forCharacterIndex: token.startI, in: _sourceText)
+            let isLineSelected = selectedLineIndices.contains(tokenLineIndex)
+
+            if token.tType == .HEADER && !isLineSelected && !token.rendered.isEmpty {
+                displayText += token.rendered
+            } else {
+                displayText += token.contents
+            }
+        }
+
+        return displayText
+    }
+
+    // This is the primary rendering function.
+    // Gets called if the external world changes, or if the selection changes.
+    private func rebuildDisplayText() {
+        guard let textStorage = textStorage else { return }
+
+        isSwappingText = true
+        defer { isSwappingText = false }
+
+        let cursorPos = selectedRange().location
+        let displayText = buildDisplayString()
+
+        textStorage.beginEditing()
+        let fullRange = NSRange(location: 0, length: textStorage.length)
+        textStorage.replaceCharacters(in: fullRange, with: displayText)
+        resetAllFormatting(textStorage: textStorage)
+
+        var displayOffset = 0
+        for token in cachedTokens {
+            let tokenLineIndex = lineIndex(forCharacterIndex: token.startI, in: _sourceText)
+            let isLineSelected = selectedLineIndices.contains(tokenLineIndex)
+            let usesRendered = token.tType == .HEADER && !isLineSelected && !token.rendered.isEmpty
+
+            let displayLength = usesRendered ? token.rendered.count : token.contents.count
+            let displayRange = NSRange(location: displayOffset, length: displayLength)
+
+            guard displayRange.location >= 0 && NSMaxRange(displayRange) <= displayText.count else {
+                displayOffset += displayLength
+                continue
+            }
+
+            applyTokenFormatting(token: token, range: displayRange, to: textStorage)
+            displayOffset += displayLength
+        }
+        textStorage.endEditing()
+
+        let newCursorPos = min(cursorPos, textStorage.length)
+        setSelectedRange(NSRange(location: newCursorPos, length: 0))
+    }
+
+    private func updateSelectedLines() {
+        let newSelectedLines = computeSelectedLines()
+
+        if newSelectedLines != selectedLineIndices {
+            selectedLineIndices = newSelectedLines
+            rebuildDisplayText()
+        }
+    }
+
+    private func computeSelectedLines() -> Set<Int> {
+        var lines = Set<Int>()
+        let displayText = string
+
+        for rangeValue in selectedRanges {
+            let range = rangeValue.rangeValue
+
+            let startLine = lineIndex(forCharacterIndex: range.location, in: displayText)
+            lines.insert(startLine)
+
+            if range.length > 0 {
+                let endLine = lineIndex(forCharacterIndex: min(range.location + range.length, displayText.count), in: displayText)
+                for line in startLine ... endLine {
+                    lines.insert(line)
+                }
+            }
+        }
+
+        return lines
+    }
+
+    private func lineIndex(forCharacterIndex charIndex: Int, in text: String) -> Int {
+        var lineCount = 0
+        var currentIndex = 0
+
+        for char in text {
+            if currentIndex >= charIndex {
+                break
+            }
+            if char == "\n" {
+                lineCount += 1
+            }
+            currentIndex += 1
+        }
+
+        return lineCount
     }
 
     private func resetAllFormatting(textStorage: NSTextStorage) {
@@ -245,7 +422,8 @@ class MarkdownTextView: NSTextView {
             attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
 
             if let urlString = extractURL(from: token.contents),
-               let url = URL(string: urlString) {
+               let url = URL(string: urlString)
+            {
                 attributes[.link] = url
             }
         }
@@ -254,10 +432,6 @@ class MarkdownTextView: NSTextView {
         if !attributes.isEmpty {
             textStorage.addAttributes(attributes, range: mod_range)
         }
-    }
-
-    func refreshMarkdownFormatting() {
-        updateMarkdownFormatting()
     }
 
     func updateBaseFontSize(_ fontSize: CGFloat) {
@@ -281,10 +455,11 @@ class MarkdownTextView: NSTextView {
     private func extractURL(from linkContent: String) -> String? {
         guard let openParen = linkContent.lastIndex(of: "("),
               let closeParen = linkContent.lastIndex(of: ")"),
-              openParen < closeParen else {
+              openParen < closeParen
+        else {
             return nil
         }
         let urlStart = linkContent.index(after: openParen)
-        return String(linkContent[urlStart..<closeParen])
+        return String(linkContent[urlStart ..< closeParen])
     }
 }
