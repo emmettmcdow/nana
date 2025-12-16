@@ -23,7 +23,7 @@ enum TokenType: String, Codable {
     case PLAIN
 }
 
-struct MarkdownToken: Codable {
+struct MarkdownToken: Codable, Equatable {
     let tType: TokenType
     let startI: Int
     let endI: Int

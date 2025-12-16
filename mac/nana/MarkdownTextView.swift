@@ -6,6 +6,7 @@ class MarkdownTextView: NSTextView {
     private var storedBaseFontSize: CGFloat = 14
     private var paletteTextColor: NSColor?
     private var paletteBackgroundColor: NSColor?
+    private var currFormatting: MarkdownFormatting = .init(tokens: [])
 
     override func awakeFromNib() {
         super.awakeFromNib()
@@ -91,24 +92,45 @@ class MarkdownTextView: NSTextView {
 
     private func updateMarkdownFormatting() {
         guard let textStorage = textStorage else { return }
-        isUpdatingFormatting = true
-        defer { isUpdatingFormatting = false }
 
         let text = string
-        let formatting = MarkdownParser.parse(text)
+        let new_formatting = MarkdownParser.parse(text)
+        guard new_formatting.tokens.count > 0 else { return }
+        var first_changed_token_idx = 0
+        for (i, new_f) in new_formatting.tokens.enumerated() {
+            first_changed_token_idx = i
+            if i >= currFormatting.tokens.count || new_f != currFormatting.tokens[i] {
+                break
+            }
+        }
 
+        isUpdatingFormatting = true
         textStorage.beginEditing()
-        defer { textStorage.endEditing() }
-        resetAllFormatting(textStorage: textStorage)
-        for token in formatting.tokens {
+        defer {
+            currFormatting = new_formatting
+            textStorage.endEditing()
+            isUpdatingFormatting = false
+        }
+
+        let first_changed_str_idx = new_formatting.tokens[first_changed_token_idx].startI
+        let change_len = text.unicodeScalars.count - first_changed_str_idx
+        let updatable_range = NSRange(location: first_changed_str_idx, length: change_len)
+        resetFormattingForRange(textStorage: textStorage, range: updatable_range)
+        for token in new_formatting.tokens[first_changed_token_idx...] {
             let range = NSRange(location: token.startI, length: token.endI - token.startI)
-            guard range.location >= 0 && NSMaxRange(range) <= text.count else { continue }
+            assert(range.location >= 0)
+            assert(text.unicodeScalars.count > 0)
+            assert(NSMaxRange(range) <= text.unicodeScalars.count)
             applyTokenFormatting(token: token, range: range, to: textStorage)
         }
     }
 
     private func resetAllFormatting(textStorage: NSTextStorage) {
-        let fullRange = NSRange(location: 0, length: string.count)
+        let fullRange = NSRange(location: 0, length: string.unicodeScalars.count)
+        resetFormattingForRange(textStorage: textStorage, range: fullRange)
+    }
+
+    private func resetFormattingForRange(textStorage: NSTextStorage, range: NSRange) {
         let baseFontSize = storedBaseFontSize
         let defaultFont = NSFont.systemFont(ofSize: baseFontSize)
         let defaultColor = textColor ?? NSColor.textColor
@@ -122,7 +144,7 @@ class MarkdownTextView: NSTextView {
             .paragraphStyle: defaultParagraphStyle,
         ]
 
-        textStorage.setAttributes(defaultAttributes, range: fullRange)
+        textStorage.setAttributes(defaultAttributes, range: range)
         typingAttributes = [
             .font: defaultFont,
             .foregroundColor: defaultColor,
@@ -186,7 +208,7 @@ class MarkdownTextView: NSTextView {
             attributes[.foregroundColor] = codeTextColor
             attributes[.backgroundColor] = codeBackgroundColor
 
-            if NSMaxRange(range) < string.count {
+            if NSMaxRange(range) < string.unicodeScalars.count {
                 mod_range = NSRange(location: range.location, length: range.length + 1)
             }
 
@@ -245,7 +267,8 @@ class MarkdownTextView: NSTextView {
             attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
 
             if let urlString = extractURL(from: token.contents),
-               let url = URL(string: urlString) {
+               let url = URL(string: urlString)
+            {
                 attributes[.link] = url
             }
         }
@@ -281,10 +304,11 @@ class MarkdownTextView: NSTextView {
     private func extractURL(from linkContent: String) -> String? {
         guard let openParen = linkContent.lastIndex(of: "("),
               let closeParen = linkContent.lastIndex(of: ")"),
-              openParen < closeParen else {
+              openParen < closeParen
+        else {
             return nil
         }
         let urlStart = linkContent.index(after: openParen)
-        return String(linkContent[urlStart..<closeParen])
+        return String(linkContent[urlStart ..< closeParen])
     }
 }
