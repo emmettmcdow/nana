@@ -26,15 +26,16 @@ pub const SearchResult = struct {
 
 pub const DB = struct {
     const Self = @This();
+    const VecStorage = vec_storage.Storage(vec_sz, vec_type);
 
     embedder: embed.Embedder,
     relational: *model.DB,
-    vecs: vec_storage.Storage,
+    vecs: VecStorage,
     basedir: std.fs.Dir,
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, basedir: std.fs.Dir, relational: *model.DB) !Self {
-        var vecs = try vec_storage.Storage.init(allocator, basedir, .{});
+        var vecs = try VecStorage.init(allocator, basedir, .{});
         try vecs.load(VECTOR_DB_PATH);
         const embedder = try embed.Embedder.init(allocator);
         return .{
@@ -56,7 +57,7 @@ pub const DB = struct {
 
         const query_vec_slice = (try self.embedder.embed(query)) orelse return 0;
         defer self.allocator.free(query_vec_slice);
-        const query_vec: Vector = query_vec_slice[0..vec_sz].*;
+        const query_vec: @Vector(vec_sz, vec_type) = query_vec_slice[0..vec_sz].*;
 
         var vec_ids: [1000]VectorID = undefined;
 
@@ -110,7 +111,7 @@ pub const DB = struct {
                 embedded += 1;
                 const vec_id = if (try self.embedder.embed(sentence.contents)) |vec_slice| block: {
                     defer self.allocator.free(vec_slice);
-                    const new_vec: Vector = vec_slice[0..vec_sz].*;
+                    const new_vec: @Vector(vec_sz, vec_type) = vec_slice[0..vec_sz].*;
                     break :block try self.vecs.put(new_vec);
                 } else self.vecs.nullVec();
 
@@ -278,7 +279,7 @@ test "search remove duplicates" {
     }, buffer[0..1]);
 }
 
-fn getVectorsForNote(db: *DB, rel: *model.DB, noteID: NoteID, vecs: []Vector) !usize {
+fn getVectorsForNote(db: *DB, rel: *model.DB, noteID: NoteID, vecs: []@Vector(vec_sz, vec_type)) !usize {
     const vec_rows = try rel.vecsForNote(testing_allocator, noteID);
     defer testing_allocator.free(vec_rows);
     for (vec_rows, 0..) |v, i| {
@@ -300,11 +301,11 @@ test "embedText no update" {
     const noteID = try rel.create();
 
     try db.embedText(noteID, "", "apple");
-    var initial_vecs: [1]Vector = undefined;
+    var initial_vecs: [1]@Vector(vec_sz, vec_type) = undefined;
     try expectEqual(1, try getVectorsForNote(&db, &rel, noteID, &initial_vecs));
 
     try db.embedText(noteID, "apple", "apple");
-    var updated_vecs: [1]Vector = undefined;
+    var updated_vecs: [1]@Vector(vec_sz, vec_type) = undefined;
     try expectEqual(1, try getVectorsForNote(&db, &rel, noteID, &updated_vecs));
 
     // Vector should be different (apple != banana)
@@ -324,11 +325,11 @@ test "embedText updates single word sentence" {
     const noteID = try rel.create();
 
     try db.embedText(noteID, "", "apple");
-    var initial_vecs: [1]Vector = undefined;
+    var initial_vecs: [1]@Vector(vec_sz, vec_type) = undefined;
     try expectEqual(1, try getVectorsForNote(&db, &rel, noteID, &initial_vecs));
 
     try db.embedText(noteID, "apple", "banana");
-    var updated_vecs: [1]Vector = undefined;
+    var updated_vecs: [1]@Vector(vec_sz, vec_type) = undefined;
     try expectEqual(1, try getVectorsForNote(&db, &rel, noteID, &updated_vecs));
 
     // Vector should be different (apple != banana)
@@ -348,11 +349,11 @@ test "embedText updates last sentence" {
     const noteID = try rel.create();
 
     try db.embedText(noteID, "", "apple. banana.");
-    var initial_vecs: [2]Vector = undefined;
+    var initial_vecs: [2]@Vector(vec_sz, vec_type) = undefined;
     try expectEqual(2, try getVectorsForNote(&db, &rel, noteID, &initial_vecs));
 
     try db.embedText(noteID, "apple. banana.", "apple. orange.");
-    var updated_vecs: [2]Vector = undefined;
+    var updated_vecs: [2]@Vector(vec_sz, vec_type) = undefined;
     try expectEqual(2, try getVectorsForNote(&db, &rel, noteID, &updated_vecs));
 
     // First vector should be the same (apple == apple)
@@ -378,14 +379,14 @@ test "embedText updates only changed sentences" {
     const initial_content = "apple. banana. cherry.";
     try db.embedText(noteID, "", initial_content);
 
-    var initial_vecs: [3]Vector = undefined;
+    var initial_vecs: [3]@Vector(vec_sz, vec_type) = undefined;
     try expectEqual(3, try getVectorsForNote(&db, &rel, noteID, &initial_vecs));
 
     // Updated content: same first and last words, different middle word
     const updated_content = "apple. dragonfruit. cherry.";
     try db.embedText(noteID, initial_content, updated_content);
 
-    var updated_vecs: [3]Vector = undefined;
+    var updated_vecs: [3]@Vector(vec_sz, vec_type) = undefined;
     try expectEqual(3, try getVectorsForNote(&db, &rel, noteID, &updated_vecs));
 
     try std.testing.expect(@reduce(.And, initial_vecs[0] == updated_vecs[0]));
@@ -408,13 +409,13 @@ test "embedText handle newlines" {
     const initial_content = "apple.\nbanana.\ngrape.";
     try db.embedText(noteID, "", initial_content);
 
-    var initial_vecs: [3]Vector = undefined;
+    var initial_vecs: [3]@Vector(vec_sz, vec_type) = undefined;
     try expectEqual(3, try getVectorsForNote(&db, &rel, noteID, &initial_vecs));
 
     const updated_content = "apple.\norange.\ngrape.";
     try db.embedText(noteID, initial_content, updated_content);
 
-    var updated_vecs: [3]Vector = undefined;
+    var updated_vecs: [3]@Vector(vec_sz, vec_type) = undefined;
     try expectEqual(3, try getVectorsForNote(&db, &rel, noteID, &updated_vecs));
 
     try std.testing.expect(@reduce(.And, initial_vecs[0] == updated_vecs[0]));
@@ -459,7 +460,7 @@ const VectorRow = model.VectorRow;
 const MultipleRemove = vec_storage.Error.MultipleRemove;
 const NoteID = model.NoteID;
 const types = @import("types.zig");
-const Vector = types.Vector;
 const VectorID = types.VectorID;
 const vec_sz = types.vec_sz;
+const vec_type = types.vec_type;
 const vec_storage = @import("vec_storage.zig");
