@@ -27,6 +27,9 @@ pub fn build(b: *std.Build) !void {
         // ios_target,
     };
 
+    const fake_vec_cfg = GlobalOptions{};
+    const real_vec_cfg = GlobalOptions{ .vec_sz = VEC_SZ };
+
     // Sources
     const root_file = b.path("src/root.zig");
     const model_file = b.path("src/model.zig");
@@ -82,10 +85,7 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .filters = &.{"root"},
     });
-    const root_options = b.addOptions();
-    root_options.addOption(usize, "vec_sz", VEC_SZ);
-    root_options.addOption(bool, "debug", debug);
-    root_unit_tests.root_module.addOptions("config", root_options);
+    real_vec_cfg.install(b, root_unit_tests, debug);
     _ = SQLite.create(.{
         .b = b,
         .dest = root_unit_tests,
@@ -151,18 +151,12 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
     });
-    const embed_options = b.addOptions();
-    embed_options.addOption(usize, "vec_sz", VEC_SZ);
-    embed_options.addOption(bool, "debug", debug);
-    embed_unit_tests.root_module.addOptions("config", embed_options);
+    (real_vec_cfg).install(b, embed_unit_tests, debug);
     const run_embed_unit_tests = b.addRunArtifact(embed_unit_tests);
     const test_embed = b.step("test-embed", "run the tests for src/embed.zig");
     test_embed.dependOn(&run_embed_unit_tests.step);
 
     // Vector Storage
-    const vec_storage_options = b.addOptions();
-    vec_storage_options.addOption(usize, "vec_sz", 3);
-    vec_storage_options.addOption(bool, "debug", debug);
     const vec_storage_unit_tests = b.addTest(.{
         .root_source_file = vec_storage_file,
         .target = x86_target,
@@ -175,15 +169,12 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
     });
-    vec_storage_unit_tests.root_module.addOptions("config", vec_storage_options);
+    fake_vec_cfg.install(b, vec_storage_unit_tests, debug);
     const run_vec_storage_unit_tests = b.addRunArtifact(vec_storage_unit_tests);
     const test_vec_storage = b.step("test-vec_storage", "run the tests for src/vec_storage.zig");
     test_vec_storage.dependOn(&run_vec_storage_unit_tests.step);
 
     // Vector Storage
-    const markdown_options = b.addOptions();
-    markdown_options.addOption(usize, "vec_sz", 3);
-    markdown_options.addOption(bool, "debug", debug);
     const markdown_unit_tests = b.addTest(.{
         .root_source_file = markdown_file,
         .target = x86_target,
@@ -196,15 +187,12 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
     });
-    markdown_unit_tests.root_module.addOptions("config", markdown_options);
+    fake_vec_cfg.install(b, markdown_unit_tests, debug);
     const run_markdown_unit_tests = b.addRunArtifact(markdown_unit_tests);
     const test_markdown = b.step("test-markdown", "run the tests for src/markdown.zig");
     test_markdown.dependOn(&run_markdown_unit_tests.step);
 
     // Vector DB
-    const vec_options = b.addOptions();
-    vec_options.addOption(usize, "vec_sz", VEC_SZ);
-    vec_options.addOption(bool, "debug", debug);
     const vec_unit_tests = b.addTest(.{
         .root_source_file = vector_file,
         .target = x86_target,
@@ -229,30 +217,24 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
     });
-    vec_unit_tests.root_module.addOptions("config", vec_options);
+    real_vec_cfg.install(b, vec_unit_tests, debug);
     const run_vec_unit_tests = b.addRunArtifact(vec_unit_tests);
     const test_vec = b.step("test-vector", "run the tests for src/vector.zig");
     test_vec.dependOn(&run_vec_unit_tests.step);
 
     // Diff
-    const diff_options = b.addOptions();
-    diff_options.addOption(usize, "vec_sz", 3);
-    diff_options.addOption(bool, "debug", debug);
     const diff_unit_tests = b.addTest(.{
         .root_source_file = diff_file,
         .target = x86_target,
         .optimize = optimize,
         .filters = &.{"diff"},
     });
-    diff_unit_tests.root_module.addOptions("config", diff_options);
+    fake_vec_cfg.install(b, diff_unit_tests, debug);
     const run_diff_unit_tests = b.addRunArtifact(diff_unit_tests);
     const test_diff = b.step("test-diff", "run the tests for src/diff.zig");
     test_diff.dependOn(&run_diff_unit_tests.step);
 
     // Benchmark
-    const benchmark_options = b.addOptions();
-    benchmark_options.addOption(usize, "vec_sz", VEC_SZ);
-    benchmark_options.addOption(bool, "debug", debug);
     const benchmark_unit_tests = b.addTest(.{
         .root_source_file = benchmark_file,
         .target = x86_target,
@@ -277,14 +259,11 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
     });
-    benchmark_unit_tests.root_module.addOptions("config", benchmark_options);
+    real_vec_cfg.install(b, benchmark_unit_tests, debug);
     const run_benchmark_unit_tests = b.addRunArtifact(benchmark_unit_tests);
     const test_benchmark = b.step("test-benchmark", "run the tests for src/benchmark.zig");
     test_benchmark.dependOn(&run_benchmark_unit_tests.step);
 
-    const profile_options = b.addOptions();
-    profile_options.addOption(usize, "vec_sz", VEC_SZ);
-    profile_options.addOption(bool, "debug", debug);
     const profile_exe = b.addExecutable(.{
         .name = "profile",
         .root_source_file = profile_file,
@@ -309,7 +288,7 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
     });
-    profile_exe.root_module.addOptions("config", profile_options);
+    real_vec_cfg.install(b, profile_exe, debug);
     const run_profile = b.addRunArtifact(profile_exe);
     const profile_step = b.step("profile", "run the profile executable");
     profile_step.dependOn(&run_profile.step);
@@ -370,6 +349,21 @@ pub fn build(b: *std.Build) !void {
         break :step builder.build();
     });
 }
+
+const GlobalOptions = struct {
+    vec_sz: usize = 3,
+    vec_type: type = f32,
+
+    const Self = @This();
+
+    pub fn install(self: Self, b: *std.Build, dest: *Step.Compile, debug: bool) void {
+        const options = b.addOptions();
+        options.addOption(usize, "vec_sz", self.vec_sz);
+        // options.addOption(type, "vec_type", self.vec_type);
+        options.addOption(bool, "debug", debug);
+        dest.root_module.addOptions("config", options);
+    }
+};
 
 const Baselib = struct {
     pub const Options = struct {
