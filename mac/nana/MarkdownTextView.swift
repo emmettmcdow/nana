@@ -96,12 +96,57 @@ class MarkdownTextView: NSTextView {
         let text = string
         let new_formatting = MarkdownParser.parse(text)
         guard new_formatting.tokens.count > 0 else { return }
+
+        if currFormatting.tokens.isEmpty {
+            for token in new_formatting.tokens {
+                let range = NSRange(location: token.startI, length: token.endI - token.startI)
+                assert(range.location >= 0)
+                assert(text.unicodeScalars.count > 0)
+                assert(NSMaxRange(range) <= text.unicodeScalars.count)
+                applyTokenFormatting(token: token, range: range, to: textStorage)
+            }
+            currFormatting = new_formatting
+            return
+        }
+
+        // Check for the first differing token
         var first_changed_token_idx = 0
-        for (i, new_f) in new_formatting.tokens.enumerated() {
+        for (i, new_tok) in new_formatting.tokens.enumerated() {
             first_changed_token_idx = i
-            if i >= currFormatting.tokens.count || new_f != currFormatting.tokens[i] {
+            if i >= currFormatting.tokens.count || new_tok != currFormatting.tokens[i] {
                 break
             }
+        }
+
+        // Check for the last differing token
+        let length_change = new_formatting.tokens.last!.endI - currFormatting.tokens.last!.endI
+        var end_offset_idx = 1
+        for new_tok in new_formatting.tokens.reversed() {
+            if end_offset_idx >= currFormatting.tokens.count {
+                break
+            }
+            let old_tok = currFormatting.tokens[currFormatting.tokens.count - end_offset_idx]
+            let old_tok_mod = MarkdownToken(
+                tType: old_tok.tType,
+                startI: old_tok.startI + length_change,
+                endI: old_tok.endI + length_change,
+                contents: old_tok.contents,
+                degree: old_tok.degree
+            )
+
+            print(text.unicodeScalars.count, length_change, new_tok, old_tok_mod)
+            assert(old_tok_mod.startI >= 0 && old_tok_mod.startI <= text.unicodeScalars.count)
+            assert(old_tok_mod.endI >= 0 && old_tok_mod.endI <= text.unicodeScalars.count)
+            if new_tok != old_tok_mod {
+                break
+            }
+            end_offset_idx += 1
+        }
+        let last_changed_token_idx = new_formatting.tokens.count - end_offset_idx
+
+        if last_changed_token_idx < first_changed_token_idx {
+            // No changes made
+            return
         }
 
         isUpdatingFormatting = true
@@ -113,10 +158,11 @@ class MarkdownTextView: NSTextView {
         }
 
         let first_changed_str_idx = new_formatting.tokens[first_changed_token_idx].startI
-        let change_len = text.unicodeScalars.count - first_changed_str_idx
+        let last_changed_str_idx = new_formatting.tokens[last_changed_token_idx].endI
+        let change_len = last_changed_str_idx - first_changed_str_idx
         let updatable_range = NSRange(location: first_changed_str_idx, length: change_len)
         resetFormattingForRange(textStorage: textStorage, range: updatable_range)
-        for token in new_formatting.tokens[first_changed_token_idx...] {
+        for token in new_formatting.tokens[first_changed_token_idx ... last_changed_token_idx] {
             let range = NSRange(location: token.startI, length: token.endI - token.startI)
             assert(range.location >= 0)
             assert(text.unicodeScalars.count > 0)
