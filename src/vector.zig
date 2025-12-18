@@ -1,6 +1,14 @@
 const VECTOR_DB_PATH = "vecs.db";
 
 const MAX_NOTE_LEN: usize = std.math.maxInt(u32);
+const NLEMBEDDING_VEC_SIMILARITY_THRESHOLD = 0.35;
+const NLEMBEDDING_SZ = 512;
+const NLEMBEDDING_TYPE = f32;
+
+comptime {
+    assert(vec_sz == NLEMBEDDING_SZ);
+    assert(vec_type == NLEMBEDDING_TYPE);
+}
 
 pub const CSearchResult = extern struct {
     id: c_int,
@@ -62,7 +70,11 @@ pub const DB = struct {
         var vec_ids: [1000]VectorID = undefined;
 
         debugSearchHeader(query);
-        const found_n = try self.vecs.search(query_vec, &vec_ids);
+        const found_n = try self.vecs.search(
+            query_vec,
+            &vec_ids,
+            NLEMBEDDING_VEC_SIMILARITY_THRESHOLD,
+        );
         try self.debugSearchRankedResults(vec_ids[0..found_n]);
 
         var unique_found_n: usize = 0;

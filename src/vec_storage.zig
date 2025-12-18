@@ -1,16 +1,8 @@
 pub const Error = error{MultipleRemove};
 
-const latest_format_version = 1;
+const LATEST_META_FORMAT_VERSION = 1;
 
-const NLEmbeddingSz = 512;
-const NLEmbeddingType = f32;
-const nlembedding_meta: StorageMetadata = .{
-    .fmt_v = latest_format_version,
-    .vec_sz = NLEmbeddingSz,
-    .vec_type = BinaryTypeRepresentation.to_binary(NLEmbeddingType),
-    .idx_type = BinaryTypeRepresentation.to_binary(u8),
-    .vec_n = 0,
-};
+const DEFAULT_DB_IDX_TYPE = BinaryTypeRepresentation.to_binary(u8);
 
 const NULL_VEC_ID: VectorID = std.math.maxInt(VectorID);
 
@@ -137,7 +129,7 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
 
     return struct {
         meta: StorageMetadata = .{
-            .fmt_v = latest_format_version,
+            .fmt_v = LATEST_META_FORMAT_VERSION,
             .vec_sz = vec_sz,
             .vec_type = BinaryTypeRepresentation.to_binary(vec_type),
             .idx_type = BinaryTypeRepresentation.to_binary(u8),
@@ -205,12 +197,9 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
             self.meta.vec_n -= 1;
         }
 
-        pub fn search(self: Self, query: Vector, buf: []VectorID) !usize {
+        pub fn search(self: Self, query: Vector, buf: []VectorID, threshold: f32) !usize {
             const zone = tracy.beginZone(@src(), .{ .name = "vec_storage.zig:search" });
             defer zone.end();
-            // This scores best on the benchmark but vibes-wise it's way off
-            const THRESHOLD = 0.35;
-            // const THRESHOLD = 0.7;
 
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             defer arena.deinit();
@@ -232,7 +221,7 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
                 if (valid == 0) continue;
                 const similar = cosine_similarity(vec_sz, vec_type, self.get(id), query);
                 debugSearchSimilar(id, similar);
-                if (similar > THRESHOLD) {
+                if (similar > threshold) {
                     try pq.add(.{ .id = id, .sim = similar });
                 }
             }
@@ -310,10 +299,10 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
             // Maybe we can come in and create multiple load body functions. Firstly you check the
             // version, and then you call out to one of the many load functions. Where the meta is
             // comptime known.
-            assert(self.meta.fmt_v == nlembedding_meta.fmt_v);
+            assert(self.meta.fmt_v == LATEST_META_FORMAT_VERSION);
             assert(self.meta.vec_sz == vec_sz);
             assert(self.meta.vec_type == BinaryTypeRepresentation.to_binary(vec_type));
-            assert(self.meta.idx_type == nlembedding_meta.idx_type);
+            assert(self.meta.idx_type == DEFAULT_DB_IDX_TYPE);
 
             try self.grow();
             try readSlice(&reader, self.index);
