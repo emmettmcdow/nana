@@ -1,9 +1,8 @@
-const VECTOR_DB_PATH = "vecs.db";
-
 const MAX_NOTE_LEN: usize = std.math.maxInt(u32);
 const NLEMBEDDING_VEC_SIMILARITY_THRESHOLD = 0.35;
 const NLEMBEDDING_SZ = 512;
 const NLEMBEDDING_TYPE = f32;
+const NLEMBEDDING_PATH = "nlembedding_vecs.db";
 
 comptime {
     assert(vec_sz == NLEMBEDDING_SZ);
@@ -44,7 +43,7 @@ pub const DB = struct {
 
     pub fn init(allocator: std.mem.Allocator, basedir: std.fs.Dir, relational: *model.DB) !Self {
         var vecs = try VecStorage.init(allocator, basedir, .{});
-        try vecs.load(VECTOR_DB_PATH);
+        try vecs.load(NLEMBEDDING_PATH);
         const embedder = try embed.Embedder.init(allocator);
         return .{
             .embedder = embedder,
@@ -170,7 +169,7 @@ pub const DB = struct {
                 };
             }
         }
-        try self.vecs.save(VECTOR_DB_PATH);
+        try self.vecs.save(NLEMBEDDING_PATH);
 
         const ratio: usize = blk: {
             const num: f64 = @floatFromInt(recycled);
