@@ -7,7 +7,7 @@ pub const TITLE_LEN = TITLE_BUF_LEN - ELLIPSIS_LEN;
 pub const Runtime = struct {
     basedir: std.fs.Dir,
     db: *model.DB,
-    vectors: vector.DB,
+    vectors: *VectorDB,
     markdown: markdown.Markdown,
     allocator: std.mem.Allocator,
     skipEmbed: bool = false,
@@ -36,10 +36,14 @@ pub const Runtime = struct {
         errdefer allocator.destroy(nl_embedder);
         nl_embedder.* = try embed.NLEmbedder.init();
 
+        const vectors = try allocator.create(VectorDB);
+        errdefer allocator.destroy(vectors);
+        vectors.* = try VectorDB.init(allocator, opts.basedir, db, nl_embedder.embedder());
+
         var self = Runtime{
             .basedir = opts.basedir,
             .db = db,
-            .vectors = try vector.DB.init(allocator, opts.basedir, db, nl_embedder.embedder()),
+            .vectors = vectors,
             .markdown = markdown_parser,
             .allocator = allocator,
             .skipEmbed = opts.skipEmbed,
@@ -75,6 +79,7 @@ pub const Runtime = struct {
         self.db.deinit();
         self.allocator.destroy(self.db);
         self.allocator.destroy(self.nl_embedder);
+        self.allocator.destroy(self.vectors);
     }
 
     /// Create a new note.
@@ -1289,3 +1294,4 @@ const NoteID = model.NoteID;
 pub const SearchResult = vector.SearchResult;
 const util = @import("util.zig");
 const vector = @import("vector.zig");
+const VectorDB = vector.VectorDB(.apple_nlembedding);
