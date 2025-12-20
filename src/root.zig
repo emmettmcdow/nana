@@ -12,6 +12,7 @@ pub const Runtime = struct {
     allocator: std.mem.Allocator,
     skipEmbed: bool = false,
     lastParsedMD: ?std.ArrayList(u8) = null,
+    nl_embedder: *embed.NLEmbedder,
 
     /// Optional arguments for initializing the libnana runtime.
     pub const Opts = struct {
@@ -30,13 +31,19 @@ pub const Runtime = struct {
         const db = try allocator.create(model.DB);
         errdefer allocator.destroy(db);
         db.* = try model.DB.init(allocator, .{ .basedir = opts.basedir, .mem = opts.mem });
+
+        const nl_embedder = try allocator.create(embed.NLEmbedder);
+        errdefer allocator.destroy(nl_embedder);
+        nl_embedder.* = try embed.NLEmbedder.init();
+
         var self = Runtime{
             .basedir = opts.basedir,
             .db = db,
-            .vectors = try vector.DB.init(allocator, opts.basedir, db),
+            .vectors = try vector.DB.init(allocator, opts.basedir, db, nl_embedder.embedder()),
             .markdown = markdown_parser,
             .allocator = allocator,
             .skipEmbed = opts.skipEmbed,
+            .nl_embedder = nl_embedder,
         };
 
         try self.migrate();
@@ -67,6 +74,7 @@ pub const Runtime = struct {
         self.vectors.deinit();
         self.db.deinit();
         self.allocator.destroy(self.db);
+        self.allocator.destroy(self.nl_embedder);
     }
 
     /// Create a new note.
@@ -1273,6 +1281,7 @@ const expectError = std.testing.expectError;
 const tracy = @import("tracy");
 
 pub const CSearchResult = vector.CSearchResult;
+const embed = @import("embed.zig");
 const markdown = @import("markdown.zig");
 const model = @import("model.zig");
 const Note = model.Note;

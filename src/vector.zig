@@ -1,13 +1,4 @@
 const MAX_NOTE_LEN: usize = std.math.maxInt(u32);
-const NLEMBEDDING_VEC_SIMILARITY_THRESHOLD = 0.35;
-const NLEMBEDDING_SZ = 512;
-const NLEMBEDDING_TYPE = f32;
-const NLEMBEDDING_PATH = "nlembedding_vecs.db";
-
-comptime {
-    assert(vec_sz == NLEMBEDDING_SZ);
-    assert(vec_type == NLEMBEDDING_TYPE);
-}
 
 pub const CSearchResult = extern struct {
     id: c_int,
@@ -41,10 +32,9 @@ pub const DB = struct {
     basedir: std.fs.Dir,
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator, basedir: std.fs.Dir, relational: *model.DB) !Self {
+    pub fn init(allocator: std.mem.Allocator, basedir: std.fs.Dir, relational: *model.DB, embedder: embed.Embedder) !Self {
         var vecs = try VecStorage.init(allocator, basedir, .{});
-        try vecs.load(NLEMBEDDING_PATH);
-        const embedder = try embed.Embedder.init(allocator);
+        try vecs.load(embedder.path);
         return .{
             .embedder = embedder,
             .relational = relational,
@@ -62,9 +52,11 @@ pub const DB = struct {
         const zone = tracy.beginZone(@src(), .{ .name = "vector.zig:search" });
         defer zone.end();
 
-        const query_vec_slice = (try self.embedder.embed(query)) orelse return 0;
-        defer self.allocator.free(query_vec_slice);
-        const query_vec: @Vector(vec_sz, vec_type) = query_vec_slice[0..vec_sz].*;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+
+        const query_vec_union = (try self.embedder.embed(arena.allocator(), query)) orelse return 0;
+        const query_vec = query_vec_union.apple_nlembedding.*;
 
         var vec_ids: [1000]VectorID = undefined;
 
@@ -72,7 +64,7 @@ pub const DB = struct {
         const found_n = try self.vecs.search(
             query_vec,
             &vec_ids,
-            NLEMBEDDING_VEC_SIMILARITY_THRESHOLD,
+            self.embedder.threshold,
         );
         try self.debugSearchRankedResults(vec_ids[0..found_n]);
 
@@ -107,23 +99,23 @@ pub const DB = struct {
 
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
+        const allocator = arena.allocator();
 
-        const old_vecs = try self.relational.vecsForNote(arena.allocator(), note_id);
-        var new_vecs = std.ArrayList(VectorRow).init(arena.allocator());
+        const old_vecs = try self.relational.vecsForNote(allocator, note_id);
+        var new_vecs = std.ArrayList(VectorRow).init(allocator);
+        errdefer new_vecs.deinit();
 
-        var used_list = try self.allocator.alloc(bool, old_vecs.len);
-        defer self.allocator.free(used_list);
+        var used_list = try allocator.alloc(bool, old_vecs.len);
         for (0..used_list.len) |i| used_list[i] = false;
 
         var embedded: usize = 0;
         var recycled: usize = 0;
-        for ((try diffSplit(old_contents, new_contents, arena.allocator())).items) |sentence| {
+
+        for ((try diffSplit(old_contents, new_contents, allocator)).items) |sentence| {
             if (sentence.new) {
                 embedded += 1;
-                const vec_id = if (try self.embedder.embed(sentence.contents)) |vec_slice| block: {
-                    defer self.allocator.free(vec_slice);
-                    const new_vec: @Vector(vec_sz, vec_type) = vec_slice[0..vec_sz].*;
-                    break :block try self.vecs.put(new_vec);
+                const vec_id = if (try self.embedder.embed(allocator, sentence.contents)) |vec| block: {
+                    break :block try self.vecs.put(vec.apple_nlembedding.*);
                 } else self.vecs.nullVec();
 
                 try new_vecs.append(.{
@@ -169,7 +161,7 @@ pub const DB = struct {
                 };
             }
         }
-        try self.vecs.save(NLEMBEDDING_PATH);
+        try self.vecs.save(self.embedder.path);
 
         const ratio: usize = blk: {
             const num: f64 = @floatFromInt(recycled);
@@ -217,7 +209,9 @@ test "embedText hello" {
     defer arena.deinit();
     var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
     defer rel.deinit();
-    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel, te.iface);
     defer db.deinit();
 
     const id = try rel.create();
@@ -240,7 +234,9 @@ test "embedText skip empties" {
     defer arena.deinit();
     var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
     defer rel.deinit();
-    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel, te.iface);
     defer db.deinit();
 
     const id = try rel.create();
@@ -256,7 +252,9 @@ test "embedText clear previous" {
     defer arena.deinit();
     var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
     defer rel.deinit();
-    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel, te.iface);
     defer db.deinit();
 
     const id = try rel.create();
@@ -265,7 +263,6 @@ test "embedText clear previous" {
 
     var buf: [1]SearchResult = undefined;
     try expectEqual(1, try db.search("hello", &buf));
-
     try db.embedText(id, "hello", "flatiron");
     try expectEqual(0, try db.search("hello", &buf));
 }
@@ -277,7 +274,9 @@ test "search remove duplicates" {
     defer arena.deinit();
     var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
     defer rel.deinit();
-    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel, te.iface);
     defer db.deinit();
 
     const noteID1 = try rel.create();
@@ -299,6 +298,12 @@ fn getVectorsForNote(db: *DB, rel: *model.DB, noteID: NoteID, vecs: []@Vector(ve
     return vec_rows.len;
 }
 
+fn testEmbedder(allocator: std.mem.Allocator) !struct { e: *NLEmbedder, iface: embed.Embedder } {
+    const e = try allocator.create(NLEmbedder);
+    e.* = try NLEmbedder.init();
+    return .{ .e = e, .iface = e.embedder() };
+}
+
 test "embedText no update" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
@@ -306,7 +311,9 @@ test "embedText no update" {
     defer arena.deinit();
     var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
     defer rel.deinit();
-    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel, te.iface);
     defer db.deinit();
 
     const noteID = try rel.create();
@@ -330,7 +337,9 @@ test "embedText updates single word sentence" {
     defer arena.deinit();
     var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
     defer rel.deinit();
-    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel, te.iface);
     defer db.deinit();
 
     const noteID = try rel.create();
@@ -354,7 +363,9 @@ test "embedText updates last sentence" {
     defer arena.deinit();
     var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
     defer rel.deinit();
-    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel, te.iface);
     defer db.deinit();
 
     const noteID = try rel.create();
@@ -381,7 +392,9 @@ test "embedText updates only changed sentences" {
     defer arena.deinit();
     var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
     defer rel.deinit();
-    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel, te.iface);
     defer db.deinit();
 
     const noteID = try rel.create();
@@ -412,7 +425,9 @@ test "embedText handle newlines" {
     defer arena.deinit();
     var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
     defer rel.deinit();
-    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel, te.iface);
     defer db.deinit();
 
     const noteID = try rel.create();
@@ -441,7 +456,9 @@ test "handle multiple remove gracefully" {
     defer arena.deinit();
     var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
     defer rel.deinit();
-    var db = try DB.init(arena.allocator(), tmpD.dir, &rel);
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try DB.init(arena.allocator(), tmpD.dir, &rel, te.iface);
     defer db.deinit();
 
     const noteID = try rel.create();
@@ -470,6 +487,7 @@ const Note = model.Note;
 const VectorRow = model.VectorRow;
 const MultipleRemove = vec_storage.Error.MultipleRemove;
 const NoteID = model.NoteID;
+const NLEmbedder = embed.NLEmbedder;
 const types = @import("types.zig");
 const VectorID = types.VectorID;
 const vec_sz = types.vec_sz;
