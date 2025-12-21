@@ -582,7 +582,6 @@ test "embed - jinaembed" {
 
     const vec = output.?.jina_embedding.*;
     const sum = @reduce(.Add, vec);
-    std.debug.print("Jina embedding sum for 'Hello world': {d}\n", .{sum});
     try expectEqual(-13.268887, sum);
 }
 

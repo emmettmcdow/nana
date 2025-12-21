@@ -87,9 +87,8 @@ pub fn build(b: *std.Build) !void {
     // Copy model to mac app Resources for bundling
     const copy_model_to_mac = RunStep.create(b, "copy jina model to mac app");
     copy_model_to_mac.addArgs(&.{
-        "cp", "-R",
-        JinaModel.MODEL_DIR,
-        "mac/nana/Resources/",
+        "cp",                "-R",
+        JinaModel.MODEL_DIR, "mac/nana/Resources/",
     });
     copy_model_to_mac.step.dependOn(jina_model.step);
 
@@ -711,35 +710,48 @@ const JinaModel = struct {
 
     pub fn create(b: *std.Build) JinaModel {
         const mkdir_step = RunStep.create(b, "jina: create directories");
+        if (hasDir(MODEL_DIR)) {
+            const noop_step = b.allocator.create(Step) catch @panic("OOM");
+            noop_step.* = Step.init(.{
+                .id = .custom,
+                .name = "jina: directories already exist",
+                .owner = b,
+            });
+            return .{
+                .step = noop_step,
+                .tokenizer_path = .{ .cwd_relative = MODEL_DIR ++ "/tokenizer.json" },
+                .model_path = .{ .cwd_relative = MODEL_DIR ++ "/float32_model.mlpackage" },
+            };
+        }
         mkdir_step.addArgs(&.{
-            "mkdir", "-p",
+            "mkdir",                                                               "-p",
             MODEL_DIR ++ "/float32_model.mlpackage/Data/com.apple.CoreML/weights",
         });
 
         const dl_tokenizer = RunStep.create(b, "jina: download tokenizer.json");
         dl_tokenizer.addArgs(&.{
-            "curl", "-fsSL", "-o", MODEL_DIR ++ "/tokenizer.json",
+            "curl",                       "-fsSL", "-o", MODEL_DIR ++ "/tokenizer.json",
             HF_BASE ++ "/tokenizer.json",
         });
         dl_tokenizer.step.dependOn(&mkdir_step.step);
 
         const dl_manifest = RunStep.create(b, "jina: download Manifest.json");
         dl_manifest.addArgs(&.{
-            "curl", "-fsSL", "-o", MODEL_DIR ++ "/float32_model.mlpackage/Manifest.json",
+            "curl",                                                     "-fsSL", "-o", MODEL_DIR ++ "/float32_model.mlpackage/Manifest.json",
             HF_BASE ++ "/coreml/float32_model.mlpackage/Manifest.json",
         });
         dl_manifest.step.dependOn(&mkdir_step.step);
 
         const dl_mlmodel = RunStep.create(b, "jina: download model.mlmodel");
         dl_mlmodel.addArgs(&.{
-            "curl", "-fsSL", "-o", MODEL_DIR ++ "/float32_model.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+            "curl",                                                                           "-fsSL", "-o", MODEL_DIR ++ "/float32_model.mlpackage/Data/com.apple.CoreML/model.mlmodel",
             HF_BASE ++ "/coreml/float32_model.mlpackage/Data/com.apple.CoreML/model.mlmodel",
         });
         dl_mlmodel.step.dependOn(&mkdir_step.step);
 
         const dl_weights = RunStep.create(b, "jina: download weight.bin");
         dl_weights.addArgs(&.{
-            "curl", "-fsSL", "-o", MODEL_DIR ++ "/float32_model.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+            "curl",                                                                                "-fsSL", "-o", MODEL_DIR ++ "/float32_model.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
             HF_BASE ++ "/coreml/float32_model.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
         });
         dl_weights.step.dependOn(&mkdir_step.step);
@@ -763,8 +775,30 @@ const JinaModel = struct {
     }
 };
 
+fn hasDir(dir_path: []const u8) bool {
+    _ = std.fs.cwd().openDir(dir_path, .{}) catch |err| switch (err) {
+        FileNotFound => {
+            // Handle the case where the directory does not exist
+            std.debug.print("Directory '{s}' not found. Creating it now...\n", .{dir_path});
+            return false; // Or handle the error as appropriate for your build logic
+        },
+        NotDir => {
+            std.debug.print("Error: '{s}' is a file, not a directory.\n", .{dir_path});
+            return false;
+        },
+        else => |e| {
+            std.debug.print("An error occurred accessing '{s}': {any}\n", .{ dir_path, e });
+            return false;
+        },
+    };
+    return true;
+}
+
 const std = @import("std");
+const assert = std.debug.assert;
 const Step = std.Build.Step;
+const FileNotFound = std.fs.Dir.OpenError.FileNotFound;
+const NotDir = std.fs.Dir.OpenError.NotDir;
 const RunStep = Step.Run;
 const LazyPath = std.Build.LazyPath;
 
