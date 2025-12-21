@@ -134,7 +134,6 @@ class MarkdownTextView: NSTextView {
                 degree: old_tok.degree
             )
 
-            print(text.unicodeScalars.count, length_change, new_tok, old_tok_mod)
             assert(old_tok_mod.startI >= 0 && old_tok_mod.startI <= text.unicodeScalars.count)
             assert(old_tok_mod.endI >= 0 && old_tok_mod.endI <= text.unicodeScalars.count)
             if new_tok != old_tok_mod {
