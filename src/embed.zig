@@ -1,9 +1,11 @@
 pub const EmbeddingModel = enum {
     apple_nlembedding,
+    jina_embedding,
 };
 
 pub const EmbeddingModelOutput = union(EmbeddingModel) {
     apple_nlembedding: *const @Vector(NLEmbedder.VEC_SZ, NLEmbedder.VEC_TYPE),
+    jina_embedding: *const @Vector(JinaEmbedder.VEC_SZ, JinaEmbedder.VEC_TYPE),
 };
 
 pub const Embedder = struct {
@@ -30,6 +32,50 @@ pub const Embedder = struct {
 };
 
 //**************************************************************************************** Embedder
+pub const JinaEmbedder = struct {
+    pub const VEC_SZ = 512;
+    pub const VEC_TYPE = f32;
+    pub const ID = EmbeddingModel.apple_nlembedding;
+    pub const THRESHOLD = 0.35;
+    pub const PATH = @tagName(ID) ++ ".db";
+
+    pub fn init() !JinaEmbedder {
+        return .{};
+    }
+
+    pub fn embedder(self: *JinaEmbedder) Embedder {
+        return .{
+            .ptr = self,
+            .splitFn = split,
+            .embedFn = embed,
+            .deinitFn = deinit,
+            .id = ID,
+            .threshold = THRESHOLD,
+            .path = PATH,
+        };
+    }
+
+    pub fn deinit(ptr: *anyopaque) void {
+        _ = ptr;
+    }
+
+    fn split(self: *anyopaque, note: []const u8) EmbedIterator {
+        _ = self;
+        return EmbedIterator.init(note);
+    }
+
+    fn embed(ptr: *anyopaque, allocator: std.mem.Allocator, str: []const u8) !?EmbeddingModelOutput {
+        // const self: *NLEmbedder = @ptrCast(@alignCast(ptr));
+        _ = ptr;
+        _ = str;
+        const VecType = @Vector(VEC_SZ, VEC_TYPE);
+        const vec_buf: [*]align(@alignOf(VecType)) VEC_TYPE = @ptrCast((try allocator.alignedAlloc(VEC_TYPE, @alignOf(VecType), VEC_SZ)).ptr);
+        return EmbeddingModelOutput{
+            .jina_embedding = @ptrCast(vec_buf),
+        };
+    }
+};
+
 pub const NLEmbedder = struct {
     embedder_obj: Object,
 
@@ -156,7 +202,7 @@ test "embed - init" {
     _ = try NLEmbedder.init();
 }
 
-test "embed - embed" {
+test "embed - nlembed" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -179,6 +225,22 @@ test "embed - embed" {
     vec = output.?.apple_nlembedding.*;
     sum = @reduce(.Add, vec);
     try expectEqual(7.870239, sum);
+}
+
+test "embed - jinaembed" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var e = out: {
+        var e_temp = try JinaEmbedder.init();
+        break :out e_temp.embedder();
+    };
+
+    const output = try e.embed(allocator, "Hello world");
+    const vec = output.?.jina_embedding.*;
+    const sum = @reduce(.Add, vec);
+    try expectEqual(-1.5522018e-10, sum);
 }
 
 test "embed skip empty" {

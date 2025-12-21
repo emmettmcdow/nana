@@ -25,9 +25,11 @@ pub const SearchResult = struct {
 pub fn VectorDB(embedding_model: EmbeddingModel) type {
     const VEC_SZ = switch (embedding_model) {
         .apple_nlembedding => NLEmbedder.VEC_SZ,
+        .jina_embedding => JinaEmbedder.VEC_SZ,
     };
     const VEC_TYPE = switch (embedding_model) {
         .apple_nlembedding => NLEmbedder.VEC_TYPE,
+        .jina_embedding => JinaEmbedder.VEC_TYPE,
     };
 
     return struct {
@@ -500,6 +502,7 @@ const VectorRow = model.VectorRow;
 const MultipleRemove = vec_storage.Error.MultipleRemove;
 const NoteID = model.NoteID;
 const NLEmbedder = embed.NLEmbedder;
+const JinaEmbedder = embed.JinaEmbedder;
 const types = @import("types.zig");
 const VectorID = types.VectorID;
 const vec_storage = @import("vec_storage.zig");
