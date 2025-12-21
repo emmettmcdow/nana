@@ -1,6 +1,8 @@
 const VEC_SZ = 512;
+const JINA_VEC_SZ = 768;
 
 const xc_fw_path = "macos/NanaKit.xcframework";
+const jina_model_path = "models/jina-embeddings-v2-base-en";
 
 pub fn build(b: *std.Build) !void {
     const debug = b.option(bool, "debug-output", "Show debug output") orelse false;
@@ -74,6 +76,28 @@ pub fn build(b: *std.Build) !void {
     const signedFW = Codesign.create(.{ .b = b, .path = xc_fw_path });
     signedFW.step.dependOn(xcframework.step);
     install_step.dependOn(signedFW.step);
+
+    //////////////////////
+    // Jina Model Fetch //
+    //////////////////////
+    const jina_model = JinaModel.create(b);
+    const fetch_jina_step = b.step("fetch-jina-model", "Download Jina embeddings model from HuggingFace");
+    fetch_jina_step.dependOn(jina_model.step);
+
+    // Copy model to mac app Resources for bundling
+    const copy_model_to_mac = RunStep.create(b, "copy jina model to mac app");
+    copy_model_to_mac.addArgs(&.{
+        "cp", "-R",
+        JinaModel.MODEL_DIR,
+        "mac/nana/Resources/",
+    });
+    copy_model_to_mac.step.dependOn(jina_model.step);
+
+    const mkdir_mac_resources = RunStep.create(b, "create mac resources dir");
+    mkdir_mac_resources.addArgs(&.{ "mkdir", "-p", "mac/nana/Resources" });
+    copy_model_to_mac.step.dependOn(&mkdir_mac_resources.step);
+
+    install_step.dependOn(&copy_model_to_mac.step);
 
     ////////////////
     // Unit Tests //
@@ -153,6 +177,7 @@ pub fn build(b: *std.Build) !void {
     });
     (real_vec_cfg).install(b, embed_unit_tests, debug);
     const run_embed_unit_tests = b.addRunArtifact(embed_unit_tests);
+    run_embed_unit_tests.step.dependOn(jina_model.step);
     const test_embed = b.step("test-embed", "run the tests for src/embed.zig");
     test_embed.dependOn(&run_embed_unit_tests.step);
 
@@ -478,6 +503,8 @@ const ObjC = struct {
         });
         opts.dest.root_module.addImport("objc", objc_dep.module("objc"));
         opts.dest.root_module.linkFramework("NaturalLanguage", .{});
+        opts.dest.root_module.linkFramework("CoreML", .{});
+        opts.dest.root_module.linkFramework("Foundation", .{});
 
         return ObjC{};
     }
@@ -671,6 +698,68 @@ const Codesign = struct {
         };
 
         return self;
+    }
+};
+
+const JinaModel = struct {
+    const HF_BASE = "https://huggingface.co/jinaai/jina-embeddings-v2-base-en/resolve/main";
+    const MODEL_DIR = "models/jina-embeddings-v2-base-en";
+
+    step: *Step,
+    tokenizer_path: LazyPath,
+    model_path: LazyPath,
+
+    pub fn create(b: *std.Build) JinaModel {
+        const mkdir_step = RunStep.create(b, "jina: create directories");
+        mkdir_step.addArgs(&.{
+            "mkdir", "-p",
+            MODEL_DIR ++ "/float32_model.mlpackage/Data/com.apple.CoreML/weights",
+        });
+
+        const dl_tokenizer = RunStep.create(b, "jina: download tokenizer.json");
+        dl_tokenizer.addArgs(&.{
+            "curl", "-fsSL", "-o", MODEL_DIR ++ "/tokenizer.json",
+            HF_BASE ++ "/tokenizer.json",
+        });
+        dl_tokenizer.step.dependOn(&mkdir_step.step);
+
+        const dl_manifest = RunStep.create(b, "jina: download Manifest.json");
+        dl_manifest.addArgs(&.{
+            "curl", "-fsSL", "-o", MODEL_DIR ++ "/float32_model.mlpackage/Manifest.json",
+            HF_BASE ++ "/coreml/float32_model.mlpackage/Manifest.json",
+        });
+        dl_manifest.step.dependOn(&mkdir_step.step);
+
+        const dl_mlmodel = RunStep.create(b, "jina: download model.mlmodel");
+        dl_mlmodel.addArgs(&.{
+            "curl", "-fsSL", "-o", MODEL_DIR ++ "/float32_model.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+            HF_BASE ++ "/coreml/float32_model.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+        });
+        dl_mlmodel.step.dependOn(&mkdir_step.step);
+
+        const dl_weights = RunStep.create(b, "jina: download weight.bin");
+        dl_weights.addArgs(&.{
+            "curl", "-fsSL", "-o", MODEL_DIR ++ "/float32_model.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+            HF_BASE ++ "/coreml/float32_model.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+        });
+        dl_weights.step.dependOn(&mkdir_step.step);
+
+        const final_step = b.allocator.create(Step) catch @panic("OOM");
+        final_step.* = Step.init(.{
+            .id = .custom,
+            .name = "jina: download complete",
+            .owner = b,
+        });
+        final_step.dependOn(&dl_tokenizer.step);
+        final_step.dependOn(&dl_manifest.step);
+        final_step.dependOn(&dl_mlmodel.step);
+        final_step.dependOn(&dl_weights.step);
+
+        return .{
+            .step = final_step,
+            .tokenizer_path = .{ .cwd_relative = MODEL_DIR ++ "/tokenizer.json" },
+            .model_path = .{ .cwd_relative = MODEL_DIR ++ "/float32_model.mlpackage" },
+        };
     }
 };
 
