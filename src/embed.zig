@@ -34,8 +34,8 @@ pub const Embedder = struct {
 //**************************************************************************************** Embedder
 pub const JinaEmbedder = struct {
     pub const VEC_SZ = 512;
-    pub const VEC_TYPE = f32;
-    pub const ID = EmbeddingModel.apple_nlembedding;
+    pub const VEC_TYPE = f16;
+    pub const ID = EmbeddingModel.jina_embedding;
     pub const THRESHOLD = 0.35;
     pub const PATH = @tagName(ID) ++ ".db";
 
@@ -240,7 +240,7 @@ test "embed - jinaembed" {
     const output = try e.embed(allocator, "Hello world");
     const vec = output.?.jina_embedding.*;
     const sum = @reduce(.Add, vec);
-    try expectEqual(-1.5522018e-10, sum);
+    try expectEqual(-2.588e1, sum);
 }
 
 test "embed skip empty" {
