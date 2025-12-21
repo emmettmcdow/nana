@@ -399,7 +399,10 @@ fn getModelPath(
 
             if (std.fs.accessAbsolute(bundle_path, .{})) |_| {
                 return bundle_path;
-            } else |_| {}
+            } else |_| {
+                const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+                return try std.fmt.allocPrintZ(allocator, "{s}/{s}", .{ cwd, cwd_relative_path });
+            }
         }
     }
 

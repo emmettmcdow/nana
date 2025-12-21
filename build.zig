@@ -1,8 +1,6 @@
 const VEC_SZ = 512;
-const JINA_VEC_SZ = 768;
 
 const xc_fw_path = "macos/NanaKit.xcframework";
-const jina_model_path = "models/jina-embeddings-v2-base-en";
 
 pub fn build(b: *std.Build) !void {
     const debug = b.option(bool, "debug-output", "Show debug output") orelse false;
