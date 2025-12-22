@@ -57,7 +57,7 @@ pub const JinaEmbedder = struct {
     const MAX_SEQ_LEN = 512;
 
     pub fn init() !JinaEmbedder {
-        const init_zone = tracy.beginZone(@src(), .{ .name = "jina_embed.zig:init" });
+        const init_zone = tracy.beginZone(@src(), .{ .name = "embed.zig:JinaEmbedder.init" });
         defer init_zone.end();
 
         var tokenizer_alloc = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -206,7 +206,7 @@ pub const JinaEmbedder = struct {
     ) !?EmbeddingModelOutput {
         const self: *JinaEmbedder = @ptrCast(@alignCast(ptr));
 
-        const zone = tracy.beginZone(@src(), .{ .name = "jina_embed.zig:embed" });
+        const zone = tracy.beginZone(@src(), .{ .name = "embed.zig:JinaEmbedder.embed" });
         defer zone.end();
 
         if (str.len == 0) {

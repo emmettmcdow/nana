@@ -3,7 +3,6 @@ const Allocator = std.mem.Allocator;
 
 pub const WordPieceTokenizer = struct {
     vocab: std.StringHashMap(u32),
-    ids_to_tokens: std.AutoHashMap(u32, []const u8),
     allocator: Allocator,
 
     const Self = @This();
@@ -19,7 +18,6 @@ pub const WordPieceTokenizer = struct {
     pub fn init(allocator: Allocator, vocab_json: []const u8) !Self {
         var self = Self{
             .vocab = std.StringHashMap(u32).init(allocator),
-            .ids_to_tokens = std.AutoHashMap(u32, []const u8).init(allocator),
             .allocator = allocator,
         };
 
@@ -32,7 +30,6 @@ pub const WordPieceTokenizer = struct {
             const id: u32 = @intCast(value.integer);
             const key_copy = try allocator.dupe(u8, key);
             try self.vocab.put(key_copy, id);
-            try self.ids_to_tokens.put(id, key_copy);
         }
 
         return self;
@@ -44,7 +41,6 @@ pub const WordPieceTokenizer = struct {
             self.allocator.free(key.*);
         }
         self.vocab.deinit();
-        self.ids_to_tokens.deinit();
     }
 
     pub fn tokenize(self: *Self, allocator: Allocator, text: []const u8) ![]u32 {
@@ -161,26 +157,6 @@ pub const WordPieceTokenizer = struct {
         }
 
         return sub_tokens.toOwnedSlice();
-    }
-
-    pub fn decode(self: *Self, allocator: Allocator, token_ids: []const u32) ![]const u8 {
-        var result = std.ArrayList(u8).init(allocator);
-        errdefer result.deinit();
-
-        for (token_ids) |id| {
-            if (self.ids_to_tokens.get(id)) |token| {
-                if (std.mem.startsWith(u8, token, "##")) {
-                    try result.appendSlice(token[2..]);
-                } else {
-                    if (result.items.len > 0) {
-                        try result.append(' ');
-                    }
-                    try result.appendSlice(token);
-                }
-            }
-        }
-
-        return result.toOwnedSlice();
     }
 };
 
