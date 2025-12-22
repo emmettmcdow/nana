@@ -1,6 +1,10 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const CLS_TOKEN_ID = 101;
+const SEP_TOKEN_ID = 102;
+const UNK_TOKEN_ID = 100;
+
 pub const WordPieceTokenizer = struct {
     vocab: std.StringHashMap(u32),
     allocator: Allocator,
@@ -47,7 +51,7 @@ pub const WordPieceTokenizer = struct {
         var token_ids = std.ArrayList(u32).init(allocator);
         errdefer token_ids.deinit();
 
-        try token_ids.append(self.vocab.get(CLS_TOKEN) orelse 101);
+        try token_ids.append(self.vocab.get(CLS_TOKEN) orelse CLS_TOKEN_ID);
 
         const basic_tokens = try self.basicTokenize(allocator, text);
         defer allocator.free(basic_tokens);
@@ -62,12 +66,12 @@ pub const WordPieceTokenizer = struct {
                 if (self.vocab.get(wp_token)) |id| {
                     try token_ids.append(id);
                 } else {
-                    try token_ids.append(self.vocab.get(UNK_TOKEN) orelse 100);
+                    try token_ids.append(self.vocab.get(UNK_TOKEN) orelse UNK_TOKEN_ID);
                 }
             }
         }
 
-        try token_ids.append(self.vocab.get(SEP_TOKEN) orelse 102);
+        try token_ids.append(self.vocab.get(SEP_TOKEN) orelse SEP_TOKEN_ID);
 
         return token_ids.toOwnedSlice();
     }
@@ -172,8 +176,8 @@ test "tokenizer - basic" {
     defer std.testing.allocator.free(tokens);
 
     try std.testing.expectEqual(@as(usize, 4), tokens.len);
-    try std.testing.expectEqual(@as(u32, 101), tokens[0]); // [CLS]
+    try std.testing.expectEqual(@as(u32, CLS_TOKEN_ID), tokens[0]); // [CLS]
     try std.testing.expectEqual(@as(u32, 7592), tokens[1]); // hello
     try std.testing.expectEqual(@as(u32, 2088), tokens[2]); // world
-    try std.testing.expectEqual(@as(u32, 102), tokens[3]); // [SEP]
+    try std.testing.expectEqual(@as(u32, SEP_TOKEN_ID), tokens[3]); // [SEP]
 }
