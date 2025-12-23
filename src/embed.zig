@@ -85,8 +85,8 @@ pub const JinaEmbedder = struct {
             return error.TokenizerLoadFailed;
         };
 
-        const tok = tokenizer_mod.WordPieceTokenizer.init(
-            tokenizer_alloc.allocator(),
+        var tok: WordPieceTokenizer = undefined;
+        tok.init(
             tokenizer_json,
         ) catch |err| {
             std.log.err("Failed to parse tokenizer.json: {}\n", .{err});
@@ -374,8 +374,6 @@ pub const JinaEmbedder = struct {
     }
 };
 
-const tokenizer_mod = @import("tokenizer.zig");
-
 fn getModelPath(
     allocator: Allocator,
     cwd_relative_path: []const u8,
@@ -620,6 +618,8 @@ const assert = std.debug.assert;
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const parseFromSliceLeaky = std.json.parseFromSliceLeaky;
+const tokenizer_mod = @import("tokenizer.zig");
+const WordPieceTokenizer = tokenizer_mod.WordPieceTokenizer;
 
 const objc = @import("objc");
 const Object = objc.Object;

@@ -5,11 +5,14 @@ const CLS_TOKEN_ID = 101;
 const SEP_TOKEN_ID = 102;
 const UNK_TOKEN_ID = 100;
 
+const MAX_TOKENIZER_FILE_BYTES = 1_000_000;
+const BUFSIZE = 4 * MAX_TOKENIZER_FILE_BYTES;
+
 pub const WordPieceTokenizer = struct {
     vocab: std.StringHashMap(u32),
+    fba: std.heap.FixedBufferAllocator,
     allocator: Allocator,
-
-    const Self = @This();
+    buf: [BUFSIZE]u8 = undefined,
 
     pub const CLS_TOKEN = "[CLS]";
     pub const SEP_TOKEN = "[SEP]";
@@ -19,35 +22,31 @@ pub const WordPieceTokenizer = struct {
 
     const MAX_INPUT_CHARS_PER_WORD = 100;
 
-    pub fn init(allocator: Allocator, vocab_json: []const u8) !Self {
-        var self = Self{
-            .vocab = std.StringHashMap(u32).init(allocator),
-            .allocator = allocator,
-        };
+    pub fn init(self: *WordPieceTokenizer, vocab_json: []const u8) !void {
+        self.fba = std.heap.FixedBufferAllocator.init(&self.buf);
+        self.allocator = self.fba.allocator();
+        self.vocab = std.StringHashMap(u32).init(self.allocator);
 
-        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, vocab_json, .{});
+        var temp_alloc = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        errdefer temp_alloc.deinit();
+
+        const parsed = try std.json.parseFromSlice(std.json.Value, temp_alloc.allocator(), vocab_json, .{});
         defer parsed.deinit();
 
         const vocab_obj = parsed.value.object.get("model").?.object.get("vocab").?.object;
 
         for (vocab_obj.keys(), vocab_obj.values()) |key, value| {
             const id: u32 = @intCast(value.integer);
-            const key_copy = try allocator.dupe(u8, key);
+            const key_copy = try self.allocator.dupe(u8, key);
             try self.vocab.put(key_copy, id);
         }
-
-        return self;
     }
 
-    pub fn deinit(self: *Self) void {
-        var it = self.vocab.keyIterator();
-        while (it.next()) |key| {
-            self.allocator.free(key.*);
-        }
+    pub fn deinit(self: *WordPieceTokenizer) void {
         self.vocab.deinit();
     }
 
-    pub fn tokenize(self: *Self, allocator: Allocator, text: []const u8) ![]u32 {
+    pub fn tokenize(self: *WordPieceTokenizer, allocator: Allocator, text: []const u8) ![]u32 {
         var token_ids = std.ArrayList(u32).init(allocator);
         errdefer token_ids.deinit();
 
@@ -76,7 +75,7 @@ pub const WordPieceTokenizer = struct {
         return token_ids.toOwnedSlice();
     }
 
-    fn basicTokenize(self: *Self, allocator: Allocator, text: []const u8) ![][]const u8 {
+    fn basicTokenize(self: *WordPieceTokenizer, allocator: Allocator, text: []const u8) ![][]const u8 {
         _ = self;
         var tokens = std.ArrayList([]const u8).init(allocator);
         errdefer {
@@ -114,7 +113,7 @@ pub const WordPieceTokenizer = struct {
         return tokens.toOwnedSlice();
     }
 
-    fn wordpieceTokenize(self: *Self, allocator: Allocator, word: []const u8) ![][]const u8 {
+    fn wordpieceTokenize(self: *WordPieceTokenizer, allocator: Allocator, word: []const u8) ![][]const u8 {
         if (word.len > MAX_INPUT_CHARS_PER_WORD) {
             var result = try allocator.alloc([]const u8, 1);
             result[0] = try allocator.dupe(u8, UNK_TOKEN);
@@ -169,7 +168,8 @@ test "tokenizer - basic" {
         \\{"model":{"vocab":{"[PAD]":0,"[UNK]":100,"[CLS]":101,"[SEP]":102,"hello":7592,"world":2088,"##ing":2075}}}
     ;
 
-    var tokenizer = try WordPieceTokenizer.init(std.testing.allocator, test_vocab);
+    var tokenizer: WordPieceTokenizer = undefined;
+    try tokenizer.init(test_vocab);
     defer tokenizer.deinit();
 
     const tokens = try tokenizer.tokenize(std.testing.allocator, "hello world");
