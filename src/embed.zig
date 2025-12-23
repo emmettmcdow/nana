@@ -454,7 +454,10 @@ pub const NLEmbedder = struct {
     }
 
     fn deinit(ptr: *anyopaque) void {
-        _ = ptr;
+        const self: *NLEmbedder = @ptrCast(@alignCast(ptr));
+        // Release the retained Objective-C object
+        const release_sel = objc.Sel.registerName("release");
+        _ = self.embedder_obj.msgSend(void, release_sel, .{});
     }
 
     fn split(self: *anyopaque, note: []const u8) EmbedIterator {
