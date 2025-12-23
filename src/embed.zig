@@ -323,6 +323,8 @@ pub const JinaEmbedder = struct {
         if (provider_err != null) return error.FeatureProviderInitFailed;
         if (feature_provider.value == 0) return error.FeatureProviderInitFailed;
 
+        // Note to future me: This prediction section is by far the slowest section. Should you
+        // choose to optimize it, look here first.
         var pred_err: ?*anyopaque = null;
         const prediction = self.model.msgSend(
             Object,
@@ -344,6 +346,7 @@ pub const JinaEmbedder = struct {
             std.log.err("Prediction returned null (no error reported)\n", .{});
             return error.PredictionFailed;
         }
+        // End of the prediction block
 
         const output_key = NSString.msgSend(Object, fromUTF8, .{"pooler_output"});
         const output_fv = prediction.msgSend(Object, featureValueForName, .{output_key});
