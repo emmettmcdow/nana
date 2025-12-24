@@ -487,6 +487,7 @@ pub const NLEmbedder = struct {
             return null;
         }
         const c_str = try std.fmt.allocPrintZ(allocator, "{s}", .{str});
+        defer allocator.free(c_str);
         const objc_str = NSString.msgSend(Object, fromUTF8, .{c_str.ptr});
 
         const VecType = @Vector(VEC_SZ, VEC_TYPE);

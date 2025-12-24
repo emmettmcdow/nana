@@ -38,6 +38,7 @@ pub fn build(b: *std.Build) !void {
     const vec_storage_file = b.path("src/vec_storage.zig");
     const vector_file = b.path("src/vector.zig");
     const benchmark_file = b.path("src/benchmark.zig");
+    const perf_file = b.path("src/perf_benchmark.zig");
     const profile_file = b.path("src/profile.zig");
     const markdown_file = b.path("src/markdown.zig");
 
@@ -285,6 +286,30 @@ pub fn build(b: *std.Build) !void {
     const run_benchmark_unit_tests = b.addRunArtifact(benchmark_unit_tests);
     const test_benchmark = b.step("test-benchmark", "run the tests for src/benchmark.zig");
     test_benchmark.dependOn(&run_benchmark_unit_tests.step);
+
+    // Benchmark
+    const perf_tests = b.addTest(.{
+        .root_source_file = perf_file,
+        .target = x86_target,
+        .optimize = optimize,
+        .filters = &.{"perf"},
+    });
+    _ = ObjC.create(.{
+        .b = b,
+        .dest = perf_tests,
+        .target = x86_target,
+        .optimize = optimize,
+    });
+    _ = Tracy.create(.{
+        .b = b,
+        .dest = perf_tests,
+        .target = x86_target,
+        .optimize = optimize,
+    });
+    real_vec_cfg.install(b, perf_tests, debug);
+    const run_perf_tests = b.addRunArtifact(perf_tests);
+    const test_perf = b.step("perf", "Run performance benchmark tests");
+    test_perf.dependOn(&run_perf_tests.step);
 
     const profile_exe = b.addExecutable(.{
         .name = "profile",
