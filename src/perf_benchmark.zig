@@ -25,8 +25,9 @@ test "consecutive nlembed" {
 }
 
 fn threadEmbed(allocator: Allocator, embedder: *Embedder, data: []const u8, lock: *Mutex) !void {
-    lock.lock();
-    defer lock.unlock();
+    // lock.lock();
+    // defer lock.unlock();
+    _ = lock;
 
     _ = try embedder.embed(allocator, data);
 }

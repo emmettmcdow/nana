@@ -413,6 +413,7 @@ fn getModelPath(
 
 pub const NLEmbedder = struct {
     embedder_obj: Object,
+    mutex: Mutex,
 
     pub const VEC_SZ = 512;
     pub const VEC_TYPE = f32;
@@ -441,6 +442,7 @@ pub const NLEmbedder = struct {
 
         return .{
             .embedder_obj = embedder_obj,
+            .mutex = Mutex{},
         };
     }
 
@@ -496,6 +498,8 @@ pub const NLEmbedder = struct {
             @alignOf(VecType),
             VEC_SZ,
         )).ptr);
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (!self.embedder_obj.msgSend(bool, getVectorForString, .{ vec_buf, objc_str })) {
             std.log.err("Failed to embed {s}\n", .{str[0..@min(str.len, 10)]});
             return null;
@@ -627,6 +631,7 @@ const expectEqualStrings = std.testing.expectEqualStrings;
 const parseFromSliceLeaky = std.json.parseFromSliceLeaky;
 const tokenizer_mod = @import("tokenizer.zig");
 const WordPieceTokenizer = tokenizer_mod.WordPieceTokenizer;
+const Mutex = std.Thread.Mutex;
 
 const objc = @import("objc");
 const Object = objc.Object;
