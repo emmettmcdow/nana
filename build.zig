@@ -309,6 +309,7 @@ pub fn build(b: *std.Build) !void {
     real_vec_cfg.install(b, perf_tests, debug);
     const run_perf_tests = b.addRunArtifact(perf_tests);
     const test_perf = b.step("perf", "Run performance benchmark tests");
+    run_perf_tests.step.dependOn(jina_model.step);
     test_perf.dependOn(&run_perf_tests.step);
 
     const profile_exe = b.addExecutable(.{

@@ -51,6 +51,38 @@ test "parallel nlembed" {
     }
 }
 
+test "consecutive jinaembed" {
+    var dbg_alloc = DebugAllocator(.{ .thread_safe = true, .never_unmap = true }).init;
+
+    const jina_embedder = try dbg_alloc.allocator().create(embed.JinaEmbedder);
+    jina_embedder.* = try embed.JinaEmbedder.init();
+    var embedder = jina_embedder.embedder();
+
+    var lock = Mutex{};
+    for (sentences) |sentence| {
+        _ = try threadEmbed(dbg_alloc.allocator(), &embedder, sentence, &lock);
+    }
+}
+
+test "parallel jinaembed" {
+    var dbg_alloc = DebugAllocator(.{ .thread_safe = true, .never_unmap = true }).init;
+
+    const jina_embedder = try dbg_alloc.allocator().create(embed.JinaEmbedder);
+    jina_embedder.* = try embed.JinaEmbedder.init();
+    var embedder = jina_embedder.embedder();
+
+    var threads: [10]Thread = undefined;
+
+    var lock = Mutex{};
+    for (sentences, 0..) |sentence, i| {
+        threads[i] = try Thread.spawn(.{}, threadEmbed, .{ dbg_alloc.allocator(), &embedder, sentence, &lock });
+    }
+
+    for (threads) |t| {
+        t.join();
+    }
+}
+
 const std = @import("std");
 const embed = @import("embed.zig");
 const Allocator = std.mem.Allocator;
