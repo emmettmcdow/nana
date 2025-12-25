@@ -38,6 +38,7 @@ pub fn build(b: *std.Build) !void {
     const vec_storage_file = b.path("src/vec_storage.zig");
     const vector_file = b.path("src/vector.zig");
     const benchmark_file = b.path("src/benchmark.zig");
+    const perf_file = b.path("src/perf_benchmark.zig");
     const profile_file = b.path("src/profile.zig");
     const markdown_file = b.path("src/markdown.zig");
 
@@ -74,6 +75,27 @@ pub fn build(b: *std.Build) !void {
     const signedFW = Codesign.create(.{ .b = b, .path = xc_fw_path });
     signedFW.step.dependOn(xcframework.step);
     install_step.dependOn(signedFW.step);
+
+    //////////////////////
+    // Jina Model Fetch //
+    //////////////////////
+    const jina_model = JinaModel.create(b);
+    const fetch_jina_step = b.step("fetch-jina-model", "Download Jina embeddings model from HuggingFace");
+    fetch_jina_step.dependOn(jina_model.step);
+
+    // Copy model to mac app Resources for bundling
+    const copy_model_to_mac = RunStep.create(b, "copy jina model to mac app");
+    copy_model_to_mac.addArgs(&.{
+        "cp",                "-R",
+        JinaModel.MODEL_DIR, "mac/nana/Resources/",
+    });
+    copy_model_to_mac.step.dependOn(jina_model.step);
+
+    const mkdir_mac_resources = RunStep.create(b, "create mac resources dir");
+    mkdir_mac_resources.addArgs(&.{ "mkdir", "-p", "mac/nana/Resources" });
+    copy_model_to_mac.step.dependOn(&mkdir_mac_resources.step);
+
+    install_step.dependOn(&copy_model_to_mac.step);
 
     ////////////////
     // Unit Tests //
@@ -153,6 +175,7 @@ pub fn build(b: *std.Build) !void {
     });
     (real_vec_cfg).install(b, embed_unit_tests, debug);
     const run_embed_unit_tests = b.addRunArtifact(embed_unit_tests);
+    run_embed_unit_tests.step.dependOn(jina_model.step);
     const test_embed = b.step("test-embed", "run the tests for src/embed.zig");
     test_embed.dependOn(&run_embed_unit_tests.step);
 
@@ -263,6 +286,31 @@ pub fn build(b: *std.Build) !void {
     const run_benchmark_unit_tests = b.addRunArtifact(benchmark_unit_tests);
     const test_benchmark = b.step("test-benchmark", "run the tests for src/benchmark.zig");
     test_benchmark.dependOn(&run_benchmark_unit_tests.step);
+
+    // Benchmark
+    const perf_tests = b.addTest(.{
+        .root_source_file = perf_file,
+        .target = x86_target,
+        .optimize = optimize,
+        .filters = &.{"perf"},
+    });
+    _ = ObjC.create(.{
+        .b = b,
+        .dest = perf_tests,
+        .target = x86_target,
+        .optimize = optimize,
+    });
+    _ = Tracy.create(.{
+        .b = b,
+        .dest = perf_tests,
+        .target = x86_target,
+        .optimize = optimize,
+    });
+    real_vec_cfg.install(b, perf_tests, debug);
+    const run_perf_tests = b.addRunArtifact(perf_tests);
+    const test_perf = b.step("perf", "Run performance benchmark tests");
+    run_perf_tests.step.dependOn(jina_model.step);
+    test_perf.dependOn(&run_perf_tests.step);
 
     const profile_exe = b.addExecutable(.{
         .name = "profile",
@@ -478,6 +526,8 @@ const ObjC = struct {
         });
         opts.dest.root_module.addImport("objc", objc_dep.module("objc"));
         opts.dest.root_module.linkFramework("NaturalLanguage", .{});
+        opts.dest.root_module.linkFramework("CoreML", .{});
+        opts.dest.root_module.linkFramework("Foundation", .{});
 
         return ObjC{};
     }
@@ -674,8 +724,105 @@ const Codesign = struct {
     }
 };
 
+const JinaModel = struct {
+    const HF_BASE = "https://huggingface.co/jinaai/jina-embeddings-v2-base-en/resolve/main";
+    const MODEL_DIR = "models/jina-embeddings-v2-base-en";
+
+    step: *Step,
+    tokenizer_path: LazyPath,
+    model_path: LazyPath,
+
+    pub fn create(b: *std.Build) JinaModel {
+        const mkdir_step = RunStep.create(b, "jina: create directories");
+        if (hasDir(MODEL_DIR)) {
+            const noop_step = b.allocator.create(Step) catch @panic("OOM");
+            noop_step.* = Step.init(.{
+                .id = .custom,
+                .name = "jina: directories already exist",
+                .owner = b,
+            });
+            return .{
+                .step = noop_step,
+                .tokenizer_path = .{ .cwd_relative = MODEL_DIR ++ "/tokenizer.json" },
+                .model_path = .{ .cwd_relative = MODEL_DIR ++ "/float32_model.mlpackage" },
+            };
+        }
+        mkdir_step.addArgs(&.{
+            "mkdir",                                                               "-p",
+            MODEL_DIR ++ "/float32_model.mlpackage/Data/com.apple.CoreML/weights",
+        });
+
+        const dl_tokenizer = RunStep.create(b, "jina: download tokenizer.json");
+        dl_tokenizer.addArgs(&.{
+            "curl",                       "-fsSL", "-o", MODEL_DIR ++ "/tokenizer.json",
+            HF_BASE ++ "/tokenizer.json",
+        });
+        dl_tokenizer.step.dependOn(&mkdir_step.step);
+
+        const dl_manifest = RunStep.create(b, "jina: download Manifest.json");
+        dl_manifest.addArgs(&.{
+            "curl",                                                     "-fsSL", "-o", MODEL_DIR ++ "/float32_model.mlpackage/Manifest.json",
+            HF_BASE ++ "/coreml/float32_model.mlpackage/Manifest.json",
+        });
+        dl_manifest.step.dependOn(&mkdir_step.step);
+
+        const dl_mlmodel = RunStep.create(b, "jina: download model.mlmodel");
+        dl_mlmodel.addArgs(&.{
+            "curl",                                                                           "-fsSL", "-o", MODEL_DIR ++ "/float32_model.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+            HF_BASE ++ "/coreml/float32_model.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+        });
+        dl_mlmodel.step.dependOn(&mkdir_step.step);
+
+        const dl_weights = RunStep.create(b, "jina: download weight.bin");
+        dl_weights.addArgs(&.{
+            "curl",                                                                                "-fsSL", "-o", MODEL_DIR ++ "/float32_model.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+            HF_BASE ++ "/coreml/float32_model.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+        });
+        dl_weights.step.dependOn(&mkdir_step.step);
+
+        const final_step = b.allocator.create(Step) catch @panic("OOM");
+        final_step.* = Step.init(.{
+            .id = .custom,
+            .name = "jina: download complete",
+            .owner = b,
+        });
+        final_step.dependOn(&dl_tokenizer.step);
+        final_step.dependOn(&dl_manifest.step);
+        final_step.dependOn(&dl_mlmodel.step);
+        final_step.dependOn(&dl_weights.step);
+
+        return .{
+            .step = final_step,
+            .tokenizer_path = .{ .cwd_relative = MODEL_DIR ++ "/tokenizer.json" },
+            .model_path = .{ .cwd_relative = MODEL_DIR ++ "/float32_model.mlpackage" },
+        };
+    }
+};
+
+fn hasDir(dir_path: []const u8) bool {
+    _ = std.fs.cwd().openDir(dir_path, .{}) catch |err| switch (err) {
+        FileNotFound => {
+            // Handle the case where the directory does not exist
+            std.debug.print("Directory '{s}' not found. Creating it now...\n", .{dir_path});
+            return false; // Or handle the error as appropriate for your build logic
+        },
+        NotDir => {
+            std.debug.print("Error: '{s}' is a file, not a directory.\n", .{dir_path});
+            return false;
+        },
+        else => |e| {
+            std.debug.print("An error occurred accessing '{s}': {any}\n", .{ dir_path, e });
+            return false;
+        },
+    };
+    return true;
+}
+
 const std = @import("std");
+const assert = std.debug.assert;
 const Step = std.Build.Step;
+const FileNotFound = std.fs.Dir.OpenError.FileNotFound;
+const NotDir = std.fs.Dir.OpenError.NotDir;
 const RunStep = Step.Run;
 const LazyPath = std.Build.LazyPath;
 
