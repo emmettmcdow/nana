@@ -21,6 +21,8 @@ import SwiftUI
 struct nanaApp: App {
     @State private var startupRun: Bool = false
     @State private var notesManager: NotesManager?
+    @State private var showingToast = false
+    @State private var toastMessage = ""
 
     @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
     @AppStorage("fontSize") private var fontSize: Double = 14
@@ -57,6 +59,16 @@ struct nanaApp: App {
         }
     }
 
+    func toast(msg: String) {
+        showingToast = true
+        toastMessage = msg
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            withAnimation {
+                showingToast = false
+            }
+        }
+    }
+
     var body: some Scene {
         let palette = Palette.forPreference(preference, colorScheme: colorScheme)
 
@@ -76,6 +88,11 @@ struct nanaApp: App {
                         .environmentObject(notesManager)
                         .disabled(!startupRun)
                 }
+                if showingToast {
+                    ToastView(message: toastMessage)
+                        .transition(.opacity)
+                        .animation(.easeInOut, value: showingToast)
+                }
             }
             .onAppear {
                 Task.detached {
@@ -88,6 +105,7 @@ struct nanaApp: App {
             CommandGroup(after: .newItem) {
                 Button("New Note") {
                     notesManager?.createNewNote()
+                    toast(msg: "Created new note")
                 }
                 .keyboardShortcut("p")
             }
@@ -95,10 +113,12 @@ struct nanaApp: App {
             CommandGroup(before: .toolbar) {
                 Button("Increase Font Size") {
                     fontSize = min(fontSize + 1, 64)
+                    toast(msg: "Increased font size")
                 }
                 .keyboardShortcut("+")
                 Button("Decrease Font Size") {
                     fontSize = max(fontSize - 1, 1)
+                    toast(msg: "Decreased font size")
                 }
                 .keyboardShortcut("-")
                 Divider()

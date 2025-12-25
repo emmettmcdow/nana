@@ -131,6 +131,8 @@ struct ContentView: View {
     @EnvironmentObject private var notesManager: NotesManager
     @State private var searchTimer: Timer?
     @State private var hover: Bool = false
+    @State private var showingToast = false
+    @State private var toastMessage = ""
 
     @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
     @Environment(\.colorScheme) private var colorScheme
@@ -140,6 +142,16 @@ struct ContentView: View {
         searchTimer?.invalidate()
         searchTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { _ in
             notesManager.search(query: q)
+        }
+    }
+
+    func toast(msg: String) {
+        showingToast = true
+        toastMessage = msg
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            withAnimation {
+                showingToast = false
+            }
         }
     }
 
@@ -180,9 +192,16 @@ struct ContentView: View {
                         .keyboardShortcut("s")
                         CircularPlusButton(action: {
                             notesManager.createNewNote()
+                            toast(msg: "Created new note")
                         })
                     }
                 }.padding()
+            }
+
+            if showingToast {
+                ToastView(message: toastMessage)
+                    .transition(.opacity)
+                    .animation(.easeInOut, value: showingToast)
             }
         }
         .background(palette.background)
@@ -193,6 +212,32 @@ struct ContentView: View {
             case .system: nil
             }
         }())
+    }
+}
+
+struct ToastView: View {
+    var message: String
+
+    @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let palette = Palette.forPreference(preference, colorScheme: colorScheme)
+        HStack {
+            VStack {
+                Spacer()
+                Text(message)
+                    .padding()
+                    .background(palette.background.opacity(0.7))
+                    .foregroundColor(palette.foreground.opacity(0.7))
+                    .italic()
+                    .cornerRadius(10)
+                    .shadow(radius: 10)
+                    .padding()
+                    .zIndex(1)
+            }
+            Spacer()
+        }
     }
 }
 
