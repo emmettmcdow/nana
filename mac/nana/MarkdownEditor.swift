@@ -140,6 +140,38 @@ struct MarkdownEditor: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
 
+            // Auto-scroll if cursor is near the bottom of the visible area
+            if let scrollView = textView.enclosingScrollView,
+               let layoutManager = textView.layoutManager,
+               let textContainer = textView.textContainer
+            {
+                let insertionPoint = textView.selectedRange().location
+                let glyphIndex = layoutManager.glyphIndexForCharacter(at: min(insertionPoint, textView.string.count - 1))
+                var lineRect = layoutManager.lineFragmentRect(forGlyphAt: max(0, glyphIndex), effectiveRange: nil)
+
+                // Account for text container inset
+                lineRect.origin.y += textView.textContainerInset.height
+
+                let visibleRect = scrollView.contentView.bounds
+                let bottomMargin: CGFloat = 160
+
+                let cursorBottom = lineRect.origin.y + lineRect.height
+                let visibleBottom = visibleRect.origin.y + visibleRect.height
+
+                if cursorBottom > visibleBottom - bottomMargin {
+                    let scrollPoint = NSPoint(
+                        x: visibleRect.origin.x,
+                        y: cursorBottom - visibleRect.height + bottomMargin
+                    )
+                    NSAnimationContext.runAnimationGroup { context in
+                        context.duration = 0.3
+                        context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                        scrollView.contentView.animator().setBoundsOrigin(scrollPoint)
+                    }
+                    scrollView.reflectScrolledClipView(scrollView.contentView)
+                }
+            }
+
             // Update the binding
             DispatchQueue.main.async {
                 self.parent.text = textView.string
