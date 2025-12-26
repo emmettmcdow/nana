@@ -60,8 +60,10 @@ struct nanaApp: App {
     }
 
     func toast(msg: String) {
-        showingToast = true
         toastMessage = msg
+        withAnimation {
+            showingToast = true
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
             withAnimation {
                 showingToast = false
@@ -88,11 +90,7 @@ struct nanaApp: App {
                         .environmentObject(notesManager)
                         .disabled(!startupRun)
                 }
-                if showingToast {
-                    ToastView(message: toastMessage)
-                        .transition(.opacity)
-                        .animation(.easeInOut, value: showingToast)
-                }
+                ToastView(showingToast: $showingToast, message: $toastMessage)
             }
             .onAppear {
                 Task.detached {

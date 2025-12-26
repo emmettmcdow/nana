@@ -146,7 +146,9 @@ struct ContentView: View {
     }
 
     func toast(msg: String) {
-        showingToast = true
+        withAnimation {
+            showingToast = true
+        }
         toastMessage = msg
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
             withAnimation {
@@ -197,12 +199,7 @@ struct ContentView: View {
                     }
                 }.padding()
             }
-
-            if showingToast {
-                ToastView(message: toastMessage)
-                    .transition(.opacity)
-                    .animation(.easeInOut, value: showingToast)
-            }
+            ToastView(showingToast: $showingToast, message: $toastMessage)
         }
         .background(palette.background)
         .preferredColorScheme({
@@ -216,7 +213,8 @@ struct ContentView: View {
 }
 
 struct ToastView: View {
-    var message: String
+    @Binding var showingToast: Bool
+    @Binding var message: String
 
     @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
     @Environment(\.colorScheme) private var colorScheme
@@ -226,15 +224,19 @@ struct ToastView: View {
         HStack {
             VStack {
                 Spacer()
-                Text(message)
-                    .padding()
-                    .background(palette.background.opacity(0.7))
-                    .foregroundColor(palette.foreground.opacity(0.7))
-                    .italic()
-                    .cornerRadius(10)
-                    .shadow(radius: 10)
-                    .padding()
-                    .zIndex(1)
+                if showingToast {
+                    Text(message)
+                        .padding()
+                        .background(palette.background.opacity(0.7))
+                        .foregroundColor(palette.foreground.opacity(0.7))
+                        .italic()
+                        .cornerRadius(10)
+                        .shadow(radius: 10)
+                        .padding()
+                        .zIndex(100)
+                        .transition(.opacity)
+                        .animation(.spring, value: showingToast)
+                }
             }
             Spacer()
         }
