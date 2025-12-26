@@ -8,6 +8,7 @@
 import SwiftUI
 
 struct FileList: View {
+    @Binding var visible: Bool
     @Binding var results: [SearchResult]
     var onSelect: (SearchResult) -> Void
     var onChange: (String) -> Void
@@ -25,74 +26,84 @@ struct FileList: View {
 
         GeometryReader { geometry in
             ZStack {
-                Color.black.opacity(0.3)
-                    .ignoresSafeArea()
-                    .onTapGesture {
-                        onChange("")
-                        closeList()
-                    }.keyboardShortcut("k")
-                VStack(spacing: 0) {
-                    HStack(spacing: 0) {
-                        Image(systemName: "magnifyingglass")
+                if visible {
+                    Color.black.opacity(0.3)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            onChange("")
+                            closeList()
+                        }.keyboardShortcut("k")
+                        .transition(.opacity)
+                }
+
+                if visible {
+                    VStack(spacing: 0) {
+                        HStack(spacing: 0) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 20))
+                                .foregroundColor(palette.tertiary)
+                            TextField(
+                                "",
+                                text: $query
+                            )
+                            .focused($queryFocused)
                             .font(.system(size: 20))
-                            .foregroundColor(palette.tertiary)
-                        TextField(
-                            "",
-                            text: $query
-                        )
-                        .focused($queryFocused)
-                        .font(.system(size: 20))
-                        .foregroundStyle(palette.foreground)
-                        .accentColor(palette.foreground)
-                        .textFieldStyle(.plain)
-                        .onChange(of: query, initial: true) { _, newtext in
-                            onChange(newtext)
-                        }
-                        Spacer()
-                        Button(action: { onChange(""); closeList() }) {
-                            ZStack {
-                                Circle()
-                                    .fill(palette.background)
-                                    .frame(width: 25, height: 25)
-                                Image(systemName: "xmark")
-                                    .font(.system(size: 20))
-                                    .foregroundColor(palette.tertiary.mix(with: .black, by: hoverClose ? 0.2 : 0.0))
+                            .foregroundStyle(palette.foreground)
+                            .accentColor(palette.foreground)
+                            .textFieldStyle(.plain)
+                            .onChange(of: query, initial: true) { _, newtext in
+                                onChange(newtext)
+                            }
+                            Spacer()
+                            Button(action: { onChange(""); closeList() }) {
+                                ZStack {
+                                    Circle()
+                                        .fill(palette.background)
+                                        .frame(width: 25, height: 25)
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 20))
+                                        .foregroundColor(palette.tertiary.mix(with: .black, by: hoverClose ? 0.2 : 0.0))
+                                }
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                            .onHover { _ in
+                                self.hoverClose.toggle()
                             }
                         }
-                        .buttonStyle(PlainButtonStyle())
-                        .onHover { _ in
-                            self.hoverClose.toggle()
-                        }
-                    }
-                    .padding()
+                        .padding()
 
-                    Results(results: results, onSelect: onSelect)
+                        Results(results: results, onSelect: onSelect)
+                    }
+                    .frame(idealWidth: 300, maxWidth: min(geometry.size.width * 0.6, 500), maxHeight: geometry.size.height * 0.6)
+                    .background(palette.background)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .transition(.push(from: .top))
                 }
-                .frame(idealWidth: 300, maxWidth: min(geometry.size.width * 0.6, 500), maxHeight: geometry.size.height * 0.6)
-                .background(palette.background)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
-        }
-        .onAppear {
-            // Set the focus to the TextField when the view appears
-            queryFocused = true
-        }
-        .preferredColorScheme({
-            switch preference {
-            case .light: .light
-            case .dark: .dark
-            case .system: nil
+            .onAppear {
+                queryFocused = true
             }
-        }())
-        .onContinuousHover { phase in
-            switch phase {
-            case .active:
-                NSCursor.arrow.push()
-            case .ended:
-                NSCursor.pop()
+            .onChange(of: visible) { _, _ in
+                queryFocused = true
             }
+            .preferredColorScheme({
+                switch preference {
+                case .light: .light
+                case .dark: .dark
+                case .system: nil
+                }
+            }())
+            .onContinuousHover { phase in
+                switch phase {
+                case .active:
+                    NSCursor.arrow.push()
+                case .ended:
+                    NSCursor.pop()
+                }
+            }
+            .onExitCommand { closeList() }
         }
-        .onExitCommand { closeList() }
+        .animation(.spring(duration: 0.15), value: visible)
     }
 }
 
@@ -170,6 +181,7 @@ let li2 = "Pellentesque non iaculis purus. Maecenas laoreet feugiat massa in vol
 let li3 = "Aenean at mauris est. Etiam felis velit, tempor a ipsum quis, ornare ornare orci. Phasellus vehicula fermentum justo quis dictum. Sed sollicitudin quam augue, placerat gravida libero lacinia vitae. Vivamus lobortis mollis libero quis cursus. Vestibulum erat arcu, tincidunt ac lacus vel, luctus tincidunt magna. Duis rutrum at sapien et finibus. Proin lectus lacus, laoreet vitae auctor vitae, congue at nisi. Phasellus orci nisl, imperdiet ac magna eget, ornare dignissim sapien. Nullam ultricies dui ornare ante eleifend, at faucibus quam facilisis. Nulla tempus eros tincidunt porttitor hendrerit."
 
 #Preview("Notes") {
+    @Previewable @State var visible = true
     @Previewable @State var results: [SearchResult] = [
         SearchResult(note: Note(id: 0, created: Date(), modified: Date(), content: li1, title: "How to train your dragon"), preview: "It's a pretty ok movie"),
         SearchResult(note: Note(id: 1, created: Date(), modified: Date(), content: li2, title: "Goodfellas"), preview: "Also pretty good."),
@@ -179,7 +191,7 @@ let li3 = "Aenean at mauris est. Etiam felis velit, tempor a ipsum quis, ornare 
         SearchResult(note: Note(id: 5, created: Date(), modified: Date(), content: li3, title: "foo"), preview: "zot"),
         SearchResult(note: Note(id: 6, created: Date(), modified: Date(), content: li3, title: "foo"), preview: "zing"),
     ]
-    FileList(results: $results,
+    FileList(visible: $visible, results: $results,
              onSelect: { (n: SearchResult) in print(n.note.id) },
              onChange: { (q: String) in print(q) },
              closeList: { () in print("closed") })

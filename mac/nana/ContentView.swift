@@ -45,10 +45,14 @@ import SwiftUI
     import NanaKit
 #endif
 
-struct SearchResult: Identifiable {
+struct SearchResult: Identifiable, Equatable {
     var note: Note
     var preview: String
     let id = UUID()
+
+    static func == (lhs: SearchResult, rhs: SearchResult) -> Bool {
+        lhs.id == rhs.id
+    }
 }
 
 let MAX_ITEMS = 100
@@ -173,32 +177,37 @@ struct ContentView: View {
                     .init(color: .clear, location: 1), // Bottom fade
                 ]), startPoint: .top, endPoint: .bottom)
             )
-            if notesManager.searchVisible {
-                FileList(results: $notesManager.queriedNotes,
-                         onSelect: { (selected: SearchResult) in
-                             notesManager.currentNote = selected.note
+            FileList(visible: $notesManager.searchVisible, results: $notesManager.queriedNotes,
+                     onSelect: { (selected: SearchResult) in
+                         notesManager.currentNote = selected.note
+                         withAnimation(.spring) {
                              notesManager.searchVisible.toggle()
-                         }, onChange: { (q: String) in
-                             search(q: q)
-                         }, closeList: { () in
+                         }
+                     }, onChange: { (q: String) in
+                         search(q: q)
+                     }, closeList: { () in
+                         withAnimation(.spring) {
                              notesManager.searchVisible.toggle()
-                         })
-            } else {
-                HStack {
+                         }
+                     })
+            HStack {
+                Spacer()
+                VStack {
                     Spacer()
-                    VStack {
-                        Spacer()
-                        SearchButton(onClick: {
+                    SearchButton(onClick: {
+                        withAnimation(.spring) {
                             notesManager.searchVisible.toggle()
-                        })
-                        .keyboardShortcut("s")
-                        CircularPlusButton(action: {
-                            notesManager.createNewNote()
-                            toast(msg: "Created new note")
-                        })
-                    }
-                }.padding()
-            }
+                        }
+                    })
+                    .disabled(notesManager.searchVisible)
+                    .keyboardShortcut("s")
+                    CircularPlusButton(action: {
+                        notesManager.createNewNote()
+                        toast(msg: "Created new note")
+                    })
+                    .disabled(notesManager.searchVisible)
+                }
+            }.padding()
             ToastView(showingToast: $showingToast, message: $toastMessage)
         }
         .background(palette.background)
