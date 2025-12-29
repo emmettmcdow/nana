@@ -10,7 +10,7 @@ pub const EmbeddingModelOutput = union(EmbeddingModel) {
 
 pub const Embedder = struct {
     ptr: *anyopaque,
-    splitFn: *const fn (ptr: *anyopaque, contents: []const u8) EmbedIterator,
+    splitFn: *const fn (ptr: *anyopaque, contents: []const u8) SentenceSpliterator,
     embedFn: *const fn (
         ptr: *anyopaque,
         allocator: Allocator,
@@ -22,7 +22,7 @@ pub const Embedder = struct {
     threshold: f32,
     path: []const u8,
 
-    pub fn split(self: *Embedder, contents: []const u8) EmbedIterator {
+    pub fn split(self: *Embedder, contents: []const u8) SentenceSpliterator {
         return self.splitFn(self.ptr, contents);
     }
 
@@ -194,9 +194,9 @@ pub const JinaEmbedder = struct {
         self.tokenizer_alloc.deinit();
     }
 
-    fn split(self_ptr: *anyopaque, note: []const u8) EmbedIterator {
+    fn split(self_ptr: *anyopaque, note: []const u8) SentenceSpliterator {
         _ = self_ptr;
-        return EmbedIterator.init(note);
+        return SentenceSpliterator.init(note);
     }
 
     fn embed(
@@ -465,9 +465,9 @@ pub const NLEmbedder = struct {
         _ = self.embedder_obj.msgSend(void, release_sel, .{});
     }
 
-    fn split(self: *anyopaque, note: []const u8) EmbedIterator {
+    fn split(self: *anyopaque, note: []const u8) SentenceSpliterator {
         _ = self;
-        return EmbedIterator.init(note);
+        return SentenceSpliterator.init(note);
     }
 
     fn embed(
@@ -511,13 +511,13 @@ pub const NLEmbedder = struct {
     }
 };
 
-pub const Sentence = struct {
+pub const Chunk = struct {
     contents: []const u8,
     start_i: u32,
     end_i: u32,
 };
 
-pub const EmbedIterator = struct {
+pub const SentenceSpliterator = struct {
     const Self = @This();
 
     splitter: std.mem.SplitIterator(u8, .any),
@@ -534,9 +534,41 @@ pub const EmbedIterator = struct {
         };
     }
 
-    pub fn next(self: *Self) ?Sentence {
+    pub fn next(self: *Self) ?Chunk {
         if (self.splitter.next()) |sentence| {
-            const out = Sentence{
+            const out = Chunk{
+                .contents = sentence,
+                .start_i = self.curr_i,
+                .end_i = self.curr_i + @as(u32, @intCast(sentence.len)),
+            };
+            self.curr_i += @intCast(sentence.len + 1);
+            return out;
+        } else {
+            return null;
+        }
+    }
+};
+
+pub const WordSpliterator = struct {
+    const Self = @This();
+
+    splitter: std.mem.SplitIterator(u8, .any),
+    curr_i: u32,
+
+    pub fn init(buffer: []const u8) Self {
+        return .{
+            .splitter = std.mem.SplitIterator(u8, .any){
+                .index = 0,
+                .buffer = buffer,
+                .delimiter = ".!?\n, ();\":",
+            },
+            .curr_i = 0,
+        };
+    }
+
+    pub fn next(self: *Self) ?Chunk {
+        if (self.splitter.next()) |sentence| {
+            const out = Chunk{
                 .contents = sentence,
                 .start_i = self.curr_i,
                 .end_i = self.curr_i + @as(u32, @intCast(sentence.len)),
