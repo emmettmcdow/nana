@@ -14,6 +14,8 @@ import SwiftUI
         var id: UInt32
         var start_i: UInt32
         var end_i: UInt32
+        var highlight_start_i: UInt32 = 0
+        var highlight_end_i: UInt32 = 0
     }
 
     // Stub implementations for SwiftUI Previews
@@ -48,6 +50,8 @@ import SwiftUI
 struct SearchResult: Identifiable, Equatable {
     var note: Note
     var preview: String
+    var highlight_start_i: Int = 0
+    var highlight_end_i: Int = 0
     let id = UUID()
 
     static func == (lhs: SearchResult, rhs: SearchResult) -> Bool {
@@ -111,7 +115,7 @@ class NotesManager: ObservableObject {
                 queriedNotes.append(SearchResult(note: note, preview: preview))
             }
         } else {
-            var results = [CSearchResult](repeating: CSearchResult(id: 0, start_i: 0, end_i: 0),
+            var results = [CSearchResult](repeating: CSearchResult(id: 0, start_i: 0, end_i: 0, highlight_start_i: 0, highlight_end_i: 0),
                                           count: MAX_ITEMS)
             n = min(Int(nana_search(query, &results, numericCast(MAX_ITEMS))), MAX_ITEMS)
             if n < 0 {
@@ -125,7 +129,10 @@ class NotesManager: ObservableObject {
                 let startIndex = content.index(content.startIndex, offsetBy: Int(result.start_i), limitedBy: content.endIndex) ?? content.startIndex
                 let endIndex = content.index(content.startIndex, offsetBy: Int(result.end_i), limitedBy: content.endIndex) ?? content.endIndex
                 let preview = String(content[startIndex ..< endIndex])
-                queriedNotes.append(SearchResult(note: note, preview: preview))
+                queriedNotes.append(SearchResult(note: note,
+                                                 preview: preview,
+                                                 highlight_start_i: Int(result.highlight_start_i),
+                                                 highlight_end_i: Int(result.highlight_end_i)))
             }
         }
     }

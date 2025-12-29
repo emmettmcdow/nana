@@ -15,6 +15,8 @@ typedef struct {
     unsigned int id;
     unsigned int start_i;
     unsigned int end_i;
+    unsigned int highlight_start_i;
+    unsigned int highlight_end_i;
 } CSearchResult;
 
 #define TITLE_BUF_SZ 64

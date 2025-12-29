@@ -4,12 +4,16 @@ pub const CSearchResult = extern struct {
     id: c_int,
     start_i: c_uint,
     end_i: c_uint,
+    highlight_start_i: c_uint,
+    highlight_end_i: c_uint,
 };
 
 pub const SearchResult = struct {
     id: NoteID,
     start_i: usize,
     end_i: usize,
+    highlight_start_i: usize = 0,
+    highlight_end_i: usize = 0,
 
     const Self = @This();
 
@@ -18,6 +22,8 @@ pub const SearchResult = struct {
             .id = @as(c_int, @intCast(self.id)),
             .start_i = @as(c_uint, @intCast(self.start_i)),
             .end_i = @as(c_uint, @intCast(self.end_i)),
+            .highlight_start_i = @as(c_uint, @intCast(self.start_i)),
+            .highlight_end_i = @as(c_uint, @intCast(self.end_i)),
         };
     }
 };

@@ -122,6 +122,23 @@ struct Results: View {
     }
 }
 
+func hilightedText(str: String, highlight_start_i: Int, highlight_end_i: Int) -> AttributedString {
+    @AppStorage("colorSchemePreference") var preference: ColorSchemePreference = .system
+    @Environment(\.colorScheme) var colorScheme
+
+    var styled = AttributedString(str)
+    if str.isEmpty || highlight_start_i == highlight_end_i {
+        return styled
+    }
+    let startIndex = styled.index(styled.startIndex, offsetByUnicodeScalars: highlight_start_i)
+    let endIndex = styled.index(styled.startIndex, offsetByUnicodeScalars: highlight_end_i)
+
+    let palette = Palette.forPreference(preference, colorScheme: colorScheme)
+    styled[startIndex ..< endIndex].backgroundColor = palette.background.mix(with: .white, by: 0.2)
+    styled[startIndex ..< endIndex].foregroundColor = palette.foreground.mix(with: .black, by: 0.2)
+    return styled
+}
+
 struct ResultRow: View {
     var result: SearchResult
     var onSelect: (SearchResult) -> Void
@@ -139,7 +156,9 @@ struct ResultRow: View {
                 Text(result.note.title)
                     .foregroundStyle(palette.foreground)
                     .bold()
-                Text(result.preview)
+                Text(hilightedText(str: result.preview,
+                                   highlight_start_i: result.highlight_start_i,
+                                   highlight_end_i: result.highlight_end_i))
                     .lineLimit(3)
                     .foregroundStyle(palette.tertiary)
                     .italic()
@@ -184,7 +203,7 @@ let li3 = "Aenean at mauris est. Etiam felis velit, tempor a ipsum quis, ornare 
     @Previewable @State var visible = true
     @Previewable @State var results: [SearchResult] = [
         SearchResult(note: Note(id: 0, created: Date(), modified: Date(), content: li1, title: "How to train your dragon"), preview: "It's a pretty ok movie"),
-        SearchResult(note: Note(id: 1, created: Date(), modified: Date(), content: li2, title: "Goodfellas"), preview: "Also pretty good."),
+        SearchResult(note: Note(id: 1, created: Date(), modified: Date(), content: li2, title: "Goodfellas"), preview: "Also pretty good.", highlight_start_i: 5, highlight_end_i: 11),
         SearchResult(note: Note(id: 2, created: Date(), modified: Date(), content: li3, title: "Toy Story"), preview: "Now we're talking baby. This is CINEMA."),
         SearchResult(note: Note(id: 3, created: Date(), modified: Date(), content: li3, title: "foo"), preview: "zim"),
         SearchResult(note: Note(id: 4, created: Date(), modified: Date(), content: li3, title: "foo"), preview: "zam"),
