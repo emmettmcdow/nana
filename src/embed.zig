@@ -517,69 +517,44 @@ pub const Chunk = struct {
     end_i: u32,
 };
 
-pub const SentenceSpliterator = struct {
-    const Self = @This();
+pub fn Spliterator(comptime delimiters: []const u8) type {
+    return struct {
+        splitter: std.mem.SplitIterator(u8, .any),
+        curr_i: u32,
 
-    splitter: std.mem.SplitIterator(u8, .any),
-    curr_i: u32,
+        const Self = @This();
 
-    pub fn init(buffer: []const u8) Self {
-        return .{
-            .splitter = std.mem.SplitIterator(u8, .any){
-                .index = 0,
-                .buffer = buffer,
-                .delimiter = ".!?\n",
-            },
-            .curr_i = 0,
-        };
-    }
-
-    pub fn next(self: *Self) ?Chunk {
-        if (self.splitter.next()) |sentence| {
-            const out = Chunk{
-                .contents = sentence,
-                .start_i = self.curr_i,
-                .end_i = self.curr_i + @as(u32, @intCast(sentence.len)),
+        pub fn init(buffer: []const u8) Self {
+            return .{
+                .splitter = std.mem.SplitIterator(u8, .any){
+                    .index = 0,
+                    .buffer = buffer,
+                    .delimiter = delimiters,
+                },
+                .curr_i = 0,
             };
-            self.curr_i += @intCast(sentence.len + 1);
-            return out;
-        } else {
-            return null;
         }
-    }
-};
 
-pub const WordSpliterator = struct {
-    const Self = @This();
-
-    splitter: std.mem.SplitIterator(u8, .any),
-    curr_i: u32,
-
-    pub fn init(buffer: []const u8) Self {
-        return .{
-            .splitter = std.mem.SplitIterator(u8, .any){
-                .index = 0,
-                .buffer = buffer,
-                .delimiter = ".!?\n, ();\":",
-            },
-            .curr_i = 0,
-        };
-    }
-
-    pub fn next(self: *Self) ?Chunk {
-        if (self.splitter.next()) |sentence| {
-            const out = Chunk{
-                .contents = sentence,
-                .start_i = self.curr_i,
-                .end_i = self.curr_i + @as(u32, @intCast(sentence.len)),
-            };
-            self.curr_i += @intCast(sentence.len + 1);
-            return out;
-        } else {
-            return null;
+        pub fn next(self: *Self) ?Chunk {
+            if (self.splitter.next()) |sentence| {
+                const out = Chunk{
+                    .contents = sentence,
+                    .start_i = self.curr_i,
+                    .end_i = self.curr_i + @as(u32, @intCast(sentence.len)),
+                };
+                self.curr_i += @intCast(sentence.len + 1);
+                return out;
+            } else {
+                return null;
+            }
         }
-    }
-};
+    };
+}
+
+const WORD_SPLIT_DELIMITERS = ".!?\n, ();\":";
+pub const WordSpliterator = Spliterator(WORD_SPLIT_DELIMITERS);
+const SENTENCE_SPLIT_DELIMITERS = ".!?\n";
+pub const SentenceSpliterator = Spliterator(SENTENCE_SPLIT_DELIMITERS);
 
 test "embed - init" {
     _ = try NLEmbedder.init();
