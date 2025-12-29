@@ -10,10 +10,13 @@ import SwiftUI
 
 #if DISABLE_NANAKIT
 
+    let N_SEARCH_HIGHLIGHTS = 5
+
     struct CSearchResult {
         var id: UInt32
         var start_i: UInt32
         var end_i: UInt32
+        var highlights: [UInt32] = Array(repeating: 0, count: N_SEARCH_HIGHLIGHTS * 2)
         var highlight_start_i: UInt32 = 0
         var highlight_end_i: UInt32 = 0
     }
@@ -50,8 +53,7 @@ import SwiftUI
 struct SearchResult: Identifiable, Equatable {
     var note: Note
     var preview: String
-    var highlight_start_i: Int = 0
-    var highlight_end_i: Int = 0
+    var highlights: [Int] = Array(repeating: 0, count: N_SEARCH_HIGHLIGHTS * 2)
     let id = UUID()
 
     static func == (lhs: SearchResult, rhs: SearchResult) -> Bool {
@@ -115,7 +117,7 @@ class NotesManager: ObservableObject {
                 queriedNotes.append(SearchResult(note: note, preview: preview))
             }
         } else {
-            var results = [CSearchResult](repeating: CSearchResult(id: 0, start_i: 0, end_i: 0, highlight_start_i: 0, highlight_end_i: 0),
+            var results = [CSearchResult](repeating: CSearchResult(id: 0, start_i: 0, end_i: 0),
                                           count: MAX_ITEMS)
             n = min(Int(nana_search(query, &results, numericCast(MAX_ITEMS))), MAX_ITEMS)
             if n < 0 {
@@ -131,8 +133,7 @@ class NotesManager: ObservableObject {
                 let preview = String(content[startIndex ..< endIndex])
                 queriedNotes.append(SearchResult(note: note,
                                                  preview: preview,
-                                                 highlight_start_i: Int(result.highlight_start_i),
-                                                 highlight_end_i: Int(result.highlight_end_i)))
+                                                 highlights: result.highlights.map { Int($0) }))
             }
         }
     }

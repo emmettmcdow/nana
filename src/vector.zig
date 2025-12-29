@@ -1,30 +1,30 @@
 const MAX_NOTE_LEN: usize = std.math.maxInt(u32);
 
+const N_SEARCH_HIGHLIGHTS = 5;
+
 pub const CSearchResult = extern struct {
     id: c_int,
     start_i: c_uint,
     end_i: c_uint,
-    highlight_start_i: c_uint,
-    highlight_end_i: c_uint,
+    highlights: [N_SEARCH_HIGHLIGHTS * 2]c_uint = .{0} ** 10,
 };
 
 pub const SearchResult = struct {
     id: NoteID,
     start_i: usize,
     end_i: usize,
-    highlight_start_i: usize = 0,
-    highlight_end_i: usize = 0,
+    highlights: [N_SEARCH_HIGHLIGHTS * 2]usize = .{0} ** 10,
 
     const Self = @This();
 
     pub fn toC(self: Self) CSearchResult {
-        return .{
+        var output = CSearchResult{
             .id = @as(c_int, @intCast(self.id)),
             .start_i = @as(c_uint, @intCast(self.start_i)),
             .end_i = @as(c_uint, @intCast(self.end_i)),
-            .highlight_start_i = @as(c_uint, @intCast(self.start_i)),
-            .highlight_end_i = @as(c_uint, @intCast(self.end_i)),
         };
+        for (self.highlights, 0..) |v, i| output.highlights[i] = @intCast(v);
+        return output;
     }
 };
 

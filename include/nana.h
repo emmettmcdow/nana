@@ -11,15 +11,16 @@ enum NanaError {
   InvalidFiletype = -13,
 };
 
+#define TITLE_BUF_SZ 64
+#define N_SEARCH_HIGHLIGHTS 5
+
 typedef struct {
     unsigned int id;
     unsigned int start_i;
     unsigned int end_i;
-    unsigned int highlight_start_i;
-    unsigned int highlight_end_i;
+    unsigned int highlights[N_SEARCH_HIGHLIGHTS * 2];
 } CSearchResult;
 
-#define TITLE_BUF_SZ 64
 
 int nana_init(const char *);
 int nana_deinit(void);

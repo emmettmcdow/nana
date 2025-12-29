@@ -122,20 +122,26 @@ struct Results: View {
     }
 }
 
-func hilightedText(str: String, highlight_start_i: Int, highlight_end_i: Int) -> AttributedString {
+func hilightedText(str: String, highlights: [Int]) -> AttributedString {
     @AppStorage("colorSchemePreference") var preference: ColorSchemePreference = .system
     @Environment(\.colorScheme) var colorScheme
 
     var styled = AttributedString(str)
-    if str.isEmpty || highlight_start_i == highlight_end_i {
+    if str.isEmpty {
         return styled
     }
-    let startIndex = styled.index(styled.startIndex, offsetByUnicodeScalars: highlight_start_i)
-    let endIndex = styled.index(styled.startIndex, offsetByUnicodeScalars: highlight_end_i)
 
     let palette = Palette.forPreference(preference, colorScheme: colorScheme)
-    styled[startIndex ..< endIndex].backgroundColor = palette.background.mix(with: .white, by: 0.2)
-    styled[startIndex ..< endIndex].foregroundColor = palette.foreground.mix(with: .black, by: 0.2)
+    for i in stride(from: 0, to: highlights.count, by: 2) {
+        let highlight_start_i = highlights[i]
+        let highlight_end_i = highlights[i + 1]
+        guard highlight_end_i > highlight_start_i else { break }
+
+        let startIndex = styled.index(styled.startIndex, offsetByUnicodeScalars: highlight_start_i)
+        let endIndex = styled.index(styled.startIndex, offsetByUnicodeScalars: highlight_end_i)
+        styled[startIndex ..< endIndex].backgroundColor = palette.background.mix(with: .white, by: 0.2)
+        styled[startIndex ..< endIndex].foregroundColor = palette.foreground.mix(with: .black, by: 0.2)
+    }
     return styled
 }
 
@@ -156,9 +162,7 @@ struct ResultRow: View {
                 Text(result.note.title)
                     .foregroundStyle(palette.foreground)
                     .bold()
-                Text(hilightedText(str: result.preview,
-                                   highlight_start_i: result.highlight_start_i,
-                                   highlight_end_i: result.highlight_end_i))
+                Text(hilightedText(str: result.preview, highlights: result.highlights))
                     .lineLimit(3)
                     .foregroundStyle(palette.tertiary)
                     .italic()
@@ -199,11 +203,14 @@ let li2 = "Pellentesque non iaculis purus. Maecenas laoreet feugiat massa in vol
 
 let li3 = "Aenean at mauris est. Etiam felis velit, tempor a ipsum quis, ornare ornare orci. Phasellus vehicula fermentum justo quis dictum. Sed sollicitudin quam augue, placerat gravida libero lacinia vitae. Vivamus lobortis mollis libero quis cursus. Vestibulum erat arcu, tincidunt ac lacus vel, luctus tincidunt magna. Duis rutrum at sapien et finibus. Proin lectus lacus, laoreet vitae auctor vitae, congue at nisi. Phasellus orci nisl, imperdiet ac magna eget, ornare dignissim sapien. Nullam ultricies dui ornare ante eleifend, at faucibus quam facilisis. Nulla tempus eros tincidunt porttitor hendrerit."
 
+let pretty_highlights = [5, 11, 0, 0, 0, 0, 0, 0, 0, 0]
+let it_ok = [0, 4, 7, 13, 0, 0, 0, 0, 0, 0]
+
 #Preview("Notes") {
     @Previewable @State var visible = true
     @Previewable @State var results: [SearchResult] = [
-        SearchResult(note: Note(id: 0, created: Date(), modified: Date(), content: li1, title: "How to train your dragon"), preview: "It's a pretty ok movie"),
-        SearchResult(note: Note(id: 1, created: Date(), modified: Date(), content: li2, title: "Goodfellas"), preview: "Also pretty good.", highlight_start_i: 5, highlight_end_i: 11),
+        SearchResult(note: Note(id: 0, created: Date(), modified: Date(), content: li1, title: "How to train your dragon"), preview: "It's a pretty ok movie", highlights: it_ok),
+        SearchResult(note: Note(id: 1, created: Date(), modified: Date(), content: li2, title: "Goodfellas"), preview: "Also pretty good.", highlights: pretty_highlights),
         SearchResult(note: Note(id: 2, created: Date(), modified: Date(), content: li3, title: "Toy Story"), preview: "Now we're talking baby. This is CINEMA."),
         SearchResult(note: Note(id: 3, created: Date(), modified: Date(), content: li3, title: "foo"), preview: "zim"),
         SearchResult(note: Note(id: 4, created: Date(), modified: Date(), content: li3, title: "foo"), preview: "zam"),
