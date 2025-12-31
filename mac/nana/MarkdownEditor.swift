@@ -142,8 +142,7 @@ struct MarkdownEditor: NSViewRepresentable {
 
             // Auto-scroll if cursor is near the bottom of the visible area
             if let scrollView = textView.enclosingScrollView,
-               let layoutManager = textView.layoutManager,
-               let textContainer = textView.textContainer
+               let layoutManager = textView.layoutManager
             {
                 let insertionPoint = textView.selectedRange().location
                 let glyphIndex = layoutManager.glyphIndexForCharacter(at: min(insertionPoint, textView.string.count - 1))

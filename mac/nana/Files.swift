@@ -122,16 +122,12 @@ struct Results: View {
     }
 }
 
-func hilightedText(str: String, highlights: [Int]) -> AttributedString {
-    @AppStorage("colorSchemePreference") var preference: ColorSchemePreference = .system
-    @Environment(\.colorScheme) var colorScheme
-
+func hilightedText(str: String, highlights: [Int], palette: Palette) -> AttributedString {
     var styled = AttributedString(str)
     if str.isEmpty {
         return styled
     }
 
-    let palette = Palette.forPreference(preference, colorScheme: colorScheme)
     for i in stride(from: 0, to: highlights.count, by: 2) {
         let highlight_start_i = highlights[i]
         let highlight_end_i = highlights[i + 1]
@@ -170,7 +166,7 @@ struct ResultRow: View {
                             .italic()
                     }
                 }
-                Text(hilightedText(str: result.preview, highlights: result.highlights))
+                Text(hilightedText(str: result.preview, highlights: result.highlights, palette: palette))
                     .lineLimit(3)
                     .foregroundStyle(palette.tertiary)
                     .italic()

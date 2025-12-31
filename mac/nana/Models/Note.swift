@@ -103,7 +103,7 @@ extension Note {
         created = Date(timeIntervalSince1970: TimeInterval(create))
         modified = Date(timeIntervalSince1970: TimeInterval(mod))
         content = String(cString: content_buf, encoding: .utf8) ?? ""
-        title = String(cString: title_buf) ?? ""
+        title = String(cString: title_buf)
     }
 
     static func == (lhs: Note, rhs: Note) -> Bool {

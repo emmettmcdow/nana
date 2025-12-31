@@ -63,15 +63,15 @@ func filesInDir(dirURL: URL) -> [String] {
 }
 
 func import_from_dir(result: Result<[URL], any Error>,
-                     onProgress: @escaping (_ files: [ImportItem]) -> Void) async throws
+                     onProgress: @MainActor @escaping (_ files: [ImportItem]) -> Void) async throws
 {
     let gottenResult = try result.get()
     guard let dirURL = gottenResult.first else {
-        onProgress([ImportItem(filename: "Directory", message: "No directory selected", status: .fail)])
+        await onProgress([ImportItem(filename: "Directory", message: "No directory selected", status: .fail)])
         return
     }
     guard dirURL.startAccessingSecurityScopedResource() else {
-        onProgress([ImportItem(filename: "Directory", message: "Failed to start accessing security-scoped resource", status: .fail)])
+        await onProgress([ImportItem(filename: "Directory", message: "Failed to start accessing security-scoped resource", status: .fail)])
         return
     }
     defer { dirURL.stopAccessingSecurityScopedResource() }
@@ -81,29 +81,29 @@ func import_from_dir(result: Result<[URL], any Error>,
         files.append(ImportItem(filename: path, message: "", status: .queued))
     }
 
-    importFiles(files: files,
-                onProgress: onProgress)
+    await importFiles(files: files,
+                      onProgress: onProgress)
 }
 
-func import_from_doctor(onProgress: @escaping (_ files: [ImportItem]) -> Void) async {
+func import_from_doctor(onProgress: @MainActor @escaping (_ files: [ImportItem]) -> Void) async {
     guard let containerIdentifier = Bundle.main.object(forInfoDictionaryKey:
         "CloudKitContainerIdentifier") as? String
     else {
-        onProgress([ImportItem(filename: "Config", message: "Could not get container identifier from Info.plist", status: .fail)])
+        await onProgress([ImportItem(filename: "Config", message: "Could not get container identifier from Info.plist", status: .fail)])
         return
     }
     let filemanager = FileManager.default
     guard let dirURL = filemanager.url(forUbiquityContainerIdentifier: containerIdentifier) else {
-        onProgress([ImportItem(filename: "iCloud", message: "Could not get iCloud container URL", status: .fail)])
+        await onProgress([ImportItem(filename: "iCloud", message: "Could not get iCloud container URL", status: .fail)])
         return
     }
 
-    doctor(basedir: dirURL,
-           onProgress: onProgress)
+    await doctor(basedir: dirURL,
+                 onProgress: onProgress)
 }
 
 func doctor(basedir: URL,
-            onProgress: @escaping (_ files: [ImportItem]) -> Void)
+            onProgress: @MainActor @escaping (_ files: [ImportItem]) -> Void) async
 {
     var err = nana_deinit()
     if err != 0 {
@@ -134,9 +134,9 @@ func doctor(basedir: URL,
         }
         maybePtr = unwrappedPtr.advanced(by: str.utf8.count + 1)
     }
-    onProgress(files)
+    await onProgress(files)
 
-    importFiles(
+    await importFiles(
         files: files,
         onProgress: onProgress
     )
@@ -146,8 +146,8 @@ func doctor(basedir: URL,
 
 func importFiles(
     files: [ImportItem],
-    onProgress: @escaping (_ files: [ImportItem]) -> Void
-) {
+    onProgress: @MainActor @escaping (_ files: [ImportItem]) -> Void
+) async {
     var newFiles = files
     for i in files.indices {
         let res = files[i].filename.withCString { cString in
@@ -166,7 +166,7 @@ func importFiles(
             newFiles[i].status = .fail
             newFiles[i].message = "Failed to import note with error: \(res)"
         }
-        onProgress(newFiles)
+        await onProgress(newFiles)
     }
 }
 
