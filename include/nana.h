@@ -18,6 +18,7 @@ typedef struct {
     unsigned int id;
     unsigned int start_i;
     unsigned int end_i;
+    float similarity;
 } CSearchResult;
 
 typedef struct {

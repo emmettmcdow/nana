@@ -4,6 +4,7 @@ pub const CSearchResult = extern struct {
     id: c_uint,
     start_i: c_uint,
     end_i: c_uint,
+    similarity: f32,
 };
 
 pub const SearchResult = struct {
@@ -19,6 +20,7 @@ pub const SearchResult = struct {
             .id = @as(c_uint, @intCast(self.id)),
             .start_i = @as(c_uint, @intCast(self.start_i)),
             .end_i = @as(c_uint, @intCast(self.end_i)),
+            .similarity = self.similarity,
         };
     }
 };

@@ -13,9 +13,10 @@ import SwiftUI
     let N_SEARCH_HIGHLIGHTS = 5
 
     struct CSearchResult {
-        var id: UInt32
-        var start_i: UInt32
-        var end_i: UInt32
+        var id: UInt32 = 0
+        var start_i: UInt32 = 0
+        var end_i: UInt32 = 0
+        var similarity: Float = 0.5
     }
 
     struct CSearchDetail {
@@ -28,12 +29,12 @@ import SwiftUI
         return Int32.random(in: 1 ... 1000)
     }
 
-    private func nana_search(_: String, _ ids: inout [CSearchResult], _ maxCount: Int) -> Int32 {
+    private func nana_search(_: String, _ ids: UnsafeMutablePointer<CSearchResult>?, _ maxCount: Int32) -> Int32 {
         // Return some sample note IDs for preview
         let sampleIds: [Int32] = [1, 2, 3, 4, 5]
-        let returnCount = min(sampleIds.count, maxCount)
+        let returnCount = min(sampleIds.count, Int(maxCount))
         for i in 0 ..< returnCount {
-            ids[i] = CSearchResult(id: UInt32(sampleIds[i]), start_i: 0, end_i: 5)
+            ids?[i] = CSearchResult(id: UInt32(sampleIds[i]), start_i: 0, end_i: 5)
         }
         return Int32(returnCount)
     }
@@ -48,11 +49,11 @@ import SwiftUI
         return Int32(returnCount)
     }
 
-    private func nana_search_detail(ids _: Int32,
-                                    start_i _: UInt32,
-                                    end_i _: UInt32,
-                                    query _: String,
-                                    output _: CSearchDetail) -> Int32
+    private func nana_search_detail(_: Int32,
+                                    _: UInt32,
+                                    _: UInt32,
+                                    _: String,
+                                    _: UnsafeMutablePointer<CSearchDetail>?) -> Int32
     {
         return 0
     }
@@ -65,6 +66,7 @@ struct SearchResult: Identifiable, Equatable {
     var note: Note
     var preview: String
     var highlights: [Int] = Array(repeating: 0, count: Int(N_SEARCH_HIGHLIGHTS) * 2)
+    var similarity: Float = 0.0
     let id = UUID()
     static func == (lhs: SearchResult, rhs: SearchResult) -> Bool {
         lhs.id == rhs.id
@@ -157,9 +159,16 @@ class NotesManager: ObservableObject {
                 let highlights = Mirror(reflecting: tmp_search_detail.highlights).children.map {
                     Int($0.value as! UInt32)
                 } as! [Int]
+                let preview: String
+                if let content = tmp_search_detail.content {
+                    preview = String(cString: content, encoding: .utf8) ?? ""
+                } else {
+                    preview = ""
+                }
                 queriedNotes.append(SearchResult(note: note,
-                                                 preview: String(cString: tmp_search_detail.content, encoding: .utf8) ?? "",
-                                                 highlights: highlights))
+                                                 preview: preview,
+                                                 highlights: highlights,
+                                                 similarity: result.similarity))
             }
         }
     }

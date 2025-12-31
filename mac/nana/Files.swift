@@ -156,12 +156,20 @@ struct ResultRow: View {
     var body: some View {
         let palette = Palette.forPreference(preference, colorScheme: colorScheme)
         let ROW_SPACE = 3.0
+        let formatted_pct = String(format: "%.1f", result.similarity * 100)
 
         HStack {
             VStack(alignment: .leading) {
-                Text(result.note.title)
-                    .foregroundStyle(palette.foreground)
-                    .bold()
+                HStack {
+                    Text(result.note.title)
+                        .foregroundStyle(palette.foreground)
+                        .bold()
+                    if result.similarity != 0 {
+                        Text("\(formatted_pct)%")
+                            .foregroundStyle(palette.tertiary)
+                            .italic()
+                    }
+                }
                 Text(hilightedText(str: result.preview, highlights: result.highlights))
                     .lineLimit(3)
                     .foregroundStyle(palette.tertiary)
