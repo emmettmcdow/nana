@@ -16,9 +16,11 @@ import SwiftUI
         var id: UInt32
         var start_i: UInt32
         var end_i: UInt32
-        var highlights: [UInt32] = Array(repeating: 0, count: N_SEARCH_HIGHLIGHTS * 2)
-        var highlight_start_i: UInt32 = 0
-        var highlight_end_i: UInt32 = 0
+    }
+
+    struct CSearchDetail {
+        var content: UnsafeMutablePointer<CChar>?
+        var highlights: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32) = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     }
 
     // Stub implementations for SwiftUI Previews
@@ -46,6 +48,15 @@ import SwiftUI
         return Int32(returnCount)
     }
 
+    private func nana_search_detail(ids _: Int32,
+                                    start_i _: UInt32,
+                                    end_i _: UInt32,
+                                    query _: String,
+                                    output _: CSearchDetail) -> Int32
+    {
+        return 0
+    }
+
 #else
     import NanaKit
 #endif
@@ -53,9 +64,8 @@ import SwiftUI
 struct SearchResult: Identifiable, Equatable {
     var note: Note
     var preview: String
-    var highlights: [Int] = Array(repeating: 0, count: N_SEARCH_HIGHLIGHTS * 2)
+    var highlights: [Int] = Array(repeating: 0, count: Int(N_SEARCH_HIGHLIGHTS) * 2)
     let id = UUID()
-
     static func == (lhs: SearchResult, rhs: SearchResult) -> Bool {
         lhs.id == rhs.id
     }
@@ -117,9 +127,10 @@ class NotesManager: ObservableObject {
                 queriedNotes.append(SearchResult(note: note, preview: preview))
             }
         } else {
-            var results = [CSearchResult](repeating: CSearchResult(id: 0, start_i: 0, end_i: 0),
-                                          count: MAX_ITEMS)
-            n = min(Int(nana_search(query, &results, numericCast(MAX_ITEMS))), MAX_ITEMS)
+            var results = [CSearchResult](repeating: CSearchResult(), count: MAX_ITEMS)
+            n = results.withUnsafeMutableBufferPointer { buffer in
+                min(Int(nana_search(query, buffer.baseAddress, numericCast(MAX_ITEMS))), MAX_ITEMS)
+            }
             if n < 0 {
                 print("Some error occurred while searching: ", n)
                 return
@@ -127,13 +138,28 @@ class NotesManager: ObservableObject {
             for i in 0 ..< n {
                 let result = results[i]
                 let note = Note(id: Int32(result.id))
-                let content = note.content
-                let startIndex = content.index(content.startIndex, offsetBy: Int(result.start_i), limitedBy: content.endIndex) ?? content.startIndex
-                let endIndex = content.index(content.startIndex, offsetBy: Int(result.end_i), limitedBy: content.endIndex) ?? content.endIndex
-                let preview = String(content[startIndex ..< endIndex])
+
+                let bufsize = Int((result.end_i - result.start_i) + 1)
+
+                let charPointer = UnsafeMutablePointer<CChar>.allocate(capacity: bufsize + 1)
+                charPointer.initialize(repeating: 0x01, count: bufsize)
+                charPointer[bufsize] = 0
+                var tmp_search_detail = CSearchDetail(content: charPointer,
+                                                      highlights: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+                guard nana_search_detail(Int32(result.id),
+                                         result.start_i,
+                                         result.end_i,
+                                         query,
+                                         &tmp_search_detail) == 0
+                else {
+                    continue
+                }
+                let highlights = Mirror(reflecting: tmp_search_detail.highlights).children.map {
+                    Int($0.value as! UInt32)
+                } as! [Int]
                 queriedNotes.append(SearchResult(note: note,
-                                                 preview: preview,
-                                                 highlights: result.highlights.map { Int($0) }))
+                                                 preview: String(cString: tmp_search_detail.content, encoding: .utf8) ?? "",
+                                                 highlights: highlights))
             }
         }
     }

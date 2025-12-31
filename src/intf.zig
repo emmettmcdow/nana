@@ -177,6 +177,37 @@ export fn nana_search(query: [*:0]const u8, outbuf: [*c]CSearchResult, sz: c_uin
     return @intCast(written);
 }
 
+/// Get matched area for search result.
+/// The output.content buffer must be initialized with a non-zero sentinel and null-terminated.
+export fn nana_search_detail(
+    id: NoteID,
+    start_i: usize,
+    end_i: usize,
+    query: [*:0]const u8,
+    output: *CSearchDetail,
+) c_int {
+    std.log.info(
+        "nana_search_detail (id: {d}, start_i: {d}, end_i: {d}, query: '{s}')",
+        .{ id, start_i, end_i, query },
+    );
+    const zigStyle: []const u8 = std.mem.sliceTo(query, 0);
+    const content_slice: []u8 = std.mem.sliceTo(@as([*:0]u8, @ptrCast(output.content)), 0);
+    var detail = SearchDetail{
+        .content = content_slice,
+    };
+    rt.search_detail(id, start_i, end_i, zigStyle, &detail) catch |err| {
+        std.log.err(
+            "Failed to get preview for note #{d}({d}, {d}) with query '{s}': {}\n",
+            .{ id, start_i, end_i, query, err },
+        );
+        return @intFromEnum(CError.GenericFail);
+    };
+    for (detail.highlights, 0..) |h, i| {
+        output.highlights[i] = @intCast(h);
+    }
+    return 0;
+}
+
 /// List in chronological order the n most recently modified notes.
 export fn nana_index(outbuf: [*c]c_int, sz: c_uint, ignore: c_int) c_int {
     std.log.info("nana_index (ignore {d})", .{ignore});
@@ -335,5 +366,9 @@ const PATH_MAX = std.posix.PATH_MAX;
 
 const nana = @import("root.zig");
 const doctor = nana.doctor;
+const model = @import("model.zig");
+const NoteID = model.NoteID;
 const SearchResult = nana.SearchResult;
 const CSearchResult = nana.CSearchResult;
+const SearchDetail = nana.SearchDetail;
+const CSearchDetail = nana.CSearchDetail;

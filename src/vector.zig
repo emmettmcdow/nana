@@ -1,30 +1,24 @@
 const MAX_NOTE_LEN: usize = std.math.maxInt(u32);
 
-const N_SEARCH_HIGHLIGHTS = 5;
-
 pub const CSearchResult = extern struct {
-    id: c_int,
+    id: c_uint,
     start_i: c_uint,
     end_i: c_uint,
-    highlights: [N_SEARCH_HIGHLIGHTS * 2]c_uint = .{0} ** 10,
 };
 
 pub const SearchResult = struct {
     id: NoteID,
     start_i: usize,
     end_i: usize,
-    highlights: [N_SEARCH_HIGHLIGHTS * 2]usize = .{0} ** 10,
 
     const Self = @This();
 
     pub fn toC(self: Self) CSearchResult {
-        var output = CSearchResult{
-            .id = @as(c_int, @intCast(self.id)),
+        return CSearchResult{
+            .id = @as(c_uint, @intCast(self.id)),
             .start_i = @as(c_uint, @intCast(self.start_i)),
             .end_i = @as(c_uint, @intCast(self.end_i)),
         };
-        for (self.highlights, 0..) |v, i| output.highlights[i] = @intCast(v);
-        return output;
     }
 };
 
@@ -101,6 +95,48 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
             return unique_found_n;
         }
 
+        pub fn populateHighlights(
+            self: *Self,
+            query: []const u8,
+            result_content: []const u8,
+            highlights: []usize,
+        ) !void {
+            const zone = tracy.beginZone(@src(), .{ .name = "vector.zig:populateHighlights" });
+            defer zone.end();
+
+            const max_highlights = @divExact(highlights.len, 2);
+
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena.deinit();
+
+            const query_vec_union = (try self.embedder.embed(arena.allocator(), query)) orelse return;
+            const query_vec = query_vec_union.apple_nlembedding.*;
+
+            var found: u8 = 0;
+            var wordspliterator = embed.WordSpliterator.init(result_content);
+            while (wordspliterator.next()) |word_chunk| {
+                const chunk_vec_union = (try self.embedder.embed(
+                    arena.allocator(),
+                    word_chunk.contents,
+                )) orelse continue;
+                const chunk_vec = chunk_vec_union.apple_nlembedding.*;
+
+                const similar = vec_storage.cosine_similarity(
+                    VEC_SZ,
+                    VEC_TYPE,
+                    chunk_vec,
+                    query_vec,
+                );
+                if (similar > self.embedder.strict_threshold) {
+                    highlights[found * 2] = word_chunk.start_i;
+                    highlights[found * 2 + 1] = word_chunk.end_i;
+                    found += 1;
+                    if (found >= max_highlights) return;
+                }
+            }
+            return;
+        }
+
         pub fn embedText(
             self: *Self,
             note_id: NoteID,
@@ -130,7 +166,10 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
             for ((try diffSplit(old_contents, new_contents, allocator)).items) |sentence| {
                 if (sentence.new) {
                     embedded += 1;
-                    const vec_id = if (try self.embedder.embed(allocator, sentence.contents)) |vec| block: {
+                    const vec_id = if (try self.embedder.embed(
+                        allocator,
+                        sentence.contents,
+                    )) |vec| block: {
                         break :block try self.vec_storage.put(vec.apple_nlembedding.*);
                     } else self.vec_storage.nullVec();
 
@@ -185,7 +224,11 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
                 if (denom == 0) break :blk 100;
                 break :blk @intFromFloat((num / denom) * 100);
             };
-            std.log.info("Recycled Ratio: {d}%, Embedded: {d}, Recycled: {d}\n", .{ ratio, embedded, recycled });
+            std.log.info("Recycled Ratio: {d}%, Embedded: {d}, Recycled: {d}\n", .{
+                ratio,
+                embedded,
+                recycled,
+            });
             return;
         }
 
@@ -487,6 +530,34 @@ test "handle multiple remove gracefully" {
     try db.embedText(noteID, "", initial_content);
     try db.embedText(noteID, initial_content, initial_content);
     try db.embedText(noteID, initial_content, updated_content);
+}
+
+test "populateHighlights" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer rel.deinit();
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try TestVecDB.init(arena.allocator(), tmpD.dir, &rel, te.iface);
+    defer db.deinit();
+
+    {
+        const query = "hello";
+        const contents = "bah hello";
+        var highlights: [10]usize = .{0} ** 10;
+        try db.populateHighlights(query, contents, &highlights);
+        try expectEqualSlices(usize, &[10]usize{ 4, 9, 0, 0, 0, 0, 0, 0, 0, 0 }, &highlights);
+    }
+    { // Multiple hits
+        const query = "hello";
+        const contents = "hello; hello ";
+        var highlights: [10]usize = .{0} ** 10;
+        try db.populateHighlights(query, contents, &highlights);
+        try expectEqualSlices(usize, &[10]usize{ 0, 5, 7, 12, 0, 0, 0, 0, 0, 0 }, &highlights);
+    }
 }
 
 const std = @import("std");

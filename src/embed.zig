@@ -20,6 +20,7 @@ pub const Embedder = struct {
 
     id: EmbeddingModel,
     threshold: f32,
+    strict_threshold: f32,
     path: []const u8,
 
     pub fn split(self: *Embedder, contents: []const u8) SentenceSpliterator {
@@ -49,6 +50,7 @@ pub const JinaEmbedder = struct {
     pub const VEC_TYPE = f32;
     pub const ID = EmbeddingModel.jina_embedding;
     pub const THRESHOLD = 0.35;
+    pub const STRICT_THRESHOLD = THRESHOLD * 2;
     pub const PATH = @tagName(ID) ++ ".db";
     pub const MODEL_PATH = "models/jina-embeddings-v2-base-en/float32_model.mlpackage";
     pub const TOKENIZER_PATH = "models/jina-embeddings-v2-base-en/tokenizer.json";
@@ -185,6 +187,7 @@ pub const JinaEmbedder = struct {
             .deinitFn = deinitFn,
             .id = ID,
             .threshold = THRESHOLD,
+            .strict_threshold = STRICT_THRESHOLD,
             .path = PATH,
         };
     }
@@ -419,6 +422,7 @@ pub const NLEmbedder = struct {
     pub const VEC_TYPE = f32;
     pub const ID = EmbeddingModel.apple_nlembedding;
     pub const THRESHOLD = 0.35;
+    pub const STRICT_THRESHOLD = THRESHOLD * 2;
     pub const PATH = @tagName(ID) ++ ".db";
 
     pub fn init() !NLEmbedder {
@@ -454,6 +458,7 @@ pub const NLEmbedder = struct {
             .deinitFn = deinit,
             .id = ID,
             .threshold = THRESHOLD,
+            .strict_threshold = STRICT_THRESHOLD,
             .path = PATH,
         };
     }
@@ -484,7 +489,7 @@ pub const NLEmbedder = struct {
         const fromUTF8 = objc.Sel.registerName("stringWithUTF8String:");
         const getVectorForString = objc.Sel.registerName("getVector:forString:");
 
-        if (str.len == 0) {
+        if (str.len == 0 or str[0] == 0) {
             std.log.info("Skipping embed of zero-length string\n", .{});
             return null;
         }
@@ -501,7 +506,7 @@ pub const NLEmbedder = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (!self.embedder_obj.msgSend(bool, getVectorForString, .{ vec_buf, objc_str })) {
-            std.log.err("Failed to embed {s}\n", .{str[0..@min(str.len, 10)]});
+            std.log.err("Failed to embed '{s}'\n", .{str[0..@min(str.len, 10)]});
             return null;
         }
 

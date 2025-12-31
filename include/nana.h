@@ -18,9 +18,12 @@ typedef struct {
     unsigned int id;
     unsigned int start_i;
     unsigned int end_i;
-    unsigned int highlights[N_SEARCH_HIGHLIGHTS * 2];
 } CSearchResult;
 
+typedef struct {
+  char *content;
+  unsigned int highlights[N_SEARCH_HIGHLIGHTS * 2];
+} CSearchDetail;
 
 int nana_init(const char *);
 int nana_deinit(void);
@@ -29,6 +32,7 @@ int nana_import(const char *, char *, unsigned int);
 long nana_create_time(int);
 long nana_mod_time(int);
 int nana_search(const char *, CSearchResult *, unsigned int);
+int nana_search_detail(int, unsigned int, unsigned int, const char *, CSearchDetail *);
 int nana_index(int *, unsigned int, int);
 int nana_write_all(int, const char *);
 long nana_write_all_with_time(int, const char *);

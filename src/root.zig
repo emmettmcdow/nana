@@ -291,6 +291,44 @@ pub const Runtime = struct {
         return util.readAllZ(self.basedir, note.path, buf);
     }
 
+    /// Reads a particular range of the contents of the note.
+    pub fn readRange(self: *Runtime, id: NoteID, start_i: usize, end_i: usize, buf: []u8) !void {
+        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:readRange" });
+        defer zone.end();
+
+        const text_len = end_i - start_i;
+        assert(buf.len == text_len + 1);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+
+        const note = try self.get(id, arena.allocator());
+        const f = try self.basedir.openFile(note.path, .{});
+        defer f.close();
+        try f.seekBy(@intCast(start_i));
+        const n = try f.read(buf[0..text_len]);
+        assert(n == text_len);
+        buf[n] = 0;
+        return;
+    }
+
+    /// Get matched area for search result.
+    pub fn search_detail(
+        self: *Runtime,
+        id: NoteID,
+        start_i: usize,
+        end_i: usize,
+        query: []const u8,
+        output: *SearchDetail,
+    ) !void {
+        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:preview" });
+        defer zone.end();
+
+        try self.readRange(id, start_i, end_i, output.content);
+        const text_len = end_i - start_i;
+        try self.vectors.populateHighlights(query, output.content[0..text_len], &output.highlights);
+        return;
+    }
+
     /// Search does an embedding vector distance comparison to find the most semantically similar
     /// notes. Takes a `query`, writes to `buf`, and returns the number of results found.
     pub fn search(self: *Runtime, query: []const u8, buf: []SearchResult) !usize {
@@ -397,6 +435,17 @@ pub const Runtime = struct {
         self.db.commitTX();
         return;
     }
+};
+
+pub const N_SEARCH_HIGHLIGHTS = 5;
+pub const SearchDetail = struct {
+    content: []u8,
+    highlights: [N_SEARCH_HIGHLIGHTS * 2]usize = .{0} ** (N_SEARCH_HIGHLIGHTS * 2),
+};
+
+pub const CSearchDetail = extern struct {
+    content: [*]u8,
+    highlights: [N_SEARCH_HIGHLIGHTS * 2]c_uint,
 };
 
 /// Resets metadata to a functioning state, returns list of paths to be re-imported.
@@ -585,6 +634,27 @@ test "readAll null-term" {
     _ = try rt.readAll(noteID, &buf);
     try expectEqual('4', buf[3]);
     try expectEqual(0, buf[4]);
+}
+
+test "readRange" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .mem = true,
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
+    defer rt.deinit();
+
+    const noteID = try rt.create();
+    try rt.writeAll(noteID, "1/23/4");
+
+    var buf: [3]u8 = [_]u8{'1'} ** 3;
+    _ = try rt.readRange(noteID, 2, 4, &buf);
+    try expectEqlStrings("23", buf[0..2]);
+    try expectEqual(0, buf[2]);
 }
 
 test "no modify on read" {
@@ -927,9 +997,9 @@ test "import run embedding" {
 
     var buf: [1]SearchResult = undefined;
     try expectEqual(1, try rt.search("hello", &buf));
-    try expectEqualSlices(SearchResult, &[_]SearchResult{
-        .{ .id = id, .start_i = 0, .end_i = 5 },
-    }, buf[0..1]);
+    try expectEqual(id, buf[0].id);
+    try expectEqual(@as(usize, 0), buf[0].start_i);
+    try expectEqual(@as(usize, 5), buf[0].end_i);
 }
 
 test "import skip unrecognized file extensions" {
@@ -1266,6 +1336,44 @@ test "title" {
             "*************************************************************...",
             try rt.title(id, buf[0..TITLE_BUF_LEN]),
         );
+    }
+}
+
+test "search_detail" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .basedir = tmpD.dir,
+    });
+    defer rt.deinit();
+
+    const id = try rt.create();
+    const content = "Hello world!";
+    const nullterm_content = "Hello world!\x00";
+    try rt.writeAll(id, content);
+    {
+        var preview_buf: [content.len + 1]u8 = undefined;
+        var preview = SearchDetail{ .content = &preview_buf };
+        try rt.search_detail(id, 0, content.len, "hello", &preview);
+        try expectEqlStrings(nullterm_content, preview.content);
+        // Verify highlight indices are correct (start=0, end=5 for "Hello")
+        try expectEqual(0, preview.highlights[0]);
+        try expectEqual(5, preview.highlights[1]);
+        try expectEqlStrings("Hello", preview.content[preview.highlights[0]..preview.highlights[1]]);
+    }
+    // Test with a partial range that simulates C interop (buffer includes null terminator in length)
+    {
+        const start_i = 0;
+        const end_i = 5; // "Hello"
+        const text_len = end_i - start_i;
+        var preview_buf: [text_len + 1]u8 = undefined;
+        var preview = SearchDetail{ .content = &preview_buf };
+        try rt.search_detail(id, start_i, end_i, "hello", &preview);
+        // Verify highlight indices exclude the null terminator
+        try expectEqual(0, preview.highlights[0]);
+        try expectEqual(5, preview.highlights[1]);
     }
 }
 

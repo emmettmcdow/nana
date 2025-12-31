@@ -681,7 +681,7 @@ fn is_zero(comptime N: u32, comptime T: type, a: @Vector(N, T)) bool {
     return @reduce(.And, a == zero_vec);
 }
 
-fn cosine_similarity(comptime N: u32, comptime T: type, a: @Vector(N, T), b: @Vector(N, T)) T {
+pub fn cosine_similarity(comptime N: u32, comptime T: type, a: @Vector(N, T), b: @Vector(N, T)) T {
     if (is_zero(N, T, a) or is_zero(N, T, b)) return 0;
     return dot(N, T, a, b) / (magnitude(N, T, a) * magnitude(N, T, b));
 }
