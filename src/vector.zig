@@ -76,8 +76,37 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
                 &vec_ids,
                 self.embedder.threshold,
             );
+            for (0..@min(found_n, buf.len)) |i| {
+                const vec = try self.relational.getVec(vec_ids[i]);
+                buf[i] = SearchResult{
+                    .id = vec.note_id,
+                    .start_i = vec.start_i,
+                    .end_i = vec.end_i,
+                };
+            }
             try self.debugSearchRankedResults(vec_ids[0..found_n]);
 
+            std.log.info("Found {d} results searching with {s}\n", .{ found_n, query });
+            return found_n;
+        }
+
+        pub fn uniqueSearch(self: *Self, query: []const u8, buf: []SearchResult) !usize {
+            const zone = tracy.beginZone(@src(), .{ .name = "vector.zig:uniqueSearch" });
+            defer zone.end();
+
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena.deinit();
+
+            const query_vec_union = (try self.embedder.embed(arena.allocator(), query)) orelse return 0;
+            const query_vec = query_vec_union.apple_nlembedding.*;
+
+            debugSearchHeader(query);
+            var vec_ids: [1000]VectorID = undefined;
+            const found_n = try self.vec_storage.search(
+                query_vec,
+                &vec_ids,
+                self.embedder.threshold,
+            );
             var unique_found_n: usize = 0;
             outer: for (0..@min(found_n, buf.len)) |i| {
                 const vec = try self.relational.getVec(vec_ids[i]);
@@ -91,7 +120,12 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
                 };
                 unique_found_n += 1;
             }
-            std.log.info("Found {d} results searching with {s}\n", .{ unique_found_n, query });
+            try self.debugSearchRankedResults(vec_ids[0..found_n]);
+
+            std.log.info(
+                "Condensed {d} duplicate results to {d} duplicate searching with {s}\n",
+                .{ found_n, unique_found_n, query },
+            );
             return unique_found_n;
         }
 
@@ -338,7 +372,7 @@ test "embedText clear previous" {
     try expectEqual(0, try db.search("hello", &buf));
 }
 
-test "search remove duplicates" {
+test "search" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
@@ -354,7 +388,31 @@ test "search remove duplicates" {
     _ = try db.embedText(noteID1, "", "pizza. pizza. pizza.");
 
     var buffer: [10]SearchResult = undefined;
-    try expectEqual(1, try db.search("pizza", &buffer));
+    try expectEqual(3, try db.search("pizza", &buffer));
+    try expectEqualSlices(SearchResult, &[_]SearchResult{
+        .{ .id = noteID1, .start_i = 0, .end_i = 5 },
+        .{ .id = noteID1, .start_i = 6, .end_i = 12 },
+        .{ .id = noteID1, .start_i = 13, .end_i = 19 },
+    }, buffer[0..3]);
+}
+
+test "uniqueSearch" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer rel.deinit();
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try TestVecDB.init(arena.allocator(), tmpD.dir, &rel, te.iface);
+    defer db.deinit();
+
+    const noteID1 = try rel.create();
+    _ = try db.embedText(noteID1, "", "pizza. pizza. pizza.");
+
+    var buffer: [10]SearchResult = undefined;
+    try expectEqual(1, try db.uniqueSearch("pizza", &buffer));
     try expectEqualSlices(SearchResult, &[_]SearchResult{
         .{ .id = noteID1, .start_i = 0, .end_i = 5 },
     }, buffer[0..1]);
