@@ -1,5 +1,10 @@
 pub const Error = error{MultipleRemove};
 
+pub const SearchEntry = struct {
+    id: VectorID,
+    similarity: f32,
+};
+
 const LATEST_META_FORMAT_VERSION = 1;
 
 const DEFAULT_DB_IDX_TYPE = BinaryTypeRepresentation.to_binary(u8);
@@ -197,7 +202,7 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
             self.meta.vec_n -= 1;
         }
 
-        pub fn search(self: Self, query: Vector, buf: []VectorID, threshold: f32) !usize {
+        pub fn search(self: Self, query: Vector, buf: []SearchEntry, threshold: f32) !usize {
             const zone = tracy.beginZone(@src(), .{ .name = "vec_storage.zig:search" });
             defer zone.end();
 
@@ -229,7 +234,7 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
             var i: usize = 0;
             while (pq.removeOrNull()) |pair| : (i += 1) {
                 if (i >= buf.len) break;
-                buf[i] = pair.id;
+                buf[i] = .{ .id = pair.id, .similarity = pair.sim };
             }
 
             return i;

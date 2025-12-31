@@ -10,6 +10,7 @@ pub const SearchResult = struct {
     id: NoteID,
     start_i: usize,
     end_i: usize,
+    similarity: f32 = 0.0,
 
     const Self = @This();
 
@@ -68,23 +69,23 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
             const query_vec_union = (try self.embedder.embed(arena.allocator(), query)) orelse return 0;
             const query_vec = query_vec_union.apple_nlembedding.*;
 
-            var vec_ids: [1000]VectorID = undefined;
+            var search_results: [1000]vec_storage.SearchEntry = undefined;
 
             debugSearchHeader(query);
             const found_n = try self.vec_storage.search(
                 query_vec,
-                &vec_ids,
+                &search_results,
                 self.embedder.threshold,
             );
             for (0..@min(found_n, buf.len)) |i| {
-                const vec = try self.relational.getVec(vec_ids[i]);
+                const vec = try self.relational.getVec(search_results[i].id);
                 buf[i] = SearchResult{
                     .id = vec.note_id,
                     .start_i = vec.start_i,
                     .end_i = vec.end_i,
+                    .similarity = search_results[i].similarity,
                 };
             }
-            try self.debugSearchRankedResults(vec_ids[0..found_n]);
 
             std.log.info("Found {d} results searching with {s}\n", .{ found_n, query });
             return found_n;
@@ -101,15 +102,15 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
             const query_vec = query_vec_union.apple_nlembedding.*;
 
             debugSearchHeader(query);
-            var vec_ids: [1000]VectorID = undefined;
+            var search_results: [1000]vec_storage.SearchEntry = undefined;
             const found_n = try self.vec_storage.search(
                 query_vec,
-                &vec_ids,
+                &search_results,
                 self.embedder.threshold,
             );
             var unique_found_n: usize = 0;
             outer: for (0..@min(found_n, buf.len)) |i| {
-                const vec = try self.relational.getVec(vec_ids[i]);
+                const vec = try self.relational.getVec(search_results[i].id);
                 for (0..unique_found_n) |j| {
                     if (buf[j].id == vec.note_id) continue :outer;
                 }
@@ -117,10 +118,10 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
                     .id = vec.note_id,
                     .start_i = vec.start_i,
                     .end_i = vec.end_i,
+                    .similarity = search_results[i].similarity,
                 };
                 unique_found_n += 1;
             }
-            try self.debugSearchRankedResults(vec_ids[0..found_n]);
 
             std.log.info(
                 "Condensed {d} duplicate results to {d} duplicate searching with {s}\n",
@@ -274,25 +275,6 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
             if (!config.debug) return;
             std.debug.print("Checking similarity against '{s}':\n", .{query});
         }
-
-        fn debugSearchRankedResults(self: *Self, ids: []VectorID) !void {
-            if (!config.debug) return;
-            const bufsz = 50;
-            for (ids, 1..) |id, i| {
-                var buf: [bufsz]u8 = undefined;
-                const noteID = try self.relational.vecToNote(id);
-                const sz = try self.readAll(
-                    noteID,
-                    &buf,
-                );
-                if (sz < 0) continue;
-                std.debug.print("    {d}. ID({d})'{s}' \n", .{
-                    i,
-                    noteID,
-                    buf[0..@min(sz, bufsz)],
-                });
-            }
-        }
     };
 }
 
@@ -327,7 +309,7 @@ test "embedText hello" {
     var buf: [1]SearchResult = undefined;
     try expectEqual(1, try db.search(text, &buf));
 
-    try expectEqualSlices(SearchResult, &[_]SearchResult{
+    try expectSearchResultsIgnoresimilarity(&[_]SearchResult{
         .{ .id = id, .start_i = 0, .end_i = 5 },
     }, buf[0..1]);
 }
@@ -389,7 +371,7 @@ test "search" {
 
     var buffer: [10]SearchResult = undefined;
     try expectEqual(3, try db.search("pizza", &buffer));
-    try expectEqualSlices(SearchResult, &[_]SearchResult{
+    try expectSearchResultsIgnoresimilarity(&[_]SearchResult{
         .{ .id = noteID1, .start_i = 0, .end_i = 5 },
         .{ .id = noteID1, .start_i = 6, .end_i = 12 },
         .{ .id = noteID1, .start_i = 13, .end_i = 19 },
@@ -413,9 +395,99 @@ test "uniqueSearch" {
 
     var buffer: [10]SearchResult = undefined;
     try expectEqual(1, try db.uniqueSearch("pizza", &buffer));
-    try expectEqualSlices(SearchResult, &[_]SearchResult{
+    try expectSearchResultsIgnoresimilarity(&[_]SearchResult{
         .{ .id = noteID1, .start_i = 0, .end_i = 5 },
     }, buffer[0..1]);
+}
+
+test "search returns results with similarity" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer rel.deinit();
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try TestVecDB.init(arena.allocator(), tmpD.dir, &rel, te.iface);
+    defer db.deinit();
+
+    const noteID1 = try rel.create();
+    _ = try db.embedText(noteID1, "", "brick. tacos. pizza.");
+    db.embedder.threshold = 0.0;
+
+    var buffer: [10]SearchResult = undefined;
+    try expectEqual(3, try db.search("pizza", &buffer));
+
+    try expectSearchResultsIgnoresimilarity(&[_]SearchResult{
+        .{ .id = noteID1, .start_i = 13, .end_i = 19 },
+        .{ .id = noteID1, .start_i = 6, .end_i = 12 },
+        .{ .id = noteID1, .start_i = 0, .end_i = 5 },
+    }, buffer[0..3]);
+
+    try std.testing.expect(buffer[0].similarity > 0);
+    try std.testing.expect(buffer[1].similarity > 0);
+    try std.testing.expect(buffer[2].similarity > 0);
+    try std.testing.expect(buffer[0].similarity >= buffer[1].similarity);
+    try std.testing.expect(buffer[1].similarity >= buffer[2].similarity);
+}
+
+test "uniqueSearch returns results with similarity" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer rel.deinit();
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try TestVecDB.init(arena.allocator(), tmpD.dir, &rel, te.iface);
+    defer db.deinit();
+
+    const noteID1 = try rel.create();
+    try rel.update(noteID1);
+    _ = try db.embedText(noteID1, "", "brick");
+    const noteID2 = try rel.create();
+    try rel.update(noteID2);
+    _ = try db.embedText(noteID2, "", "tacos");
+    const noteID3 = try rel.create();
+    try rel.update(noteID3);
+    _ = try db.embedText(noteID3, "", "pizza");
+    db.embedder.threshold = 0.0;
+
+    var buffer: [10]SearchResult = undefined;
+    try expectEqual(3, try db.search("pizza", &buffer));
+
+    try expectSearchResultsIgnoresimilarity(&[_]SearchResult{
+        .{ .id = noteID3, .start_i = 0, .end_i = 5 },
+        .{ .id = noteID2, .start_i = 0, .end_i = 5 },
+        .{ .id = noteID1, .start_i = 0, .end_i = 5 },
+    }, buffer[0..3]);
+
+    try std.testing.expect(buffer[0].similarity > 0);
+    try std.testing.expect(buffer[1].similarity > 0);
+    try std.testing.expect(buffer[2].similarity > 0);
+    try std.testing.expect(buffer[0].similarity >= buffer[1].similarity);
+    try std.testing.expect(buffer[1].similarity >= buffer[2].similarity);
+}
+
+fn expectSearchResultsIgnoresimilarity(expected: []const SearchResult, actual: []const SearchResult) !void {
+    if (expected.len != actual.len) {
+        std.debug.print(
+            "slice lengths differ: expected {d}, found {d}\n",
+            .{ expected.len, actual.len },
+        );
+        return error.TestExpectedEqual;
+    }
+    for (expected, actual, 0..) |e, a, i| {
+        if (e.id != a.id or e.start_i != a.start_i or e.end_i != a.end_i) {
+            std.debug.print(
+                "index {d}: expected {{ .id = {d}, .start_i = {d}, .end_i = {d} }}, found {{ .id = {d}, .start_i = {d}, .end_i = {d} }}\n",
+                .{ i, e.id, e.start_i, e.end_i, a.id, a.start_i, a.end_i },
+            );
+            return error.TestExpectedEqual;
+        }
+    }
 }
 
 fn testEmbedder(allocator: std.mem.Allocator) !struct { e: *NLEmbedder, iface: embed.Embedder } {
