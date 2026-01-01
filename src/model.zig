@@ -41,11 +41,6 @@ const VECTOR_SCHEMA =
 ;
 const SHOW_VECTOR = "SELECT * from vectors;";
 const DELETE_VEC = "DELETE FROM vectors WHERE vector_id = ?;";
-const GET_VECS_FROM_NOTEID =
-    \\SELECT vector_id, note_id, next_vec_id, last_vec_id, start_i, end_i
-    \\FROM vectors WHERE note_id = ?
-    \\ORDER BY start_i;
-;
 pub const Error = error{ NotFound, BufferTooSmall, NotInitialized };
 
 pub const NoteID = u64;
@@ -519,6 +514,36 @@ pub const DB = struct {
         return if (row) |vec| return vec.toVectorRow() else Error.NotFound;
     }
 
+    const GET_ALL_VECS =
+        \\SELECT vector_id, note_id, next_vec_id, last_vec_id, start_i, end_i
+        \\FROM vectors
+    ;
+    pub fn allVecs(self: *Self, allocator: std.mem.Allocator) ![]VectorRow {
+        assert(self.is_ready());
+
+        var diags = sqlite.Diagnostics{};
+        var stmt = self.db.prepareWithDiags(GET_ALL_VECS, .{ .diags = &diags }) catch |err| {
+            std.log.err("unable to prepare statement. Error: {}. Diag.: {s}", .{ err, diags });
+            return err;
+        };
+        defer stmt.deinit();
+
+        const rows_db = try stmt.all(VectorRowDB, allocator, .{}, .{});
+        defer allocator.free(rows_db);
+
+        const rows = try allocator.alloc(VectorRow, rows_db.len);
+        for (rows_db, 0..) |row_db, i| {
+            rows[i] = row_db.toVectorRow();
+        }
+
+        return rows;
+    }
+
+    const GET_VECS_FROM_NOTEID =
+        \\SELECT vector_id, note_id, next_vec_id, last_vec_id, start_i, end_i
+        \\FROM vectors WHERE note_id = ?
+        \\ORDER BY start_i;
+    ;
     pub fn vecsForNote(self: *Self, allocator: std.mem.Allocator, noteID: NoteID) ![]VectorRow {
         assert(self.is_ready());
 

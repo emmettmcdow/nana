@@ -1,4 +1,8 @@
 const MAX_NOTE_LEN: usize = std.math.maxInt(u32);
+pub const Error = error{
+    ValidationNoStorageForRelationalVector,
+    ValidationNoRelationalForStorageVector,
+};
 
 pub const CSearchResult = extern struct {
     id: c_uint,
@@ -267,6 +271,34 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
                 recycled,
             });
             return;
+        }
+
+        pub fn validate(self: *Self) !void {
+            // Every entry in vec_storage should have a corresponding entry in the relational db.
+            for (0..self.vec_storage.index.len) |vecID| {
+                if (!self.vec_storage.isOccupied(vecID)) continue;
+                _ = self.relational.getVec(vecID) catch {
+                    std.log.err(
+                        "Could not find relational entry for storage vector #{d}\n",
+                        .{vecID},
+                    );
+                    return error.ValidationNoStorageForRelationalVector;
+                };
+            }
+
+            // ... and vice versa
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena.deinit();
+            for (try self.relational.allVecs(arena.allocator())) |vec_row| {
+                if (vec_row.vector_id == self.vec_storage.nullVec()) continue;
+                if (!self.vec_storage.isOccupied(vec_row.vector_id)) {
+                    std.log.err(
+                        "Could not find storage for relational vector #{d}\n",
+                        .{vec_row.vector_id},
+                    );
+                    return error.ValidationNoStorageForRelationalVector;
+                }
+            }
         }
 
         fn delete(self: *Self, id: VectorID) !void {
