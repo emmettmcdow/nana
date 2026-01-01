@@ -195,7 +195,11 @@ export fn nana_search_detail(
     var detail = SearchDetail{
         .content = content_slice,
     };
-    rt.search_detail(id, start_i, end_i, zigStyle, &detail) catch |err| {
+    rt.search_detail(
+        .{ .id = id, .start_i = start_i, .end_i = end_i },
+        zigStyle,
+        &detail,
+    ) catch |err| {
         std.log.err(
             "Failed to get preview for note #{d}({d}, {d}) with query '{s}': {}\n",
             .{ id, start_i, end_i, query, err },
