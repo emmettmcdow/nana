@@ -135,8 +135,8 @@ func hilightedText(str: String, highlights: [Int], palette: Palette) -> Attribut
 
         let startIndex = styled.index(styled.startIndex, offsetByUnicodeScalars: highlight_start_i)
         let endIndex = styled.index(styled.startIndex, offsetByUnicodeScalars: highlight_end_i)
-        styled[startIndex ..< endIndex].backgroundColor = palette.background.mix(with: .white, by: 0.2)
-        styled[startIndex ..< endIndex].foregroundColor = palette.foreground.mix(with: .black, by: 0.2)
+        styled[startIndex ..< endIndex].backgroundColor = palette.background.mix(with: palette.foreground, by: 0.2)
+        styled[startIndex ..< endIndex].foregroundColor = palette.foreground.mix(with: palette.background, by: 0.2)
     }
     return styled
 }
