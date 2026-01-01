@@ -126,6 +126,7 @@ struct GeneralSettingsView: View {
     @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("fontSize") private var fontSize: Double = 14
+    @AppStorage("initializationFailed") private var initializationFailed = false
 
     @State var showFileImporter = false
     @State var files: [ImportItem] = []
@@ -220,6 +221,7 @@ struct GeneralSettingsView: View {
                                 action = "doctor"
                                 Task {
                                     await import_from_doctor(onProgress: onProgress)
+                                    initializationFailed = false
                                 }
                             } label: {
                                 Label("Doctor", systemImage: "stethoscope")

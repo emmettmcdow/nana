@@ -106,7 +106,7 @@ func doctor(basedir: URL,
             onProgress: @MainActor @escaping (_ files: [ImportItem]) -> Void) async
 {
     var err = nana_deinit()
-    if err != 0 {
+    if NanaError(rawValue: Int(err)) != NanaError.Success, NanaError(rawValue: Int(err)) != NanaError.NotInit {
         fatalError("Failed to de-init libnana! With error: \(err)")
     }
 

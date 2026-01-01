@@ -1,7 +1,8 @@
 // nana.h
 #include <stdbool.h>
+#import <Foundation/Foundation.h> 
 
-enum NanaError { 
+typedef NS_ENUM(NSInteger, NanaError) { 
   Success = 0,
   GenericFail = -8,
   DoubleInit = -9,

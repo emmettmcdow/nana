@@ -23,6 +23,7 @@ struct nanaApp: App {
     @State private var notesManager: NotesManager?
     @State private var showingToast = false
     @State private var toastMessage = ""
+    @AppStorage("initializationFailed") private var initializationFailed = false
 
     @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
     @AppStorage("fontSize") private var fontSize: Double = 14
@@ -51,7 +52,11 @@ struct nanaApp: App {
         let basedir = url.path()
         let err = nana_init(basedir)
         if err != 0 {
-            fatalError("Failed to init libnana! With error:\(err)")
+            await MainActor.run {
+                self.initializationFailed = true
+                self.startupRun = true
+            }
+            return
         }
         await MainActor.run {
             self.notesManager = NotesManager()
@@ -88,14 +93,21 @@ struct nanaApp: App {
                 } else if let notesManager = notesManager {
                     ContentView()
                         .environmentObject(notesManager)
-                        .disabled(!startupRun)
+                        .disabled(initializationFailed)
                 }
                 ToastView(showingToast: $showingToast, message: $toastMessage)
             }
+            .disabled(initializationFailed)
             .onAppear {
                 Task.detached {
                     await onStartup()
                 }
+            }
+            .alert("Initialization Error",
+                   isPresented: $initializationFailed) {
+                Button("OK") {}
+            } message: {
+                Text("An error occurred during startup. Please open Settings and click 'Doctor' in the Data tab to fix your data.")
             }
         }
         .windowStyle(HiddenTitleBarWindowStyle())

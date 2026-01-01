@@ -54,16 +54,16 @@ export fn nana_init(
 }
 
 /// Output: CError
-export fn nana_deinit() c_int {
+export fn nana_deinit() CError {
     mutex.lock();
     defer mutex.unlock();
     std.log.info("nana_deinit", .{});
     if (!init) {
-        return @intFromEnum(CError.NotInit);
+        return CError.NotInit;
     }
     rt.deinit();
     init = false;
-    return 0;
+    return CError.Success;
 }
 
 /// Output: CError on failure, NoteID if success
