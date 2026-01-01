@@ -123,6 +123,7 @@ struct StylePreview: View {
 }
 
 struct GeneralSettingsView: View {
+    @AppStorage("skipHighlights") private var skipHighlights: Bool = false
     @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("fontSize") private var fontSize: Double = 14
@@ -154,6 +155,15 @@ struct GeneralSettingsView: View {
                     Section(header: Text("Preview")) {
                         StylePreview(sz: fontSize)
                             .padding()
+                    }
+                }
+                .formStyle(.grouped)
+            }
+            Tab("Search", systemImage: "magnifyingglass") {
+                Form {
+                    Section(header: Text("Display")) {
+                        Toggle("Disable match highlighting", isOn: $skipHighlights)
+                            .help("Toggle this to show or hide sections of search results which matched the query.")
                     }
                 }
                 .formStyle(.grouped)

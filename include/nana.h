@@ -34,7 +34,7 @@ int nana_import(const char *, char *, unsigned int);
 long nana_create_time(int);
 long nana_mod_time(int);
 int nana_search(const char *, CSearchResult *, unsigned int);
-int nana_search_detail(int, unsigned int, unsigned int, const char *, CSearchDetail *);
+int nana_search_detail(int, unsigned int, unsigned int, const char *, CSearchDetail *, bool);
 int nana_index(int *, unsigned int, int);
 int nana_write_all(int, const char *);
 long nana_write_all_with_time(int, const char *);

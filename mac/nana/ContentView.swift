@@ -53,7 +53,8 @@ import SwiftUI
                                     _: UInt32,
                                     _: UInt32,
                                     _: String,
-                                    _: UnsafeMutablePointer<CSearchDetail>?) -> Int32
+                                    _: UnsafeMutablePointer<CSearchDetail>?,
+                                    _: Bool) -> Int32
     {
         return 0
     }
@@ -76,6 +77,7 @@ struct SearchResult: Identifiable, Equatable {
 let MAX_ITEMS = 100
 
 class NotesManager: ObservableObject {
+    @AppStorage("skipHighlights") private var skipHighlights: Bool = false
     @Published var currentNote: Note
     @Published var queriedNotes: [SearchResult] = []
     @Published var searchVisible = false
@@ -152,7 +154,8 @@ class NotesManager: ObservableObject {
                                          result.start_i,
                                          result.end_i,
                                          query,
-                                         &tmp_search_detail) == 0
+                                         &tmp_search_detail,
+                                         skipHighlights) == 0
                 else {
                     continue
                 }

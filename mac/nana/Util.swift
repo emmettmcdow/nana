@@ -20,6 +20,16 @@ import SwiftUI
     private func nana_doctor_finish() {
         // No-op
     }
+
+    enum NanaError: Int {
+        case Success = 0
+        case GenericFail = -8
+        case DoubleInit = -9
+        case NotInit = -10
+        case PathTooLong = -11
+        case FileNotFound = -12
+        case InvalidFiletype = -13
+    }
 #else
     import NanaKit
 #endif

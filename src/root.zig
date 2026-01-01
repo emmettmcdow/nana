@@ -312,12 +312,17 @@ pub const Runtime = struct {
         return;
     }
 
+    pub const SearchDetailOpts = struct {
+        skip_highlights: bool = false,
+    };
+
     /// Get matched area for search result.
     pub fn search_detail(
         self: *Runtime,
         search_result: SearchResult,
         query: []const u8,
         output: *SearchDetail,
+        opts: SearchDetailOpts,
     ) !void {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:preview" });
         defer zone.end();
@@ -329,7 +334,13 @@ pub const Runtime = struct {
             output.content,
         );
         const text_len = search_result.end_i - search_result.start_i;
-        try self.vectors.populateHighlights(query, output.content[0..text_len], &output.highlights);
+        if (!opts.skip_highlights) {
+            try self.vectors.populateHighlights(
+                query,
+                output.content[0..text_len],
+                &output.highlights,
+            );
+        }
         return;
     }
 
@@ -1360,7 +1371,12 @@ test "search_detail" {
     {
         var preview_buf: [content.len + 1]u8 = undefined;
         var preview = SearchDetail{ .content = &preview_buf };
-        try rt.search_detail(.{ .id = id, .start_i = 0, .end_i = content.len }, "hello", &preview);
+        try rt.search_detail(
+            .{ .id = id, .start_i = 0, .end_i = content.len },
+            "hello",
+            &preview,
+            .{},
+        );
         try expectEqlStrings(nullterm_content, preview.content);
         // Verify highlight indices are correct (start=0, end=5 for "Hello")
         try expectEqual(0, preview.highlights[0]);
@@ -1374,10 +1390,30 @@ test "search_detail" {
         const text_len = end_i - start_i;
         var preview_buf: [text_len + 1]u8 = undefined;
         var preview = SearchDetail{ .content = &preview_buf };
-        try rt.search_detail(.{ .id = id, .start_i = start_i, .end_i = end_i }, "hello", &preview);
+        try rt.search_detail(
+            .{ .id = id, .start_i = start_i, .end_i = end_i },
+            "hello",
+            &preview,
+            .{},
+        );
         // Verify highlight indices exclude the null terminator
         try expectEqual(0, preview.highlights[0]);
         try expectEqual(5, preview.highlights[1]);
+    }
+    // Skip highlighting
+    {
+        const start_i = 0;
+        const end_i = 5; // "Hello"
+        const text_len = end_i - start_i;
+        var preview_buf: [text_len + 1]u8 = undefined;
+        var preview = SearchDetail{ .content = &preview_buf };
+        try rt.search_detail(
+            .{ .id = id, .start_i = start_i, .end_i = end_i },
+            "hello",
+            &preview,
+            .{ .skip_highlights = true },
+        );
+        for (preview.highlights) |hl| try expectEqual(0, hl);
     }
 }
 

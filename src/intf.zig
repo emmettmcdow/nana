@@ -185,6 +185,7 @@ export fn nana_search_detail(
     end_i: usize,
     query: [*:0]const u8,
     output: *CSearchDetail,
+    skip_highlights: bool,
 ) c_int {
     std.log.info(
         "nana_search_detail (id: {d}, start_i: {d}, end_i: {d}, query: '{s}')",
@@ -199,6 +200,7 @@ export fn nana_search_detail(
         .{ .id = id, .start_i = start_i, .end_i = end_i },
         zigStyle,
         &detail,
+        .{ .skip_highlights = skip_highlights },
     ) catch |err| {
         std.log.err(
             "Failed to get preview for note #{d}({d}, {d}) with query '{s}': {}\n",
