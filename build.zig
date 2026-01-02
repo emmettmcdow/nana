@@ -97,6 +97,49 @@ pub fn build(b: *std.Build) !void {
 
     install_step.dependOn(&copy_model_to_mac.step);
 
+    ////////////////////////
+    // Standalone Binary  //
+    ////////////////////////
+    const main_file = b.path("src/main.zig");
+    const native_target = b.resolveTargetQuery(.{});
+    const exe = b.addExecutable(.{
+        .name = "nana",
+        .root_source_file = main_file,
+        .target = native_target,
+        .optimize = optimize,
+    });
+    exe.root_module.addImport("nana", b.createModule(.{
+        .root_source_file = root_file,
+    }));
+    real_vec_cfg.install(b, exe, debug);
+    _ = SQLite.create(.{
+        .b = b,
+        .dest = exe,
+        .target = native_target,
+        .optimize = optimize,
+    });
+    _ = ObjC.create(.{
+        .b = b,
+        .dest = exe,
+        .target = native_target,
+        .optimize = optimize,
+    });
+    _ = Tracy.create(.{
+        .b = b,
+        .dest = exe,
+        .target = native_target,
+        .optimize = optimize,
+    });
+    b.installArtifact(exe);
+
+    const run_exe = b.addRunArtifact(exe);
+    run_exe.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_exe.addArgs(args);
+    }
+    const run_step = b.step("run", "Run the standalone binary");
+    run_step.dependOn(&run_exe.step);
+
     ////////////////
     // Unit Tests //
     ////////////////

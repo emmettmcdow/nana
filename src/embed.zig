@@ -506,7 +506,7 @@ pub const NLEmbedder = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (!self.embedder_obj.msgSend(bool, getVectorForString, .{ vec_buf, objc_str })) {
-            std.log.err("Failed to embed '{s}'\n", .{str[0..@min(str.len, 10)]});
+            std.log.warn("Failed to embed '{s}'\n", .{str[0..@min(str.len, 10)]});
             return null;
         }
 
