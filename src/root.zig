@@ -1417,6 +1417,41 @@ test "search_detail" {
     }
 }
 
+// The purpose of this test is to make sure that we are using byte indices for these endpoints.
+// The markdown endpoint needs to be utf-8 character indices, but these are byte indices because
+// that's easier to do. It doesn't *really* matter which we do, just as long as we are consistent
+// between endpoints which interact.
+test "unicode endpoint checks" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .basedir = tmpD.dir,
+    });
+    defer rt.deinit();
+
+    const id = try rt.create();
+    const note_content = "❤️";
+    try rt.writeAll(id, note_content);
+
+    var results: [1]SearchResult = undefined;
+    const n_results = try rt.search(note_content, &results);
+    try expectEqual(1, n_results);
+    const result = results[0];
+    try expectEqlStrings(note_content, note_content[result.start_i..result.end_i]);
+
+    const content_buf = try arena.allocator().alloc(u8, (result.end_i - result.start_i) + 1);
+    var detail: SearchDetail = .{
+        .content = content_buf,
+    };
+    try rt.search_detail(result, note_content, &detail, .{});
+    try expectEqlStrings(
+        note_content,
+        note_content[detail.highlights[0]..detail.highlights[1]],
+    );
+}
+
 const std = @import("std");
 const assert = std.debug.assert;
 const expect = std.testing.expect;
