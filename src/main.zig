@@ -1,4 +1,5 @@
 const MAX_FILESIZE_BYTES = 1_000_000;
+
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -7,18 +8,14 @@ pub fn main() !void {
     const tmp_cwd = std.fs.cwd();
     var cwd = try tmp_cwd.openDir(".", .{ .iterate = true });
     defer cwd.close();
-    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmp_dir.dir });
-    defer rel.deinit();
 
-    var e = try embed.NLEmbedder.init();
-    var vec_db = try vector.VectorDB(.apple_nlembedding).init(
-        arena.allocator(),
-        tmp_dir.dir,
-        &rel,
-        e.embedder(),
-    );
+    var runtime = try root.Runtime.init(arena.allocator(), .{
+        .basedir = tmp_dir.dir,
+        .mem = true,
+    });
+    defer runtime.deinit();
 
-    var map = std.hash_map.AutoHashMap(usize, []const u8).init(arena.allocator());
+    var map = std.hash_map.AutoHashMap(model.NoteID, []const u8).init(arena.allocator());
 
     {
         var embed_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -28,15 +25,15 @@ pub fn main() !void {
         while (try walker.next()) |file| {
             if (file.kind != .file) continue;
             if (file.path[0] == '.') continue;
-            const file_id = try rel.create();
-            try rel.update(file_id);
 
             std.debug.print("Embedding `{s}`\n", .{file.path});
-            try map.put(file_id, try arena.allocator().dupe(u8, file.path));
+            const note_id = try runtime.create();
+            try map.put(note_id, try arena.allocator().dupe(u8, file.path));
+
             const f = try cwd.openFile(file.path, .{});
             defer f.close();
             const contents = try f.readToEndAlloc(embed_arena.allocator(), MAX_FILESIZE_BYTES);
-            try vec_db.embedText(file_id, "", contents);
+            try runtime.writeAll(note_id, contents);
         }
     }
 
@@ -47,11 +44,14 @@ pub fn main() !void {
         std.debug.print("\n> ", .{});
         const input = try stdin_reader.readUntilDelimiterOrEof(&buf, '\n');
         if (input) |query| {
-            var results: [10000]vector.SearchResult = undefined;
-            const found_n = try vec_db.search(query, &results);
+            var results: [10000]root.SearchResult = undefined;
+            const found_n = try runtime.search(query, &results);
             std.debug.print("Found {d} results:\n", .{found_n});
             for (results[0..found_n]) |result| {
-                std.debug.print("{s}\n", .{map.get(result.id).?});
+                const text_len = result.end_i - result.start_i;
+                var detail = root.SearchDetail{ .content = try arena.allocator().alloc(u8, text_len + 1) };
+                try runtime.search_detail(result, query, &detail, .{});
+                std.debug.print("{s}: {s}\n", .{ map.get(result.id).?, detail.content[0..text_len] });
             }
         }
     }
@@ -62,7 +62,5 @@ pub const std_options = std.Options{
 };
 
 const std = @import("std");
-const vector = @import("vector.zig");
+const root = @import("root.zig");
 const model = @import("model.zig");
-const NoteID = model.NoteID;
-const embed = @import("embed.zig");
