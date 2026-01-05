@@ -4,6 +4,7 @@ const xc_fw_path = "macos/NanaKit.xcframework";
 
 pub fn build(b: *std.Build) !void {
     const debug = b.option(bool, "debug-output", "Show debug output") orelse false;
+    const embedding_model = b.option(EmbeddingModel, "embedding-model", "Embedding model to use (apple_nlembedding or jina_embedding)") orelse .apple_nlembedding;
     // Need to find a way to merge this with existing filtering per compilation unit
     // const test_filter = b.option([]const u8, "test-filter", "Skip tests that do not match any filter") orelse &[]const u8{};
     const optimize = b.standardOptimizeOption(.{});
@@ -54,6 +55,7 @@ pub fn build(b: *std.Build) !void {
             .target = target,
             .optimize = optimize,
             .debug = debug,
+            .embedding_model = embedding_model,
         }));
     }
 
@@ -111,7 +113,7 @@ pub fn build(b: *std.Build) !void {
     exe.root_module.addImport("nana", b.createModule(.{
         .root_source_file = root_file,
     }));
-    real_vec_cfg.install(b, exe, debug);
+    real_vec_cfg.install(b, exe, debug, embedding_model);
     _ = SQLite.create(.{
         .b = b,
         .dest = exe,
@@ -132,6 +134,14 @@ pub fn build(b: *std.Build) !void {
     });
     b.installArtifact(exe);
 
+    // Install model files to share directory
+    const model_dir = "models/jina-embeddings-v2-base-en";
+    b.installDirectory(.{
+        .source_dir = .{ .cwd_relative = model_dir },
+        .install_dir = .{ .custom = "share/nana" },
+        .install_subdir = "jina-embeddings-v2-base-en",
+    });
+
     const run_exe = b.addRunArtifact(exe);
     run_exe.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
@@ -150,7 +160,7 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .filters = &.{"root"},
     });
-    real_vec_cfg.install(b, root_unit_tests, debug);
+    real_vec_cfg.install(b, root_unit_tests, debug, embedding_model);
     _ = SQLite.create(.{
         .b = b,
         .dest = root_unit_tests,
@@ -216,9 +226,18 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
     });
-    (real_vec_cfg).install(b, embed_unit_tests, debug);
+    (real_vec_cfg).install(b, embed_unit_tests, debug, embedding_model);
+
+    // Install model files relative to test executable
+    const install_test_models = b.addInstallDirectory(.{
+        .source_dir = .{ .cwd_relative = JinaModel.MODEL_DIR },
+        .install_dir = .{ .custom = "share/nana" },
+        .install_subdir = "jina-embeddings-v2-base-en",
+    });
+    install_test_models.step.dependOn(jina_model.step);
+
     const run_embed_unit_tests = b.addRunArtifact(embed_unit_tests);
-    run_embed_unit_tests.step.dependOn(jina_model.step);
+    run_embed_unit_tests.step.dependOn(&install_test_models.step);
     const test_embed = b.step("test-embed", "run the tests for src/embed.zig");
     test_embed.dependOn(&run_embed_unit_tests.step);
 
@@ -235,7 +254,7 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
     });
-    fake_vec_cfg.install(b, vec_storage_unit_tests, debug);
+    fake_vec_cfg.install(b, vec_storage_unit_tests, debug, embedding_model);
     const run_vec_storage_unit_tests = b.addRunArtifact(vec_storage_unit_tests);
     const test_vec_storage = b.step("test-vec_storage", "run the tests for src/vec_storage.zig");
     test_vec_storage.dependOn(&run_vec_storage_unit_tests.step);
@@ -253,7 +272,7 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
     });
-    fake_vec_cfg.install(b, markdown_unit_tests, debug);
+    fake_vec_cfg.install(b, markdown_unit_tests, debug, embedding_model);
     const run_markdown_unit_tests = b.addRunArtifact(markdown_unit_tests);
     const test_markdown = b.step("test-markdown", "run the tests for src/markdown.zig");
     test_markdown.dependOn(&run_markdown_unit_tests.step);
@@ -283,7 +302,7 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
     });
-    real_vec_cfg.install(b, vec_unit_tests, debug);
+    real_vec_cfg.install(b, vec_unit_tests, debug, embedding_model);
     const run_vec_unit_tests = b.addRunArtifact(vec_unit_tests);
     const test_vec = b.step("test-vector", "run the tests for src/vector.zig");
     test_vec.dependOn(&run_vec_unit_tests.step);
@@ -295,7 +314,7 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .filters = &.{"diff"},
     });
-    fake_vec_cfg.install(b, diff_unit_tests, debug);
+    fake_vec_cfg.install(b, diff_unit_tests, debug, embedding_model);
     const run_diff_unit_tests = b.addRunArtifact(diff_unit_tests);
     const test_diff = b.step("test-diff", "run the tests for src/diff.zig");
     test_diff.dependOn(&run_diff_unit_tests.step);
@@ -325,7 +344,7 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
     });
-    real_vec_cfg.install(b, benchmark_unit_tests, debug);
+    real_vec_cfg.install(b, benchmark_unit_tests, debug, embedding_model);
     const run_benchmark_unit_tests = b.addRunArtifact(benchmark_unit_tests);
     const test_benchmark = b.step("test-benchmark", "run the tests for src/benchmark.zig");
     test_benchmark.dependOn(&run_benchmark_unit_tests.step);
@@ -349,7 +368,7 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
     });
-    real_vec_cfg.install(b, perf_tests, debug);
+    real_vec_cfg.install(b, perf_tests, debug, embedding_model);
     const run_perf_tests = b.addRunArtifact(perf_tests);
     const test_perf = b.step("perf", "Run performance benchmark tests");
     run_perf_tests.step.dependOn(jina_model.step);
@@ -379,7 +398,7 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
     });
-    real_vec_cfg.install(b, profile_exe, debug);
+    real_vec_cfg.install(b, profile_exe, debug, embedding_model);
     const run_profile = b.addRunArtifact(profile_exe);
     const profile_step = b.step("profile", "run the profile executable");
     profile_step.dependOn(&run_profile.step);
@@ -441,17 +460,23 @@ pub fn build(b: *std.Build) !void {
     });
 }
 
+const EmbeddingModel = enum {
+    apple_nlembedding,
+    jina_embedding,
+};
+
 const GlobalOptions = struct {
     vec_sz: usize = 3,
     vec_type: type = f32,
 
     const Self = @This();
 
-    pub fn install(self: Self, b: *std.Build, dest: *Step.Compile, debug: bool) void {
+    pub fn install(self: Self, b: *std.Build, dest: *Step.Compile, debug: bool, embedding_model: EmbeddingModel) void {
         const options = b.addOptions();
         options.addOption(usize, "vec_sz", self.vec_sz);
         // options.addOption(type, "vec_type", self.vec_type);
         options.addOption(bool, "debug", debug);
+        options.addOption(EmbeddingModel, "embedding_model", embedding_model);
         dest.root_module.addOptions("config", options);
     }
 };
@@ -462,6 +487,7 @@ const Baselib = struct {
         target: std.Build.ResolvedTarget,
         optimize: std.builtin.OptimizeMode,
         debug: bool,
+        embedding_model: EmbeddingModel,
     };
 
     step: *Step,
@@ -473,6 +499,7 @@ const Baselib = struct {
         const options = opts.b.addOptions();
         options.addOption(bool, "debug", opts.debug);
         options.addOption(usize, "vec_sz", VEC_SZ);
+        options.addOption(EmbeddingModel, "embedding_model", opts.embedding_model);
 
         const base_nana_lib = opts.b.addStaticLibrary(.{
             .name = "nana",

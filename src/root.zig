@@ -12,7 +12,9 @@ pub const Runtime = struct {
     allocator: std.mem.Allocator,
     skipEmbed: bool = false,
     lastParsedMD: ?std.ArrayList(u8) = null,
-    nl_embedder: *embed.NLEmbedder,
+    embedder: *Embedder,
+
+    const Embedder = if (embedding_model == .jina_embedding) embed.JinaEmbedder else embed.NLEmbedder;
 
     /// Optional arguments for initializing the libnana runtime.
     pub const Opts = struct {
@@ -32,13 +34,13 @@ pub const Runtime = struct {
         errdefer allocator.destroy(db);
         db.* = try model.DB.init(allocator, .{ .basedir = opts.basedir, .mem = opts.mem });
 
-        const nl_embedder = try allocator.create(embed.NLEmbedder);
-        errdefer allocator.destroy(nl_embedder);
-        nl_embedder.* = try embed.NLEmbedder.init();
+        const embedder_ptr = try allocator.create(Embedder);
+        errdefer allocator.destroy(embedder_ptr);
+        embedder_ptr.* = try Embedder.init();
 
         const vectors = try allocator.create(VectorDB);
         errdefer allocator.destroy(vectors);
-        vectors.* = try VectorDB.init(allocator, opts.basedir, db, nl_embedder.embedder());
+        vectors.* = try VectorDB.init(allocator, opts.basedir, db, embedder_ptr.embedder());
         try vectors.validate();
 
         var self = Runtime{
@@ -48,7 +50,7 @@ pub const Runtime = struct {
             .markdown = markdown_parser,
             .allocator = allocator,
             .skipEmbed = opts.skipEmbed,
-            .nl_embedder = nl_embedder,
+            .embedder = embedder_ptr,
         };
 
         try self.migrate();
@@ -79,7 +81,7 @@ pub const Runtime = struct {
         self.vectors.deinit();
         self.db.deinit();
         self.allocator.destroy(self.db);
-        self.allocator.destroy(self.nl_embedder);
+        self.allocator.destroy(self.embedder);
         self.allocator.destroy(self.vectors);
     }
 
@@ -1432,11 +1434,12 @@ test "unicode endpoint checks" {
     defer rt.deinit();
 
     const id = try rt.create();
-    const note_content = "❤️";
+    const query = "heart";
+    const note_content = "heart❤️";
     try rt.writeAll(id, note_content);
 
     var results: [1]SearchResult = undefined;
-    const n_results = try rt.search(note_content, &results);
+    const n_results = try rt.search(query, &results);
     try expectEqual(1, n_results);
     const result = results[0];
     try expectEqlStrings(note_content, note_content[result.start_i..result.end_i]);
@@ -1445,7 +1448,7 @@ test "unicode endpoint checks" {
     var detail: SearchDetail = .{
         .content = content_buf,
     };
-    try rt.search_detail(result, note_content, &detail, .{});
+    try rt.search_detail(result, query, &detail, .{});
     try expectEqlStrings(
         note_content,
         note_content[detail.highlights[0]..detail.highlights[1]],
@@ -1477,4 +1480,6 @@ const NoteID = model.NoteID;
 pub const SearchResult = vector.SearchResult;
 const util = @import("util.zig");
 const vector = @import("vector.zig");
-const VectorDB = vector.VectorDB(.apple_nlembedding);
+const config = @import("config");
+const embedding_model: embed.EmbeddingModel = @enumFromInt(@intFromEnum(config.embedding_model));
+const VectorDB = vector.VectorDB(embedding_model);

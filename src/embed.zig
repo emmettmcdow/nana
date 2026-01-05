@@ -49,11 +49,11 @@ pub const JinaEmbedder = struct {
     pub const VEC_SZ = 768;
     pub const VEC_TYPE = f32;
     pub const ID = EmbeddingModel.jina_embedding;
-    pub const THRESHOLD = 0.35;
-    pub const STRICT_THRESHOLD = THRESHOLD * 2;
+    pub const THRESHOLD = 0.80;
+    pub const STRICT_THRESHOLD = THRESHOLD + 0.1;
     pub const PATH = @tagName(ID) ++ ".db";
-    pub const MODEL_PATH = "models/jina-embeddings-v2-base-en/float32_model.mlpackage";
-    pub const TOKENIZER_PATH = "models/jina-embeddings-v2-base-en/tokenizer.json";
+    pub const MODEL_PATH = "share/nana/jina-embeddings-v2-base-en/float32_model.mlpackage";
+    pub const TOKENIZER_PATH = "share/nana/jina-embeddings-v2-base-en/tokenizer.json";
     pub const BUNDLE_MODEL_PATH = "jina-embeddings-v2-base-en/float32_model.mlpackage";
     pub const BUNDLE_TOKENIZER_PATH = "jina-embeddings-v2-base-en/tokenizer.json";
     const MAX_SEQ_LEN = 512;
@@ -405,7 +405,7 @@ pub const JinaEmbedder = struct {
 
 fn getModelPath(
     allocator: Allocator,
-    cwd_relative_path: []const u8,
+    exe_relative_path: []const u8,
     bundle_relative_path: []const u8,
 ) ![:0]const u8 {
     const NSBundle = objc.getClass("NSBundle") orelse return error.ObjCClassNotFound;
@@ -427,14 +427,35 @@ fn getModelPath(
             if (std.fs.accessAbsolute(bundle_path, .{})) |_| {
                 return bundle_path;
             } else |_| {
-                const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
-                return try std.fmt.allocPrintZ(allocator, "{s}/{s}", .{ cwd, cwd_relative_path });
+                return try getExeRelativePath(allocator, exe_relative_path);
             }
         }
     }
 
-    const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
-    return try std.fmt.allocPrintZ(allocator, "{s}/{s}", .{ cwd, cwd_relative_path });
+    return try getExeRelativePath(allocator, exe_relative_path);
+}
+
+fn getExeRelativePath(allocator: Allocator, relative_path: []const u8) ![:0]const u8 {
+    var exe_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const exe_path = std.fs.selfExeDirPath(&exe_path_buf) catch |err| {
+        std.log.err("Failed to get executable path: {}\n", .{err});
+        return error.ExePathFailed;
+    };
+
+    // Try exe-relative path first
+    const exe_relative = try std.fmt.allocPrintZ(
+        allocator,
+        "{s}/../{s}",
+        .{ exe_path, relative_path },
+    );
+    std.fs.accessAbsolute(exe_relative, .{}) catch {
+        // This is the case where we are testing, files are in a different place.
+        allocator.free(exe_relative);
+        const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+        defer allocator.free(cwd);
+        return try std.fmt.allocPrintZ(allocator, "{s}/zig-out/{s}", .{ cwd, relative_path });
+    };
+    return exe_relative;
 }
 
 pub const NLEmbedder = struct {

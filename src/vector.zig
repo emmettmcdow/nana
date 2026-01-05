@@ -73,7 +73,7 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
             defer arena.deinit();
 
             const query_vec_union = (try self.embedder.embed(arena.allocator(), query)) orelse return 0;
-            const query_vec = query_vec_union.apple_nlembedding.*;
+            const query_vec = @field(query_vec_union, @tagName(embedding_model)).*;
 
             var search_results: [1000]vec_storage.SearchEntry = undefined;
 
@@ -105,7 +105,7 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
             defer arena.deinit();
 
             const query_vec_union = (try self.embedder.embed(arena.allocator(), query)) orelse return 0;
-            const query_vec = query_vec_union.apple_nlembedding.*;
+            const query_vec = @field(query_vec_union, @tagName(embedding_model)).*;
 
             debugSearchHeader(query);
             var search_results: [1000]vec_storage.SearchEntry = undefined;
@@ -151,7 +151,7 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
             defer arena.deinit();
 
             const query_vec_union = (try self.embedder.embed(arena.allocator(), query)) orelse return;
-            const query_vec = query_vec_union.apple_nlembedding.*;
+            const query_vec = @field(query_vec_union, @tagName(embedding_model)).*;
 
             var found: u8 = 0;
             var wordspliterator = embed.WordSpliterator.init(result_content);
@@ -160,7 +160,7 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
                     arena.allocator(),
                     word_chunk.contents,
                 )) orelse continue;
-                const chunk_vec = chunk_vec_union.apple_nlembedding.*;
+                const chunk_vec = @field(chunk_vec_union, @tagName(embedding_model)).*;
 
                 const similar = vec_storage.cosine_similarity(
                     VEC_SZ,
@@ -207,12 +207,18 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
             for ((try diffSplit(old_contents, new_contents, allocator)).items) |sentence| {
                 if (sentence.new) {
                     embedded += 1;
-                    const vec_id = if (try self.embedder.embed(
-                        allocator,
-                        sentence.contents,
-                    )) |vec| block: {
-                        break :block try self.vec_storage.put(vec.apple_nlembedding.*);
-                    } else self.vec_storage.nullVec();
+                    const vec_id =
+                        if (whitespaceOnly(sentence.contents) or !wordlike(sentence.contents)) b: {
+                            break :b self.vec_storage.nullVec();
+                        } else if (try self.embedder.embed(
+                            allocator,
+                            sentence.contents,
+                        )) |vec| b: {
+                            break :b try self.vec_storage.put(@field(
+                                vec,
+                                @tagName(embedding_model),
+                            ).*);
+                        } else self.vec_storage.nullVec();
 
                     try new_vecs.append(.{
                         .vector_id = vec_id,
@@ -310,6 +316,24 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
             std.debug.print("Checking similarity against '{s}':\n", .{query});
         }
     };
+}
+
+fn whitespaceOnly(contents: []const u8) bool {
+    for (contents) |c| {
+        if (!std.ascii.isWhitespace(c)) return false;
+    }
+    return true;
+}
+
+fn wordlike(contents: []const u8) bool {
+    var n_alphanumeral: usize = 0;
+    for (contents) |c| {
+        if (std.ascii.isAlphanumeric(c)) {
+            n_alphanumeral += 1;
+            if (n_alphanumeral > 1) return true;
+        }
+    }
+    return false;
 }
 
 const TestVecDB = VectorDB(.apple_nlembedding);
@@ -721,6 +745,59 @@ test "populateHighlights" {
         var highlights: [10]usize = .{0} ** 10;
         try db.populateHighlights(query, contents, &highlights);
         try expectEqualSlices(usize, &[10]usize{ 0, 5, 7, 12, 0, 0, 0, 0, 0, 0 }, &highlights);
+    }
+}
+
+test "embed skip low-value" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer rel.deinit();
+    var e = try JinaEmbedder.init();
+    var db = try VectorDB(.jina_embedding).init(arena.allocator(), tmpD.dir, &rel, e.embedder());
+    defer db.deinit();
+
+    {
+        const query = " ";
+        const contents = " ";
+        const noteID = try rel.create();
+        try db.embedText(noteID, "", contents);
+        var buffer: [10]SearchResult = undefined;
+        try expectEqual(0, try db.search(query, &buffer));
+    }
+    {
+        const query = " ";
+        const contents = "  ";
+        const noteID = try rel.create();
+        try db.embedText(noteID, "", contents);
+        var buffer: [10]SearchResult = undefined;
+        try expectEqual(0, try db.search(query, &buffer));
+    }
+    {
+        const query = " ";
+        const contents = " \n\r\t ";
+        const noteID = try rel.create();
+        try db.embedText(noteID, "", contents);
+        var buffer: [10]SearchResult = undefined;
+        try expectEqual(0, try db.search(query, &buffer));
+    }
+    {
+        const query = "a";
+        const contents = "a#";
+        const noteID = try rel.create();
+        try db.embedText(noteID, "", contents);
+        var buffer: [10]SearchResult = undefined;
+        try expectEqual(0, try db.search(query, &buffer));
+    }
+    {
+        const query = "a";
+        const contents = "aa#";
+        const noteID = try rel.create();
+        try db.embedText(noteID, "", contents);
+        var buffer: [10]SearchResult = undefined;
+        try expectEqual(1, try db.search(query, &buffer));
     }
 }
 

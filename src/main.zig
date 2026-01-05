@@ -49,9 +49,16 @@ pub fn main() !void {
             std.debug.print("Found {d} results:\n", .{found_n});
             for (results[0..found_n]) |result| {
                 const text_len = result.end_i - result.start_i;
-                var detail = root.SearchDetail{ .content = try arena.allocator().alloc(u8, text_len + 1) };
+                var detail = root.SearchDetail{
+                    .content = try arena.allocator().alloc(u8, text_len + 1),
+                };
                 try runtime.search_detail(result, query, &detail, .{});
-                std.debug.print("{s}: {s}\n", .{ map.get(result.id).?, detail.content[0..text_len] });
+                std.debug.print("{}\n", .{result});
+                std.debug.print("({d:.2}%){s}: '{s}'\n", .{
+                    result.similarity * 100.0,
+                    map.get(result.id).?,
+                    detail.content[0..text_len],
+                });
             }
         }
     }
