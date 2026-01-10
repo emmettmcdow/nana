@@ -42,6 +42,7 @@ pub fn build(b: *std.Build) !void {
     const perf_file = b.path("src/perf_benchmark.zig");
     const profile_file = b.path("src/profile.zig");
     const markdown_file = b.path("src/markdown.zig");
+    const util_file = b.path("src/util.zig");
 
     ///////////////////
     // Build the Lib //
@@ -319,6 +320,18 @@ pub fn build(b: *std.Build) !void {
     const test_diff = b.step("test-diff", "run the tests for src/diff.zig");
     test_diff.dependOn(&run_diff_unit_tests.step);
 
+    // Util
+    const util_unit_tests = b.addTest(.{
+        .root_source_file = util_file,
+        .target = x86_target,
+        .optimize = optimize,
+        .filters = &.{"util"},
+    });
+    fake_vec_cfg.install(b, util_unit_tests, debug, embedding_model);
+    const run_util_unit_tests = b.addRunArtifact(util_unit_tests);
+    const test_util = b.step("test-util", "run the tests for src/util.zig");
+    test_util.dependOn(&run_util_unit_tests.step);
+
     // Benchmark
     const benchmark_unit_tests = b.addTest(.{
         .root_source_file = benchmark_file,
@@ -412,6 +425,7 @@ pub fn build(b: *std.Build) !void {
     test_step.dependOn(test_vec);
     test_step.dependOn(test_diff);
     test_step.dependOn(test_markdown);
+    test_step.dependOn(test_util);
     // Enable this to see benchmark output
     // test_step.dependOn(test_benchmark);
 
