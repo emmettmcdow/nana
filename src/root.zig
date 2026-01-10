@@ -198,7 +198,7 @@ pub const Runtime = struct {
                 },
                 else => |leftover_err| return leftover_err,
             };
-            try self.vectors.embedText(id, "", buf[0..sz]);
+            try self.vectors.embedText(id, buf[0..sz]);
             break;
         }
 
@@ -254,19 +254,6 @@ pub const Runtime = struct {
 
         if (try isUnchanged(f, content)) return;
 
-        // Read old contents before truncating
-        const stat = try f.stat();
-        var old_contents: []u8 = undefined;
-        const needs_free = stat.size > 0;
-        if (needs_free) {
-            old_contents = try self.allocator.alloc(u8, stat.size);
-            try f.seekTo(0);
-            _ = try f.readAll(old_contents);
-        } else {
-            old_contents = "";
-        }
-        defer if (needs_free) self.allocator.free(old_contents);
-
         try f.seekTo(0);
         try f.setEndPos(0);
         try f.writeAll(content);
@@ -277,7 +264,7 @@ pub const Runtime = struct {
             return;
         }
 
-        try self.vectors.embedText(id, old_contents, content);
+        try self.vectors.embedText(id, content);
         try self.update(id);
 
         return;

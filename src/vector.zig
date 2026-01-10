@@ -181,14 +181,12 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
         pub fn embedText(
             self: *Self,
             note_id: NoteID,
-            old_contents: []const u8,
-            new_contents: []const u8,
+            contents: []const u8,
         ) !void {
             const zone = tracy.beginZone(@src(), .{ .name = "vector.zig:embedText" });
             defer zone.end();
 
-            assert(new_contents.len < MAX_NOTE_LEN);
-            assert(old_contents.len < MAX_NOTE_LEN);
+            assert(contents.len < MAX_NOTE_LEN);
 
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             defer arena.deinit();
@@ -198,53 +196,29 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
             var new_vecs = std.ArrayList(VectorRow).init(allocator);
             errdefer new_vecs.deinit();
 
-            var used_list = try allocator.alloc(bool, old_vecs.len);
-            for (0..used_list.len) |i| used_list[i] = false;
+            var spliterator = embed.SentenceSpliterator.init(contents);
+            while (spliterator.next()) |sentence| {
+                const vec_id =
+                    if (whitespaceOnly(sentence.contents) or !wordlike(sentence.contents)) b: {
+                        break :b self.vec_storage.nullVec();
+                    } else if (try self.embedder.embed(
+                        allocator,
+                        sentence.contents,
+                    )) |vec| b: {
+                        break :b try self.vec_storage.put(@field(
+                            vec,
+                            @tagName(embedding_model),
+                        ).*);
+                    } else self.vec_storage.nullVec();
 
-            var embedded: usize = 0;
-            var recycled: usize = 0;
-
-            for ((try diffSplit(old_contents, new_contents, allocator)).items) |sentence| {
-                if (sentence.new) {
-                    embedded += 1;
-                    const vec_id =
-                        if (whitespaceOnly(sentence.contents) or !wordlike(sentence.contents)) b: {
-                            break :b self.vec_storage.nullVec();
-                        } else if (try self.embedder.embed(
-                            allocator,
-                            sentence.contents,
-                        )) |vec| b: {
-                            break :b try self.vec_storage.put(@field(
-                                vec,
-                                @tagName(embedding_model),
-                            ).*);
-                        } else self.vec_storage.nullVec();
-
-                    try new_vecs.append(.{
-                        .vector_id = vec_id,
-                        .note_id = note_id,
-                        .start_i = sentence.off,
-                        .end_i = sentence.off + sentence.contents.len,
-                    });
-                } else {
-                    recycled += 1;
-                    var found = false;
-                    for (old_vecs, 0..) |old_v, i| {
-                        const old_v_contents = old_contents[old_v.start_i..old_v.end_i];
-                        if (!std.mem.eql(u8, sentence.contents, old_v_contents)) continue;
-                        used_list[i] = true;
-                        try new_vecs.append(VectorRow{
-                            .vector_id = old_v.vector_id,
-                            .note_id = note_id,
-                            .start_i = sentence.off,
-                            .end_i = sentence.off + sentence.contents.len,
-                        });
-                        found = true;
-                        break;
-                    }
-                    assert(found);
-                }
+                try new_vecs.append(.{
+                    .vector_id = vec_id,
+                    .note_id = note_id,
+                    .start_i = sentence.start_i,
+                    .end_i = sentence.end_i,
+                });
             }
+
             var last_vec_id: ?VectorID = null;
             for (0..new_vecs.items.len) |i| {
                 new_vecs.items[i].last_vec_id = last_vec_id;
@@ -255,27 +229,15 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
             }
 
             try self.relational.setVectors(note_id, new_vecs.items);
-            for (0..used_list.len) |i| {
-                if (!used_list[i]) {
-                    self.vec_storage.rm(old_vecs[i].vector_id) catch |e| switch (e) {
-                        MultipleRemove => continue,
-                        else => unreachable,
-                    };
-                }
+            for (old_vecs) |old_v| {
+                self.vec_storage.rm(old_v.vector_id) catch |e| switch (e) {
+                    MultipleRemove => continue,
+                    else => unreachable,
+                };
             }
             try self.vec_storage.save(self.embedder.path);
 
-            const ratio: usize = blk: {
-                const num: f64 = @floatFromInt(recycled);
-                const denom: f64 = @floatFromInt(recycled + embedded);
-                if (denom == 0) break :blk 100;
-                break :blk @intFromFloat((num / denom) * 100);
-            };
-            std.log.info("Recycled Ratio: {d}%, Embedded: {d}, Recycled: {d}\n", .{
-                ratio,
-                embedded,
-                recycled,
-            });
+            std.log.info("Embedded {d} sentences\n", .{new_vecs.items.len});
             return;
         }
 
@@ -342,7 +304,11 @@ fn getVectorsForNote(db: *TestVecDB, noteID: NoteID, buf: []TestVector) !usize {
     const vec_rows = try db.relational.vecsForNote(testing_allocator, noteID);
     defer testing_allocator.free(vec_rows);
     for (vec_rows, 0..) |v, i| {
-        buf[i] = db.vec_storage.get(v.vector_id);
+        if (v.vector_id == db.vec_storage.nullVec()) {
+            buf[i] = @splat(0);
+        } else {
+            buf[i] = db.vec_storage.get(v.vector_id);
+        }
     }
     return vec_rows.len;
 }
@@ -362,7 +328,7 @@ test "embedText hello" {
     const id = try rel.create();
 
     const text = "hello";
-    try db.embedText(id, "", text);
+    try db.embedText(id, text);
 
     var buf: [1]SearchResult = undefined;
     try expectEqual(1, try db.search(text, &buf));
@@ -370,6 +336,8 @@ test "embedText hello" {
     try expectSearchResultsIgnoresimilarity(&[_]SearchResult{
         .{ .id = id, .start_i = 0, .end_i = 5 },
     }, buf[0..1]);
+
+    try db.validate();
 }
 
 test "embedText skip empties" {
@@ -387,7 +355,9 @@ test "embedText skip empties" {
     const id = try rel.create();
 
     const text = "/hello/";
-    try db.embedText(id, "", text);
+    try db.embedText(id, text);
+
+    try db.validate();
 }
 
 test "embedText clear previous" {
@@ -404,12 +374,14 @@ test "embedText clear previous" {
 
     const id = try rel.create();
 
-    try db.embedText(id, "", "hello");
+    try db.embedText(id, "hello");
 
     var buf: [1]SearchResult = undefined;
     try expectEqual(1, try db.search("hello", &buf));
-    try db.embedText(id, "hello", "flatiron");
+    try db.embedText(id, "flatiron");
     try expectEqual(0, try db.search("hello", &buf));
+
+    try db.validate();
 }
 
 test "search" {
@@ -425,7 +397,7 @@ test "search" {
     defer db.deinit();
 
     const noteID1 = try rel.create();
-    _ = try db.embedText(noteID1, "", "pizza. pizza. pizza.");
+    try db.embedText(noteID1, "pizza. pizza. pizza.");
 
     var buffer: [10]SearchResult = undefined;
     try expectEqual(3, try db.search("pizza", &buffer));
@@ -434,6 +406,8 @@ test "search" {
         .{ .id = noteID1, .start_i = 6, .end_i = 12 },
         .{ .id = noteID1, .start_i = 13, .end_i = 19 },
     }, buffer[0..3]);
+
+    try db.validate();
 }
 
 test "uniqueSearch" {
@@ -449,13 +423,15 @@ test "uniqueSearch" {
     defer db.deinit();
 
     const noteID1 = try rel.create();
-    _ = try db.embedText(noteID1, "", "pizza. pizza. pizza.");
+    try db.embedText(noteID1, "pizza. pizza. pizza.");
 
     var buffer: [10]SearchResult = undefined;
     try expectEqual(1, try db.uniqueSearch("pizza", &buffer));
     try expectSearchResultsIgnoresimilarity(&[_]SearchResult{
         .{ .id = noteID1, .start_i = 0, .end_i = 5 },
     }, buffer[0..1]);
+
+    try db.validate();
 }
 
 test "search returns results with similarity" {
@@ -471,7 +447,7 @@ test "search returns results with similarity" {
     defer db.deinit();
 
     const noteID1 = try rel.create();
-    _ = try db.embedText(noteID1, "", "brick. tacos. pizza.");
+    try db.embedText(noteID1, "brick. tacos. pizza.");
     db.embedder.threshold = 0.0;
 
     var buffer: [10]SearchResult = undefined;
@@ -488,6 +464,8 @@ test "search returns results with similarity" {
     try std.testing.expect(buffer[2].similarity > 0);
     try std.testing.expect(buffer[0].similarity >= buffer[1].similarity);
     try std.testing.expect(buffer[1].similarity >= buffer[2].similarity);
+
+    try db.validate();
 }
 
 test "uniqueSearch returns results with similarity" {
@@ -504,13 +482,13 @@ test "uniqueSearch returns results with similarity" {
 
     const noteID1 = try rel.create();
     try rel.update(noteID1);
-    _ = try db.embedText(noteID1, "", "brick");
+    try db.embedText(noteID1, "brick");
     const noteID2 = try rel.create();
     try rel.update(noteID2);
-    _ = try db.embedText(noteID2, "", "tacos");
+    try db.embedText(noteID2, "tacos");
     const noteID3 = try rel.create();
     try rel.update(noteID3);
-    _ = try db.embedText(noteID3, "", "pizza");
+    try db.embedText(noteID3, "pizza");
     db.embedder.threshold = 0.0;
 
     var buffer: [10]SearchResult = undefined;
@@ -527,6 +505,8 @@ test "uniqueSearch returns results with similarity" {
     try std.testing.expect(buffer[2].similarity > 0);
     try std.testing.expect(buffer[0].similarity >= buffer[1].similarity);
     try std.testing.expect(buffer[1].similarity >= buffer[2].similarity);
+
+    try db.validate();
 }
 
 fn expectSearchResultsIgnoresimilarity(expected: []const SearchResult, actual: []const SearchResult) !void {
@@ -554,7 +534,7 @@ fn testEmbedder(allocator: std.mem.Allocator) !struct { e: *NLEmbedder, iface: e
     return .{ .e = e, .iface = e.embedder() };
 }
 
-test "embedText no update" {
+test "embedText same input same result" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
@@ -568,19 +548,20 @@ test "embedText no update" {
 
     const noteID = try rel.create();
 
-    try db.embedText(noteID, "", "apple");
+    try db.embedText(noteID, "apple");
     var initial_vecs: [1]TestVector = undefined;
     try expectEqual(1, try getVectorsForNote(&db, noteID, &initial_vecs));
 
-    try db.embedText(noteID, "apple", "apple");
+    try db.embedText(noteID, "apple");
     var updated_vecs: [1]TestVector = undefined;
     try expectEqual(1, try getVectorsForNote(&db, noteID, &updated_vecs));
 
-    // Vector should be different (apple != banana)
     try std.testing.expect(@reduce(.And, initial_vecs[0] == updated_vecs[0]));
+
+    try db.validate();
 }
 
-test "embedText updates single word sentence" {
+test "embedText different input different result" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
@@ -594,45 +575,18 @@ test "embedText updates single word sentence" {
 
     const noteID = try rel.create();
 
-    try db.embedText(noteID, "", "apple");
+    try db.embedText(noteID, "apple");
     var initial_vecs: [1]TestVector = undefined;
     try expectEqual(1, try getVectorsForNote(&db, noteID, &initial_vecs));
 
-    try db.embedText(noteID, "apple", "banana");
+    try db.embedText(noteID, "banana");
     var updated_vecs: [1]TestVector = undefined;
     try expectEqual(1, try getVectorsForNote(&db, noteID, &updated_vecs));
 
     // Vector should be different (apple != banana)
     try std.testing.expect(!@reduce(.And, initial_vecs[0] == updated_vecs[0]));
-}
 
-test "embedText updates last sentence" {
-    var tmpD = std.testing.tmpDir(.{ .iterate = true });
-    defer tmpD.cleanup();
-    var arena = std.heap.ArenaAllocator.init(testing_allocator);
-    defer arena.deinit();
-    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
-    defer rel.deinit();
-    const te = try testEmbedder(testing_allocator);
-    defer testing_allocator.destroy(te.e);
-    var db = try TestVecDB.init(arena.allocator(), tmpD.dir, &rel, te.iface);
-    defer db.deinit();
-
-    const noteID = try rel.create();
-
-    try db.embedText(noteID, "", "apple. banana.");
-    var initial_vecs: [2]TestVector = undefined;
-    try expectEqual(2, try getVectorsForNote(&db, noteID, &initial_vecs));
-
-    try db.embedText(noteID, "apple. banana.", "apple. orange.");
-    var updated_vecs: [2]TestVector = undefined;
-    try expectEqual(2, try getVectorsForNote(&db, noteID, &updated_vecs));
-
-    // First vector should be the same (apple == apple)
-    try std.testing.expect(@reduce(.And, initial_vecs[0] == updated_vecs[0]));
-
-    // Last vector should be different (banana != orange)
-    try std.testing.expect(!@reduce(.And, initial_vecs[1] == updated_vecs[1]));
+    try db.validate();
 }
 
 test "embedText updates only changed sentences" {
@@ -651,55 +605,27 @@ test "embedText updates only changed sentences" {
 
     // Initial content: three one-word sentences
     const initial_content = "apple. banana. cherry.";
-    try db.embedText(noteID, "", initial_content);
+    try db.embedText(noteID, initial_content);
 
-    var initial_vecs: [3]TestVector = undefined;
-    try expectEqual(3, try getVectorsForNote(&db, noteID, &initial_vecs));
+    var initial_vecs: [4]TestVector = undefined;
+    try expectEqual(4, try getVectorsForNote(&db, noteID, &initial_vecs));
 
     // Updated content: same first and last words, different middle word
     const updated_content = "apple. dragonfruit. cherry.";
-    try db.embedText(noteID, initial_content, updated_content);
+    try db.embedText(noteID, updated_content);
 
-    var updated_vecs: [3]TestVector = undefined;
-    try expectEqual(3, try getVectorsForNote(&db, noteID, &updated_vecs));
-
-    try std.testing.expect(@reduce(.And, initial_vecs[0] == updated_vecs[0]));
-    try std.testing.expect(!@reduce(.And, initial_vecs[1] == updated_vecs[1]));
-    try std.testing.expect(@reduce(.And, initial_vecs[2] == updated_vecs[2]));
-}
-
-test "embedText handle newlines" {
-    var tmpD = std.testing.tmpDir(.{ .iterate = true });
-    defer tmpD.cleanup();
-    var arena = std.heap.ArenaAllocator.init(testing_allocator);
-    defer arena.deinit();
-    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
-    defer rel.deinit();
-    const te = try testEmbedder(testing_allocator);
-    defer testing_allocator.destroy(te.e);
-    var db = try TestVecDB.init(arena.allocator(), tmpD.dir, &rel, te.iface);
-    defer db.deinit();
-
-    const noteID = try rel.create();
-
-    const initial_content = "apple.\nbanana.\ngrape.";
-    try db.embedText(noteID, "", initial_content);
-
-    var initial_vecs: [3]TestVector = undefined;
-    try expectEqual(3, try getVectorsForNote(&db, noteID, &initial_vecs));
-
-    const updated_content = "apple.\norange.\ngrape.";
-    try db.embedText(noteID, initial_content, updated_content);
-
-    var updated_vecs: [3]TestVector = undefined;
-    try expectEqual(3, try getVectorsForNote(&db, noteID, &updated_vecs));
+    var updated_vecs: [4]TestVector = undefined;
+    try expectEqual(4, try getVectorsForNote(&db, noteID, &updated_vecs));
 
     try std.testing.expect(@reduce(.And, initial_vecs[0] == updated_vecs[0]));
     try std.testing.expect(!@reduce(.And, initial_vecs[1] == updated_vecs[1]));
     try std.testing.expect(@reduce(.And, initial_vecs[2] == updated_vecs[2]));
+    try std.testing.expect(@reduce(.And, initial_vecs[3] == updated_vecs[3]));
+
+    try db.validate();
 }
 
-test "handle multiple remove gracefully" {
+test "embedText handle multiple remove gracefully" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
@@ -715,9 +641,11 @@ test "handle multiple remove gracefully" {
 
     const initial_content = "foo.\nfoo.\nfoo.";
     const updated_content = "bar.\nbar.\nbar.";
-    try db.embedText(noteID, "", initial_content);
-    try db.embedText(noteID, initial_content, initial_content);
-    try db.embedText(noteID, initial_content, updated_content);
+    try db.embedText(noteID, "");
+    try db.embedText(noteID, initial_content);
+    try db.embedText(noteID, updated_content);
+
+    try db.validate();
 }
 
 test "populateHighlights" {
@@ -746,6 +674,8 @@ test "populateHighlights" {
         try db.populateHighlights(query, contents, &highlights);
         try expectEqualSlices(usize, &[10]usize{ 0, 5, 7, 12, 0, 0, 0, 0, 0, 0 }, &highlights);
     }
+
+    try db.validate();
 }
 
 test "embed skip low-value" {
@@ -763,7 +693,7 @@ test "embed skip low-value" {
         const query = " ";
         const contents = " ";
         const noteID = try rel.create();
-        try db.embedText(noteID, "", contents);
+        try db.embedText(noteID, contents);
         var buffer: [10]SearchResult = undefined;
         try expectEqual(0, try db.search(query, &buffer));
     }
@@ -771,7 +701,7 @@ test "embed skip low-value" {
         const query = " ";
         const contents = "  ";
         const noteID = try rel.create();
-        try db.embedText(noteID, "", contents);
+        try db.embedText(noteID, contents);
         var buffer: [10]SearchResult = undefined;
         try expectEqual(0, try db.search(query, &buffer));
     }
@@ -779,7 +709,7 @@ test "embed skip low-value" {
         const query = " ";
         const contents = " \n\r\t ";
         const noteID = try rel.create();
-        try db.embedText(noteID, "", contents);
+        try db.embedText(noteID, contents);
         var buffer: [10]SearchResult = undefined;
         try expectEqual(0, try db.search(query, &buffer));
     }
@@ -787,7 +717,7 @@ test "embed skip low-value" {
         const query = "a";
         const contents = "a#";
         const noteID = try rel.create();
-        try db.embedText(noteID, "", contents);
+        try db.embedText(noteID, contents);
         var buffer: [10]SearchResult = undefined;
         try expectEqual(0, try db.search(query, &buffer));
     }
@@ -795,10 +725,11 @@ test "embed skip low-value" {
         const query = "a";
         const contents = "aa#";
         const noteID = try rel.create();
-        try db.embedText(noteID, "", contents);
+        try db.embedText(noteID, contents);
         var buffer: [10]SearchResult = undefined;
         try expectEqual(1, try db.search(query, &buffer));
     }
+    try db.validate();
 }
 
 const std = @import("std");
@@ -810,8 +741,6 @@ const assert = std.debug.assert;
 const config = @import("config");
 const tracy = @import("tracy");
 
-const diff = @import("dmp.zig");
-const diffSplit = diff.diffSplit;
 const embed = @import("embed.zig");
 const EmbeddingModel = embed.EmbeddingModel;
 const model = @import("model.zig");
