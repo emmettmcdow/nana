@@ -178,6 +178,12 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
             return;
         }
 
+        const EmbeddedSentence = struct {
+            vec: ?*const [VEC_SZ]VEC_TYPE,
+            start_i: usize,
+            end_i: usize,
+        };
+
         pub fn embedText(
             self: *Self,
             note_id: NoteID,
@@ -192,36 +198,54 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
             defer arena.deinit();
             const allocator = arena.allocator();
 
-            const new_vecs = try self.embedNewText(allocator, note_id, contents);
-            const old_vecs = try self.relational.vecsForNote(allocator, note_id);
-            try self.replaceVectors(note_id, old_vecs, new_vecs);
+            const embedded_sentences = try self.embedNewText(allocator, contents);
+            try self.replaceVectors(allocator, note_id, embedded_sentences);
 
-            std.log.info("Embedded {d} sentences\n", .{new_vecs.len});
+            std.log.info("Embedded {d} sentences\n", .{embedded_sentences.len});
         }
 
         fn embedNewText(
             self: *Self,
             allocator: std.mem.Allocator,
-            note_id: NoteID,
             contents: []const u8,
-        ) ![]VectorRow {
-            var new_vecs = std.ArrayList(VectorRow).init(allocator);
-            errdefer new_vecs.deinit();
+        ) ![]EmbeddedSentence {
+            var embedded = std.ArrayList(EmbeddedSentence).init(allocator);
+            errdefer embedded.deinit();
 
             var spliterator = embed.SentenceSpliterator.init(contents);
             while (spliterator.next()) |sentence| {
-                const vec_id =
-                    if (whitespaceOnly(sentence.contents) or !wordlike(sentence.contents)) b: {
-                        break :b self.vec_storage.nullVec();
-                    } else if (try self.embedder.embed(
-                        allocator,
-                        sentence.contents,
-                    )) |vec| b: {
-                        break :b try self.vec_storage.put(@field(
-                            vec,
-                            @tagName(embedding_model),
-                        ).*);
-                    } else self.vec_storage.nullVec();
+                const vec: ?*const [VEC_SZ]VEC_TYPE =
+                    if (whitespaceOnly(sentence.contents) or !wordlike(sentence.contents))
+                        null
+                    else if (try self.embedder.embed(allocator, sentence.contents)) |v|
+                        @field(v, @tagName(embedding_model))
+                    else
+                        null;
+
+                try embedded.append(.{
+                    .vec = vec,
+                    .start_i = sentence.start_i,
+                    .end_i = sentence.end_i,
+                });
+            }
+
+            return embedded.toOwnedSlice();
+        }
+
+        fn replaceVectors(
+            self: *Self,
+            allocator: std.mem.Allocator,
+            note_id: NoteID,
+            embedded_sentences: []const EmbeddedSentence,
+        ) !void {
+            const old_vecs = try self.relational.vecsForNote(allocator, note_id);
+            var new_vecs = std.ArrayList(VectorRow).init(allocator);
+            errdefer new_vecs.deinit();
+            for (embedded_sentences) |sentence| {
+                const vec_id = if (sentence.vec) |v|
+                    try self.vec_storage.put(v.*)
+                else
+                    self.vec_storage.nullVec();
 
                 try new_vecs.append(.{
                     .vector_id = vec_id,
@@ -240,16 +264,7 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
                 }
             }
 
-            return new_vecs.toOwnedSlice();
-        }
-
-        fn replaceVectors(
-            self: *Self,
-            note_id: NoteID,
-            old_vecs: []const VectorRow,
-            new_vecs: []const VectorRow,
-        ) !void {
-            try self.relational.setVectors(note_id, new_vecs);
+            try self.relational.setVectors(note_id, new_vecs.items);
             for (old_vecs) |old_v| {
                 self.vec_storage.rm(old_v.vector_id) catch |e| switch (e) {
                     MultipleRemove => continue,
