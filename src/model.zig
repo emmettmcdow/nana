@@ -140,7 +140,6 @@ pub const DB = struct {
     db: sqlite.Db,
     basedir: std.fs.Dir,
     next_id: NoteID,
-    allocator: std.mem.Allocator,
     ready: bool,
     savepoint: ?sqlite.Savepoint = null,
     saved_next_id: ?NoteID = null,
@@ -175,7 +174,6 @@ pub const DB = struct {
                 next_id = id + 1;
             }
             return .{
-                .allocator = allocator,
                 .basedir = opts.basedir,
                 .next_id = next_id,
                 .db = db,
@@ -202,7 +200,6 @@ pub const DB = struct {
         }
 
         var self: Self = .{
-            .allocator = allocator,
             .basedir = opts.basedir,
             .next_id = next_id,
             .db = db,
