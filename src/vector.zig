@@ -192,7 +192,19 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
             defer arena.deinit();
             const allocator = arena.allocator();
 
+            const new_vecs = try self.embedNewText(allocator, note_id, contents);
             const old_vecs = try self.relational.vecsForNote(allocator, note_id);
+            try self.replaceVectors(note_id, old_vecs, new_vecs);
+
+            std.log.info("Embedded {d} sentences\n", .{new_vecs.len});
+        }
+
+        fn embedNewText(
+            self: *Self,
+            allocator: std.mem.Allocator,
+            note_id: NoteID,
+            contents: []const u8,
+        ) ![]VectorRow {
             var new_vecs = std.ArrayList(VectorRow).init(allocator);
             errdefer new_vecs.deinit();
 
@@ -228,7 +240,16 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
                 }
             }
 
-            try self.relational.setVectors(note_id, new_vecs.items);
+            return new_vecs.toOwnedSlice();
+        }
+
+        fn replaceVectors(
+            self: *Self,
+            note_id: NoteID,
+            old_vecs: []const VectorRow,
+            new_vecs: []const VectorRow,
+        ) !void {
+            try self.relational.setVectors(note_id, new_vecs);
             for (old_vecs) |old_v| {
                 self.vec_storage.rm(old_v.vector_id) catch |e| switch (e) {
                     MultipleRemove => continue,
@@ -236,9 +257,6 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
                 };
             }
             try self.vec_storage.save(self.embedder.path);
-
-            std.log.info("Embedded {d} sentences\n", .{new_vecs.items.len});
-            return;
         }
 
         pub fn validate(self: *Self) !void {
