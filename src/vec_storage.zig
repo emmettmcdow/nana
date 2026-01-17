@@ -11,6 +11,20 @@ const DEFAULT_DB_IDX_TYPE = BinaryTypeRepresentation.to_binary(u8);
 
 const NULL_VEC_ID: VectorID = std.math.maxInt(VectorID);
 
+pub const IndexEntry = packed struct {
+    occupied: bool = false,
+    dirty: bool = false,
+    _padding: u6 = 0,
+
+    pub fn toByte(self: IndexEntry) u8 {
+        return @bitCast(self);
+    }
+
+    pub fn fromByte(byte: u8) IndexEntry {
+        return @bitCast(byte);
+    }
+};
+
 // **************************************************************************************** Helpers
 // Endianness doesn't matter since we only check whether the value is 0 or not... for now
 pub inline fn writeSlice(
@@ -140,7 +154,7 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
             .idx_type = BinaryTypeRepresentation.to_binary(u8),
             .vec_n = 0,
         },
-        index: []u8,
+        index: []IndexEntry,
         vectors: []Vector,
         capacity: usize,
         allocator: std.mem.Allocator,
@@ -155,8 +169,8 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
         pub fn init(allocator: std.mem.Allocator, dir: std.fs.Dir, opts: Opts) !Self {
             const vecs = try allocator.alloc(Vector, opts.sz);
             @memset(vecs, std.mem.zeroes(Vector));
-            const idx = try allocator.alloc(u8, opts.sz);
-            @memset(idx, 0);
+            const idx = try allocator.alloc(IndexEntry, opts.sz);
+            @memset(idx, .{});
             return Self{
                 .vectors = vecs,
                 .index = idx,
@@ -222,8 +236,8 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
 
             var pq = std.PriorityQueue(entry, void, entry.order).init(arena.allocator(), undefined);
 
-            for (self.index, 0..) |valid, id| {
-                if (valid == 0) continue;
+            for (self.index, 0..) |idx_entry, id| {
+                if (!idx_entry.occupied) continue;
                 const similar = cosine_similarity(vec_sz, vec_type, self.get(id), query);
                 debugSearchSimilar(id, similar);
                 if (similar > threshold) {
@@ -258,15 +272,17 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
             var writer = f.writer();
             try writer.writeStructEndian(self.meta, self.meta.endianness());
 
-            var index_copy = try self.allocator.dupe(u8, self.index);
+            var index_copy = try self.allocator.alloc(u8, self.index.len);
             defer self.allocator.free(index_copy);
-            for (0..index_copy.len) |i| {
-                index_copy[i] &= ~DIRTY_MASK;
+            for (self.index, 0..) |idx_entry, i| {
+                var clean_entry = idx_entry;
+                clean_entry.dirty = false;
+                index_copy[i] = clean_entry.toByte();
             }
             try writeSlice(&writer, index_copy);
 
             const vec_width: i64 = @intCast(vec_sz * @sizeOf(vec_type));
-            for (0..end_i(self.index)) |i| {
+            for (0..end_i(index_copy)) |i| {
                 if (self.isDirty(i)) {
                     try writeVec(vec_sz, vec_type, &writer, self.vectors[i], self.meta.endianness());
                     self.setDirty(i, false);
@@ -310,9 +326,14 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
             assert(self.meta.idx_type == DEFAULT_DB_IDX_TYPE);
 
             try self.grow();
-            try readSlice(&reader, self.index);
+            const index_bytes = try self.allocator.alloc(u8, self.index.len);
+            defer self.allocator.free(index_bytes);
+            try readSlice(&reader, index_bytes);
+            for (index_bytes, 0..) |byte, i| {
+                self.index[i] = IndexEntry.fromByte(byte);
+            }
 
-            for (0..end_i(self.index)) |i| {
+            for (0..end_i(index_bytes)) |i| {
                 defer self.setDirty(i, false);
                 var v: Vector = undefined;
                 if (!self.isOccupied(i)) continue;
@@ -359,36 +380,24 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
             if (sz == self.capacity) return;
 
             self.index = try self.allocator.realloc(self.index, sz);
-            @memset(self.index[self.capacity..], 0);
+            @memset(self.index[self.capacity..], .{});
             self.vectors = try self.allocator.realloc(self.vectors, sz);
             @memset(self.vectors[self.capacity..], std.mem.zeroes(Vector));
             self.capacity = sz;
         }
 
-        const DIRTY_SHIFT: u8 = 1;
-        const DIRTY_MASK: u8 = 1 << DIRTY_SHIFT;
         pub fn isDirty(self: Self, i: usize) bool {
-            return ((self.index[i] & DIRTY_MASK) >> DIRTY_SHIFT) == 1;
+            return self.index[i].dirty;
         }
         pub fn setDirty(self: *Self, i: usize, set: bool) void {
-            if (set) {
-                self.index[i] = self.index[i] | DIRTY_MASK;
-            } else {
-                self.index[i] = self.index[i] & ~DIRTY_MASK;
-            }
+            self.index[i].dirty = set;
         }
 
-        const OCCUPIED_SHIFT: u8 = 0;
-        const OCCUPIED_MASK: u8 = 1 << OCCUPIED_SHIFT;
         pub fn isOccupied(self: Self, i: usize) bool {
-            return ((self.index[i] & OCCUPIED_MASK) >> OCCUPIED_SHIFT) == 1;
+            return self.index[i].occupied;
         }
         pub fn setOccupied(self: *Self, i: usize, set: bool) void {
-            if (set) {
-                self.index[i] = self.index[i] | OCCUPIED_MASK;
-            } else {
-                self.index[i] = self.index[i] & ~OCCUPIED_MASK;
-            }
+            self.index[i].occupied = set;
         }
     };
 }
