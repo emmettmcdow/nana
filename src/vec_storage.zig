@@ -1,11 +1,6 @@
 pub const Error = error{MultipleRemove};
 
-pub const SearchEntry = struct {
-    id: VectorID,
-    similarity: f32,
-};
-
-const LATEST_META_FORMAT_VERSION = 1;
+const LATEST_META_FORMAT_VERSION = 2;
 
 const DEFAULT_DB_IDX_TYPE = BinaryTypeRepresentation.to_binary(u8);
 
@@ -135,18 +130,30 @@ pub const StorageMetadata = packed struct {
         }
     }
 };
-//  ___Index____ ___Vecs____
-// |___________||__________|
-// |1  |0  |1  |v1 |nil|v2 |
-// |___|___|___|___|___|___|
-//
-//  Each index corresponds to a single index within the vector array.
-//  The integer will be non-zero if that vector index is occupied, zero otherwise.
+
+//  Data-oriented layout (Structure of Arrays):
+//  ___Index____ ___Vecs____ ___NoteIDs___ ___StartIs___ ___EndIs___
+// |___________||__________||____________||____________||__________|
+// |1  |0  |1  ||v1 |nil|v2||n1 |nil|n2  ||s1 |nil|s2  ||e1 |nil|e2|
+// |___|___|___||___|___|___||___|___|____||___|___|____||___|___|__|
 
 pub fn Storage(vec_sz: usize, vec_type: type) type {
     const Vector = @Vector(vec_sz, vec_type);
 
     return struct {
+        pub const VectorRow = struct {
+            vector_id: VectorID,
+            note_id: NoteID,
+            start_i: usize,
+            end_i: usize,
+            vec: Vector,
+        };
+
+        pub const SearchEntry = struct {
+            row: VectorRow,
+            similarity: f32,
+        };
+
         meta: StorageMetadata = .{
             .fmt_v = LATEST_META_FORMAT_VERSION,
             .vec_sz = vec_sz,
@@ -156,6 +163,9 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
         },
         index: []IndexEntry,
         vectors: []Vector,
+        note_ids: []NoteID,
+        start_is: []usize,
+        end_is: []usize,
         capacity: usize,
         allocator: std.mem.Allocator,
         dir: std.fs.Dir,
@@ -171,38 +181,60 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
             @memset(vecs, std.mem.zeroes(Vector));
             const idx = try allocator.alloc(IndexEntry, opts.sz);
             @memset(idx, .{});
+            const note_ids = try allocator.alloc(NoteID, opts.sz);
+            @memset(note_ids, 0);
+            const start_is = try allocator.alloc(usize, opts.sz);
+            @memset(start_is, 0);
+            const end_is = try allocator.alloc(usize, opts.sz);
+            @memset(end_is, 0);
             return Self{
                 .vectors = vecs,
                 .index = idx,
+                .note_ids = note_ids,
+                .start_is = start_is,
+                .end_is = end_is,
                 .capacity = opts.sz,
                 .allocator = allocator,
                 .dir = dir,
             };
         }
+
         pub fn deinit(self: *Self) void {
             self.allocator.free(self.vectors);
             self.allocator.free(self.index);
+            self.allocator.free(self.note_ids);
+            self.allocator.free(self.start_is);
+            self.allocator.free(self.end_is);
         }
 
-        pub fn get(self: Self, id: VectorID) Vector {
+        pub fn get(self: Self, id: VectorID) VectorRow {
             assert(id != self.nullVec());
-            return self.vectors[id];
+            return .{
+                .vector_id = id,
+                .note_id = self.note_ids[id],
+                .start_i = self.start_is[id],
+                .end_i = self.end_is[id],
+                .vec = self.vectors[id],
+            };
         }
 
-        pub fn put(self: *Self, v: Vector) !VectorID {
+        pub fn put(self: *Self, row: VectorRow) !VectorID {
             const new_id = self.nextIndex();
             assert(!self.isOccupied(new_id));
             self.meta.vec_n += 1;
 
             try self.grow();
 
-            self.putAt(v, new_id);
+            self.putAt(row, new_id);
             return new_id;
         }
 
-        fn putAt(self: *Self, v: Vector, id: usize) void {
+        fn putAt(self: *Self, row: VectorRow, id: usize) void {
             assert(id != self.nullVec());
-            self.vectors[id] = v;
+            self.vectors[id] = row.vec;
+            self.note_ids[id] = row.note_id;
+            self.start_is[id] = row.start_i;
+            self.end_is[id] = row.end_i;
             self.setOccupied(id, true);
             self.setDirty(id, true);
         }
@@ -238,7 +270,7 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
 
             for (self.index, 0..) |idx_entry, id| {
                 if (!idx_entry.occupied) continue;
-                const similar = cosine_similarity(vec_sz, vec_type, self.get(id), query);
+                const similar = cosine_similarity(vec_sz, vec_type, self.vectors[id], query);
                 debugSearchSimilar(id, similar);
                 if (similar > threshold) {
                     try pq.add(.{ .id = id, .sim = similar });
@@ -248,7 +280,7 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
             var i: usize = 0;
             while (pq.removeOrNull()) |pair| : (i += 1) {
                 if (i >= buf.len) break;
-                buf[i] = .{ .id = pair.id, .similarity = pair.sim };
+                buf[i] = .{ .row = self.get(pair.id), .similarity = pair.sim };
             }
 
             return i;
@@ -270,7 +302,8 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
             defer f.close();
 
             var writer = f.writer();
-            try writer.writeStructEndian(self.meta, self.meta.endianness());
+            const endian = self.meta.endianness();
+            try writer.writeStructEndian(self.meta, endian);
 
             var index_copy = try self.allocator.alloc(u8, self.index.len);
             defer self.allocator.free(index_copy);
@@ -281,19 +314,41 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
             }
             try writeSlice(&writer, index_copy);
 
+            const len = end_i(index_copy);
             const vec_width: i64 = @intCast(vec_sz * @sizeOf(vec_type));
-            for (0..end_i(index_copy)) |i| {
+            const int_width: i64 = @intCast(@sizeOf(usize));
+            const note_id_width: i64 = @intCast(@sizeOf(NoteID));
+
+            for (0..len) |i| {
                 if (self.isDirty(i)) {
-                    try writeVec(vec_sz, vec_type, &writer, self.vectors[i], self.meta.endianness());
+                    try writeVec(vec_sz, vec_type, &writer, self.vectors[i], endian);
+                } else {
+                    try f.seekBy(vec_width);
+                }
+            }
+
+            for (0..len) |i| {
+                if (self.isDirty(i)) {
+                    try writer.writeInt(NoteID, self.note_ids[i], endian);
+                } else {
+                    try f.seekBy(note_id_width);
+                }
+            }
+
+            for (0..len) |i| {
+                if (self.isDirty(i)) {
+                    try writer.writeInt(usize, self.start_is[i], endian);
+                } else {
+                    try f.seekBy(int_width);
+                }
+            }
+
+            for (0..len) |i| {
+                if (self.isDirty(i)) {
+                    try writer.writeInt(usize, self.end_is[i], endian);
                     self.setDirty(i, false);
                 } else {
-                    f.seekBy(vec_width) catch |e| switch (e) {
-                        std.fs.File.SeekError.Unseekable => {
-                            std.debug.print("Unseekable!\n", .{});
-                            return;
-                        },
-                        else => return e,
-                    };
+                    try f.seekBy(int_width);
                 }
             }
 
@@ -301,13 +356,7 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
         }
 
         pub fn load(self: *Self, path: []const u8) !void {
-            // We take the naiive approach to reading for now. We only have one version of the file,
-            // but we have future proofed ourselves to be able to use multiple. We don't yet need
-            // multiple so we can just read the file in a "dumb" way.
-            //
-            // Dumb = not reading metadata before reading the whole file.
             var f = self.dir.openFile(path, .{ .mode = .read_only }) catch |err| switch (err) {
-                // Don't do anything if there is no file to load: file is created on save
                 std.fs.File.OpenError.FileNotFound => return,
                 else => return err,
             };
@@ -316,10 +365,6 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
 
             const endian = self.meta.endianness();
             self.meta = try reader.readStructEndian(StorageMetadata, endian);
-            // This is a hack to deal with my poor grasp of comptime.
-            // Maybe we can come in and create multiple load body functions. Firstly you check the
-            // version, and then you call out to one of the many load functions. Where the meta is
-            // comptime known.
             assert(self.meta.fmt_v == LATEST_META_FORMAT_VERSION);
             assert(self.meta.vec_sz == vec_sz);
             assert(self.meta.vec_type == BinaryTypeRepresentation.to_binary(vec_type));
@@ -333,17 +378,42 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
                 self.index[i] = IndexEntry.fromByte(byte);
             }
 
-            for (0..end_i(index_bytes)) |i| {
-                defer self.setDirty(i, false);
-                var v: Vector = undefined;
-                if (!self.isOccupied(i)) continue;
-                assert(!self.isDirty(i));
-                try readVec(vec_sz, vec_type, &v, &reader, endian);
-                self.putAt(v, i);
+            const len = end_i(index_bytes);
+
+            for (0..len) |i| {
+                if (self.isOccupied(i)) {
+                    try readVec(vec_sz, vec_type, &self.vectors[i], &reader, endian);
+                } else {
+                    try f.seekBy(@intCast(vec_sz * @sizeOf(vec_type)));
+                }
+            }
+
+            for (0..len) |i| {
+                if (self.isOccupied(i)) {
+                    self.note_ids[i] = try reader.readInt(NoteID, endian);
+                } else {
+                    try f.seekBy(@intCast(@sizeOf(NoteID)));
+                }
+            }
+
+            for (0..len) |i| {
+                if (self.isOccupied(i)) {
+                    self.start_is[i] = try reader.readInt(usize, endian);
+                } else {
+                    try f.seekBy(@intCast(@sizeOf(usize)));
+                }
+            }
+
+            for (0..len) |i| {
+                if (self.isOccupied(i)) {
+                    self.end_is[i] = try reader.readInt(usize, endian);
+                } else {
+                    try f.seekBy(@intCast(@sizeOf(usize)));
+                }
             }
         }
 
-        /// Generates a new ID for an existing Vector
+        /// Generates a new ID for an existing VectorRow
         pub fn copy(self: *Self, id: VectorID) !VectorID {
             if (id == self.nullVec()) return self.nullVec();
             const new_id = self.nextIndex();
@@ -352,7 +422,8 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
 
             try self.grow();
 
-            self.putAt(self.get(id), new_id);
+            const row = self.get(id);
+            self.putAt(row, new_id);
             return new_id;
         }
 
@@ -383,6 +454,12 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
             @memset(self.index[self.capacity..], .{});
             self.vectors = try self.allocator.realloc(self.vectors, sz);
             @memset(self.vectors[self.capacity..], std.mem.zeroes(Vector));
+            self.note_ids = try self.allocator.realloc(self.note_ids, sz);
+            @memset(self.note_ids[self.capacity..], 0);
+            self.start_is = try self.allocator.realloc(self.start_is, sz);
+            @memset(self.start_is[self.capacity..], 0);
+            self.end_is = try self.allocator.realloc(self.end_is, sz);
+            @memset(self.end_is[self.capacity..], 0);
             self.capacity = sz;
         }
 
@@ -405,22 +482,37 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
 const TestT = f32;
 const TestN = 3;
 const TestVecType = @Vector(TestN, TestT);
+const TestStorage = Storage(TestN, TestT);
+const TestVectorRow = TestStorage.VectorRow;
+
+fn makeTestRow(vec: TestVecType, note_id: NoteID, start_i: usize, end_i_val: usize) TestVectorRow {
+    return .{
+        .vector_id = 0,
+        .note_id = note_id,
+        .start_i = start_i,
+        .end_i = end_i_val,
+        .vec = vec,
+    };
+}
 
 test "test put / get" {
     var tmpD = tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
-    var inst = try Storage(TestN, TestT).init(arena.allocator(), tmpD.dir, .{});
+    var inst = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     defer inst.deinit();
 
     try expect(inst.meta.vec_n == 0);
-    const vec1 = TestVecType{ 1, 1, 1 };
-    const id = try inst.put(vec1);
+    const row1 = makeTestRow(.{ 1, 1, 1 }, 42, 0, 10);
+    const id = try inst.put(row1);
     try expect(inst.meta.vec_n == 1);
-    const vec2 = inst.get(id);
+    const row2 = inst.get(id);
 
-    try expect(@reduce(.And, vec1 == vec2));
+    try expect(@reduce(.And, row1.vec == row2.vec));
+    try expect(row2.note_id == 42);
+    try expect(row2.start_i == 0);
+    try expect(row2.end_i == 10);
 }
 
 test "re Storage" {
@@ -428,22 +520,25 @@ test "re Storage" {
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
-    var inst = try Storage(TestN, TestT).init(arena.allocator(), tmpD.dir, .{});
+    var inst = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     defer inst.deinit();
 
     try expect(inst.meta.vec_n == 0);
-    const vec1 = TestVecType{ 1, 1, 1 };
-    const id = try inst.put(vec1);
+    const row1 = makeTestRow(.{ 1, 1, 1 }, 100, 5, 15);
+    const id = try inst.put(row1);
     try expect(inst.meta.vec_n == 1);
     try inst.save("temp.db");
     inst.deinit();
 
-    var inst2 = try Storage(TestN, TestT).init(arena.allocator(), tmpD.dir, .{});
+    var inst2 = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     defer inst2.deinit();
     try inst2.load("temp.db");
     try expect(inst2.meta.vec_n == 1);
-    const vec2 = inst2.get(id);
-    try expect(@reduce(.And, vec1 == vec2));
+    const row2 = inst2.get(id);
+    try expect(@reduce(.And, row1.vec == row2.vec));
+    try expect(row2.note_id == 100);
+    try expect(row2.start_i == 5);
+    try expect(row2.end_i == 15);
 }
 
 test "re Storage multiple" {
@@ -452,28 +547,32 @@ test "re Storage multiple" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    const vecs: [4]TestVecType = .{
-        .{ 1, 1, 1 },
-        .{ 1, 2, 3 },
-        .{ 0.5, 0.5, 0.5 },
-        .{ -0.5, -0.5, -0.5 },
+    const rows: [4]TestVectorRow = .{
+        makeTestRow(.{ 1, 1, 1 }, 1, 0, 10),
+        makeTestRow(.{ 1, 2, 3 }, 2, 10, 20),
+        makeTestRow(.{ 0.5, 0.5, 0.5 }, 3, 20, 30),
+        makeTestRow(.{ -0.5, -0.5, -0.5 }, 4, 30, 40),
     };
 
-    var inst = try Storage(TestN, TestT).init(arena.allocator(), tmpD.dir, .{});
+    var inst = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     try expect(inst.meta.vec_n == 0);
-    for (vecs) |vec| {
-        _ = try inst.put(vec);
+    for (rows) |row| {
+        _ = try inst.put(row);
     }
-    try expect(inst.meta.vec_n == vecs.len);
+    try expect(inst.meta.vec_n == rows.len);
     try inst.save("temp.db");
     inst.deinit();
 
-    var inst2 = try Storage(TestN, TestT).init(arena.allocator(), tmpD.dir, .{});
+    var inst2 = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     defer inst2.deinit();
     try inst2.load("temp.db");
-    try expect(inst2.meta.vec_n == vecs.len);
-    for (0..vecs.len - 1) |i| {
-        try expect(@reduce(.And, vecs[i] == inst2.get(i)));
+    try expect(inst2.meta.vec_n == rows.len);
+    for (rows, 0..) |row, i| {
+        const loaded = inst2.get(i);
+        try expect(@reduce(.And, row.vec == loaded.vec));
+        try expect(row.note_id == loaded.note_id);
+        try expect(row.start_i == loaded.start_i);
+        try expect(row.end_i == loaded.end_i);
     }
 }
 
@@ -483,18 +582,18 @@ test "re Storage index" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    const vecs: [4]TestVecType = .{
-        .{ 1, 1, 1 },
-        .{ 1, 2, 3 },
-        .{ 0.5, 0.5, 0.5 },
-        .{ -0.5, -0.5, -0.5 },
+    const rows: [4]TestVectorRow = .{
+        makeTestRow(.{ 1, 1, 1 }, 1, 0, 10),
+        makeTestRow(.{ 1, 2, 3 }, 2, 10, 20),
+        makeTestRow(.{ 0.5, 0.5, 0.5 }, 3, 20, 30),
+        makeTestRow(.{ -0.5, -0.5, -0.5 }, 4, 30, 40),
     };
     var ids: [4]VectorID = undefined;
 
-    var inst = try Storage(TestN, TestT).init(arena.allocator(), tmpD.dir, .{});
+    var inst = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     try expect(inst.meta.vec_n == 0);
-    for (vecs, 0..) |vec, i| {
-        ids[i] = try inst.put(vec);
+    for (rows, 0..) |row, i| {
+        ids[i] = try inst.put(row);
     }
     for (0..4) |i| {
         try expect(inst.isOccupied(i));
@@ -506,14 +605,14 @@ test "re Storage index" {
     try expect(inst.isOccupied(1));
     try expect(!inst.isOccupied(2));
     try expect(inst.isOccupied(3));
-    try expect(inst.meta.vec_n == vecs.len - 2);
+    try expect(inst.meta.vec_n == rows.len - 2);
     try inst.save("temp.db");
     inst.deinit();
 
-    var inst2 = try Storage(TestN, TestT).init(arena.allocator(), tmpD.dir, .{});
+    var inst2 = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     defer inst2.deinit();
     try inst2.load("temp.db");
-    try expect(inst2.meta.vec_n == vecs.len - 2);
+    try expect(inst2.meta.vec_n == rows.len - 2);
     try expect(!inst2.isOccupied(0));
     try expect(inst2.isOccupied(1));
     try expect(!inst2.isOccupied(2));
@@ -526,18 +625,18 @@ test "test put resize" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    var inst = try Storage(TestN, TestT).init(arena.allocator(), tmpD.dir, .{});
+    var inst = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     defer inst.deinit();
     try expect(inst.meta.vec_n == 0);
     try expect(inst.capacity == 32);
 
-    const vec1 = TestVecType{ 1, 1, 1 };
+    const row1 = makeTestRow(.{ 1, 1, 1 }, 1, 0, 10);
     for (0..31) |_| {
-        _ = try inst.put(vec1);
+        _ = try inst.put(row1);
     }
     try expect(inst.meta.vec_n == 31);
     try expect(inst.capacity == 32);
-    _ = try inst.put(vec1);
+    _ = try inst.put(row1);
     try expect(inst.meta.vec_n == 32);
     try expect(inst.capacity == 64);
 }
@@ -548,7 +647,7 @@ test "no failure on loading non-existent db" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    var inst = try Storage(TestN, TestT).init(arena.allocator(), tmpD.dir, .{});
+    var inst = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     defer inst.deinit();
     try inst.load("vecs.db");
 }
@@ -559,21 +658,27 @@ test "grow" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    var inst = try Storage(TestN, TestT).init(arena.allocator(), tmpD.dir, .{ .sz = 1 });
+    var inst = try TestStorage.init(arena.allocator(), tmpD.dir, .{ .sz = 1 });
     defer inst.deinit();
     try inst.grow();
     try expect(inst.capacity == 1);
     try expect(inst.vectors.len == 1);
     try expect(inst.index.len == 1);
-    _ = try inst.put(std.mem.zeroes(TestVecType));
+    try expect(inst.note_ids.len == 1);
+    try expect(inst.start_is.len == 1);
+    try expect(inst.end_is.len == 1);
+
+    _ = try inst.put(makeTestRow(std.mem.zeroes(TestVecType), 1, 0, 0));
     try expect(inst.capacity == 2);
     try expect(inst.vectors.len == 2);
     try expect(inst.index.len == 2);
-    _ = try inst.put(std.mem.zeroes(TestVecType));
+
+    _ = try inst.put(makeTestRow(std.mem.zeroes(TestVecType), 2, 0, 0));
     try expect(inst.capacity == 4);
     try expect(inst.vectors.len == 4);
     try expect(inst.index.len == 4);
-    _ = try inst.put(std.mem.zeroes(TestVecType));
+
+    _ = try inst.put(makeTestRow(std.mem.zeroes(TestVecType), 3, 0, 0));
     try expect(inst.capacity == 4);
     try expect(inst.vectors.len == 4);
     try expect(inst.index.len == 4);
@@ -588,14 +693,17 @@ test "copy" {
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
-    var inst = try Storage(TestN, TestT).init(arena.allocator(), tmpD.dir, .{ .sz = 2 });
+    var inst = try TestStorage.init(arena.allocator(), tmpD.dir, .{ .sz = 2 });
 
-    const vec1 = TestVecType{ 1, 1, 1 };
-    const old_id = try inst.put(vec1);
+    const row1 = makeTestRow(.{ 1, 1, 1 }, 42, 5, 15);
+    const old_id = try inst.put(row1);
     const new_id = try inst.copy(old_id);
     try expect(old_id != new_id);
-    const vec2 = inst.get(new_id);
-    try expect(@reduce(.And, vec1 == vec2));
+    const row2 = inst.get(new_id);
+    try expect(@reduce(.And, row1.vec == row2.vec));
+    try expect(row1.note_id == row2.note_id);
+    try expect(row1.start_i == row2.start_i);
+    try expect(row1.end_i == row2.end_i);
 }
 
 test "dirty and occupied" {
@@ -604,19 +712,19 @@ test "dirty and occupied" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    var inst = try Storage(TestN, TestT).init(arena.allocator(), tmpD.dir, .{});
+    var inst = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     defer inst.deinit();
 
-    const vec1 = TestVecType{ 1, 1, 1 };
-    const id1 = try inst.put(vec1);
+    const row1 = makeTestRow(.{ 1, 1, 1 }, 1, 0, 10);
+    const id1 = try inst.put(row1);
     try expect(inst.isOccupied(id1));
     try expect(inst.isDirty(id1));
     try inst.save("temp.db");
     try expect(!inst.isDirty(id1));
     try expect(inst.isOccupied(id1));
 
-    const vec2 = TestVecType{ 2, 2, 2 };
-    const id2 = try inst.put(vec2);
+    const row2 = makeTestRow(.{ 2, 2, 2 }, 2, 10, 20);
+    const id2 = try inst.put(row2);
     try expect(inst.isOccupied(id2));
     try expect(inst.isDirty(id2));
     try inst.rm(id2);
@@ -633,29 +741,27 @@ test "no write dirty" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    // This change should be persisted
-    var inst = try Storage(TestN, TestT).init(arena.allocator(), tmpD.dir, .{});
+    var inst = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     defer inst.deinit();
-    const vec1_a = TestVecType{ 1, 1, 1 };
-    const id = try inst.put(vec1_a);
+    const row1_a = makeTestRow(.{ 1, 1, 1 }, 100, 0, 10);
+    const id = try inst.put(row1_a);
     try inst.save("temp.db");
 
-    // This change should not be persisted
-    var inst2 = try Storage(TestN, TestT).init(arena.allocator(), tmpD.dir, .{});
+    var inst2 = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     defer inst2.deinit();
     try inst2.load("temp.db");
 
-    const vec2 = TestVecType{ 2, 2, 2 };
-    inst2.putAt(vec2, id);
+    const row2 = makeTestRow(.{ 2, 2, 2 }, 200, 10, 20);
+    inst2.putAt(row2, id);
     inst2.setDirty(id, false);
     try inst2.save("temp.db");
 
-    // Verify that the vector present on disk is vec1_a, not vec2
-    var inst3 = try Storage(TestN, TestT).init(arena.allocator(), tmpD.dir, .{});
+    var inst3 = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     defer inst3.deinit();
     try inst3.load("temp.db");
-    const vec1_b = inst3.get(id);
-    try expect(@reduce(.And, vec1_a == vec1_b));
+    const row1_b = inst3.get(id);
+    try expect(@reduce(.And, row1_a.vec == row1_b.vec));
+    try expect(row1_a.note_id == row1_b.note_id);
 }
 
 test "loaded not dirty" {
@@ -664,21 +770,43 @@ test "loaded not dirty" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    var inst = try Storage(TestN, TestT).init(arena.allocator(), tmpD.dir, .{});
+    var inst = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     defer inst.deinit();
     var ids: [10]VectorID = undefined;
     for (0..10) |i| {
-        ids[i] = try inst.put(TestVecType{ 1, 1, 1 });
+        ids[i] = try inst.put(makeTestRow(.{ 1, 1, 1 }, @intCast(i), 0, 10));
         try expect(inst.isDirty(ids[i]));
     }
     try inst.save("temp.db");
 
-    var inst2 = try Storage(TestN, TestT).init(arena.allocator(), tmpD.dir, .{});
+    var inst2 = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     defer inst2.deinit();
     try inst2.load("temp.db");
     for (ids) |id| {
         try expect(!inst2.isDirty(id));
     }
+}
+
+test "search returns VectorRow" {
+    var tmpD = tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    var inst = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
+    defer inst.deinit();
+
+    _ = try inst.put(makeTestRow(.{ 1, 0, 0 }, 10, 0, 5));
+    _ = try inst.put(makeTestRow(.{ 0.9, 0.1, 0 }, 20, 5, 10));
+    _ = try inst.put(makeTestRow(.{ 0, 1, 0 }, 30, 10, 15));
+
+    var results: [10]TestStorage.SearchEntry = undefined;
+    const count = try inst.search(.{ 1, 0, 0 }, &results, 0.5);
+
+    try expect(count == 2);
+    try expect(results[0].row.note_id == 10);
+    try expect(results[1].row.note_id == 20);
+    try expect(results[0].similarity > results[1].similarity);
 }
 
 // **************************************************************************************** Vectors
@@ -760,3 +888,4 @@ const tracy = @import("tracy");
 
 const types = @import("types.zig");
 const VectorID = types.VectorID;
+const NoteID = u64;
