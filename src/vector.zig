@@ -2,6 +2,7 @@ const MAX_NOTE_LEN: usize = std.math.maxInt(u32);
 pub const Error = error{
     ValidationNoStorageForRelationalVector,
     ValidationNoRelationalForStorageVector,
+    NotQueuedShuttingDown,
 };
 
 pub const CSearchResult = extern struct {
@@ -39,30 +40,68 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
         .jina_embedding => JinaEmbedder.VEC_TYPE,
     };
 
+    const EmbedJob = struct {
+        note_id: NoteID,
+        contents: []const u8,
+
+        pub fn id(self: @This()) NoteID {
+            return self.note_id;
+        }
+    };
+
     return struct {
         const Self = @This();
         const VecStorage = vec_storage.Storage(VEC_SZ, VEC_TYPE);
+
+        const WorkQueue = UniqueCircularBuffer(EmbedJob, NoteID, EmbedJob.id);
 
         embedder: embed.Embedder,
         relational: *model.DB,
         vec_storage: VecStorage,
         basedir: std.fs.Dir,
         allocator: std.mem.Allocator,
+        work_queue: *WorkQueue,
+        work_queue_thread: Thread,
+        work_queue_mutex: Thread.Mutex = .{},
+        work_queue_condition: Thread.Condition = .{},
+        work_queue_running: bool,
 
-        pub fn init(allocator: std.mem.Allocator, basedir: std.fs.Dir, relational: *model.DB, embedder: embed.Embedder) !Self {
+        pub fn init(
+            allocator: std.mem.Allocator,
+            basedir: std.fs.Dir,
+            relational: *model.DB,
+            embedder: embed.Embedder,
+        ) !*Self {
             var vecs = try VecStorage.init(allocator, basedir, .{});
             try vecs.load(embedder.path);
-            return .{
+            const wq = try WorkQueue.init(allocator, 64);
+            const self = try allocator.create(Self);
+            self.* = .{
                 .embedder = embedder,
                 .relational = relational,
                 .vec_storage = vecs,
                 .basedir = basedir,
                 .allocator = allocator,
+                .work_queue = wq,
+                .work_queue_thread = try spawn(.{}, Self.workQueueRun, .{self}),
+                .work_queue_running = true,
             };
+            return self;
         }
         pub fn deinit(self: *Self) void {
             self.vec_storage.deinit();
             self.embedder.deinit();
+            self.work_queue.deinit();
+            self.allocator.destroy(self);
+        }
+        pub fn shutdown(self: *Self) void {
+            {
+                self.work_queue_mutex.lock();
+                defer self.work_queue_mutex.unlock();
+                self.work_queue_running = false;
+            }
+            self.work_queue_condition.signal();
+            self.work_queue_thread.join();
         }
 
         pub fn search(self: *Self, query: []const u8, buf: []SearchResult) !usize {
@@ -178,6 +217,27 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
             return;
         }
 
+        pub fn workQueueRun(self: *@This()) !void {
+            while (true) {
+                self.work_queue_mutex.lock();
+                const job = while (true) {
+                    if (self.work_queue.pop()) |j| {
+                        self.work_queue_mutex.unlock();
+                        break j;
+                    }
+                    if (!self.work_queue_running) {
+                        self.work_queue_mutex.unlock();
+                        return;
+                    }
+                    self.work_queue_condition.wait(&self.work_queue_mutex);
+                };
+                defer self.allocator.free(job.contents);
+                self.embedText(job.note_id, job.contents) catch |err| {
+                    std.log.err("embedText error: {}", .{err});
+                };
+            }
+        }
+
         const EmbeddedSentence = struct {
             vec: ?*const [VEC_SZ]VEC_TYPE,
             start_i: usize,
@@ -202,6 +262,22 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
             try self.replaceVectors(allocator, note_id, embedded_sentences);
 
             std.log.info("Embedded {d} sentences\n", .{embedded_sentences.len});
+        }
+
+        pub fn embedTextAsync(
+            self: *Self,
+            note_id: NoteID,
+            contents: []const u8,
+        ) !void {
+            {
+                self.work_queue_mutex.lock();
+                defer self.work_queue_mutex.unlock();
+                if (!self.work_queue_running) return error.NotQueuedShuttingDown;
+            }
+            const owned_contents = try self.allocator.alloc(u8, contents.len);
+            @memcpy(owned_contents, contents);
+            try self.work_queue.push(.{ .note_id = note_id, .contents = owned_contents });
+            self.work_queue_condition.signal();
         }
 
         fn embedNewText(
@@ -583,11 +659,11 @@ test "embedText same input same result" {
 
     try db.embedText(noteID, "apple");
     var initial_vecs: [1]TestVector = undefined;
-    try expectEqual(1, try getVectorsForNote(&db, noteID, &initial_vecs));
+    try expectEqual(1, try getVectorsForNote(db, noteID, &initial_vecs));
 
     try db.embedText(noteID, "apple");
     var updated_vecs: [1]TestVector = undefined;
-    try expectEqual(1, try getVectorsForNote(&db, noteID, &updated_vecs));
+    try expectEqual(1, try getVectorsForNote(db, noteID, &updated_vecs));
 
     try std.testing.expect(@reduce(.And, initial_vecs[0] == updated_vecs[0]));
 
@@ -610,11 +686,11 @@ test "embedText different input different result" {
 
     try db.embedText(noteID, "apple");
     var initial_vecs: [1]TestVector = undefined;
-    try expectEqual(1, try getVectorsForNote(&db, noteID, &initial_vecs));
+    try expectEqual(1, try getVectorsForNote(db, noteID, &initial_vecs));
 
     try db.embedText(noteID, "banana");
     var updated_vecs: [1]TestVector = undefined;
-    try expectEqual(1, try getVectorsForNote(&db, noteID, &updated_vecs));
+    try expectEqual(1, try getVectorsForNote(db, noteID, &updated_vecs));
 
     // Vector should be different (apple != banana)
     try std.testing.expect(!@reduce(.And, initial_vecs[0] == updated_vecs[0]));
@@ -641,14 +717,14 @@ test "embedText updates only changed sentences" {
     try db.embedText(noteID, initial_content);
 
     var initial_vecs: [4]TestVector = undefined;
-    try expectEqual(4, try getVectorsForNote(&db, noteID, &initial_vecs));
+    try expectEqual(4, try getVectorsForNote(db, noteID, &initial_vecs));
 
     // Updated content: same first and last words, different middle word
     const updated_content = "apple. dragonfruit. cherry.";
     try db.embedText(noteID, updated_content);
 
     var updated_vecs: [4]TestVector = undefined;
-    try expectEqual(4, try getVectorsForNote(&db, noteID, &updated_vecs));
+    try expectEqual(4, try getVectorsForNote(db, noteID, &updated_vecs));
 
     try std.testing.expect(@reduce(.And, initial_vecs[0] == updated_vecs[0]));
     try std.testing.expect(!@reduce(.And, initial_vecs[1] == updated_vecs[1]));
@@ -765,6 +841,83 @@ test "embed skip low-value" {
     try db.validate();
 }
 
+test "embedTextAsync" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer rel.deinit();
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try TestVecDB.init(arena.allocator(), tmpD.dir, &rel, te.iface);
+    defer db.deinit();
+
+    const noteID1 = try rel.create();
+    try rel.update(noteID1);
+    const noteID2 = try rel.create();
+    try rel.update(noteID2);
+    const noteID3 = try rel.create();
+    try rel.update(noteID3);
+
+    try db.embedTextAsync(noteID1, "pizza");
+    try db.embedTextAsync(noteID2, "pizza");
+    try db.embedTextAsync(noteID3, "pizza");
+
+    std.time.sleep(2 * std.time.ns_per_s);
+
+    var buffer: [10]SearchResult = undefined;
+    const found = try db.search("pizza", &buffer);
+    try expectEqual(3, found);
+
+    try db.validate();
+}
+
+test "embedTextAsync drains queue on shutdown" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer rel.deinit();
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try TestVecDB.init(arena.allocator(), tmpD.dir, &rel, te.iface);
+    defer db.deinit();
+
+    const N = 40;
+
+    for (0..N) |_| {
+        const noteID = try rel.create();
+        try rel.update(noteID);
+        try db.embedTextAsync(noteID, "pizza");
+    }
+    db.shutdown();
+
+    var buffer: [N]SearchResult = undefined;
+    const found = try db.search("pizza", &buffer);
+    try expectEqual(N, found);
+
+    try db.validate();
+}
+
+test "embedTextAsync rejects after shutdown" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rel = try model.DB.init(arena.allocator(), .{ .mem = true, .basedir = tmpD.dir });
+    defer rel.deinit();
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try TestVecDB.init(arena.allocator(), tmpD.dir, &rel, te.iface);
+    defer db.deinit();
+
+    const noteID = try rel.create();
+    db.shutdown();
+    try expectEqual(Error.NotQueuedShuttingDown, db.embedTextAsync(noteID, "pizza"));
+}
+
 const std = @import("std");
 const testing_allocator = std.testing.allocator;
 const expectEqual = std.testing.expectEqual;
@@ -775,6 +928,7 @@ const config = @import("config");
 const tracy = @import("tracy");
 
 const embed = @import("embed.zig");
+const expect = std.testing.expect;
 const EmbeddingModel = embed.EmbeddingModel;
 const model = @import("model.zig");
 const Note = model.Note;
@@ -783,6 +937,10 @@ const MultipleRemove = vec_storage.Error.MultipleRemove;
 const NoteID = model.NoteID;
 const NLEmbedder = embed.NLEmbedder;
 const JinaEmbedder = embed.JinaEmbedder;
+const spawn = Thread.spawn;
+const Thread = std.Thread;
 const types = @import("types.zig");
+const UniqueCircularBuffer = util.UniqueCircularBuffer;
+const util = @import("util.zig");
 const VectorID = types.VectorID;
 const vec_storage = @import("vec_storage.zig");

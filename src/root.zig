@@ -38,9 +38,7 @@ pub const Runtime = struct {
         errdefer allocator.destroy(embedder_ptr);
         embedder_ptr.* = try Embedder.init();
 
-        const vectors = try allocator.create(VectorDB);
-        errdefer allocator.destroy(vectors);
-        vectors.* = try VectorDB.init(allocator, opts.basedir, db, embedder_ptr.embedder());
+        const vectors = try VectorDB.init(allocator, opts.basedir, db, embedder_ptr.embedder());
         try vectors.validate();
 
         var self = Runtime{
@@ -78,11 +76,11 @@ pub const Runtime = struct {
 
     /// De-initializes the libnana runtime.
     pub fn deinit(self: *Runtime) void {
+        self.vectors.shutdown();
         self.vectors.deinit();
         self.db.deinit();
         self.allocator.destroy(self.db);
         self.allocator.destroy(self.embedder);
-        self.allocator.destroy(self.vectors);
     }
 
     /// Create a new note.
@@ -198,7 +196,7 @@ pub const Runtime = struct {
                 },
                 else => |leftover_err| return leftover_err,
             };
-            try self.vectors.embedText(id, buf[0..sz]);
+            try self.vectors.embedTextAsync(id, buf[0..sz]);
             break;
         }
 
@@ -264,7 +262,7 @@ pub const Runtime = struct {
             return;
         }
 
-        try self.vectors.embedText(id, content);
+        try self.vectors.embedTextAsync(id, content);
         try self.update(id);
 
         return;
@@ -998,6 +996,8 @@ test "import run embedding" {
     try f.writeAll("hello");
 
     const id = (try rt.import(path, null)).?;
+    // Give the other thread time to run the embedding.
+    std.time.sleep(2 * std.time.ns_per_s);
 
     var buf: [1]SearchResult = undefined;
     try expectEqual(1, try rt.search("hello", &buf));
@@ -1470,3 +1470,4 @@ const vector = @import("vector.zig");
 const config = @import("config");
 const embedding_model: embed.EmbeddingModel = @enumFromInt(@intFromEnum(config.embedding_model));
 const VectorDB = vector.VectorDB(embedding_model);
+const yield = std.Thread.yield;
