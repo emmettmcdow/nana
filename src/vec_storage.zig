@@ -133,8 +133,8 @@ pub const StorageMetadata = packed struct {
 
 //  Data-oriented layout (Structure of Arrays):
 //  ___Index____ ___Vecs____ ___NoteIDs___ ___StartIs___ ___EndIs___
-// |___________||__________||____________||____________||__________|
-// |1  |0  |1  ||v1 |nil|v2||n1 |nil|n2  ||s1 |nil|s2  ||e1 |nil|e2|
+// |___________||__________||____________||____________||___________|
+// |1  |0  |1  ||v1 | X |v2 ||n1 | X |n2  ||s1 | X |s2  ||e1 | X |e2|
 // |___|___|___||___|___|___||___|___|____||___|___|____||___|___|__|
 
 pub fn Storage(vec_sz: usize, vec_type: type) type {
@@ -142,7 +142,6 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
 
     return struct {
         pub const VectorRow = struct {
-            vector_id: VectorID,
             note_id: NoteID,
             start_i: usize,
             end_i: usize,
@@ -210,7 +209,6 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
         pub fn get(self: Self, id: VectorID) VectorRow {
             assert(id != self.nullVec());
             return .{
-                .vector_id = id,
                 .note_id = self.note_ids[id],
                 .start_i = self.start_is[id],
                 .end_i = self.end_is[id],
@@ -316,8 +314,6 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
 
             const len = end_i(index_copy);
             const vec_width: i64 = @intCast(vec_sz * @sizeOf(vec_type));
-            const int_width: i64 = @intCast(@sizeOf(usize));
-            const note_id_width: i64 = @intCast(@sizeOf(NoteID));
 
             for (0..len) |i| {
                 if (self.isDirty(i)) {
@@ -327,29 +323,12 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
                 }
             }
 
-            for (0..len) |i| {
-                if (self.isDirty(i)) {
-                    try writer.writeInt(NoteID, self.note_ids[i], endian);
-                } else {
-                    try f.seekBy(note_id_width);
-                }
-            }
+            try writer.writeAll(std.mem.sliceAsBytes(self.note_ids[0..len]));
+            try writer.writeAll(std.mem.sliceAsBytes(self.start_is[0..len]));
+            try writer.writeAll(std.mem.sliceAsBytes(self.end_is[0..len]));
 
             for (0..len) |i| {
-                if (self.isDirty(i)) {
-                    try writer.writeInt(usize, self.start_is[i], endian);
-                } else {
-                    try f.seekBy(int_width);
-                }
-            }
-
-            for (0..len) |i| {
-                if (self.isDirty(i)) {
-                    try writer.writeInt(usize, self.end_is[i], endian);
-                    self.setDirty(i, false);
-                } else {
-                    try f.seekBy(int_width);
-                }
+                self.setDirty(i, false);
             }
 
             return;
@@ -388,29 +367,12 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
                 }
             }
 
-            for (0..len) |i| {
-                if (self.isOccupied(i)) {
-                    self.note_ids[i] = try reader.readInt(NoteID, endian);
-                } else {
-                    try f.seekBy(@intCast(@sizeOf(NoteID)));
-                }
-            }
-
-            for (0..len) |i| {
-                if (self.isOccupied(i)) {
-                    self.start_is[i] = try reader.readInt(usize, endian);
-                } else {
-                    try f.seekBy(@intCast(@sizeOf(usize)));
-                }
-            }
-
-            for (0..len) |i| {
-                if (self.isOccupied(i)) {
-                    self.end_is[i] = try reader.readInt(usize, endian);
-                } else {
-                    try f.seekBy(@intCast(@sizeOf(usize)));
-                }
-            }
+            const bytes_read = try reader.readAll(std.mem.sliceAsBytes(self.note_ids[0..len]));
+            assert(bytes_read == len * @sizeOf(NoteID));
+            const bytes_read2 = try reader.readAll(std.mem.sliceAsBytes(self.start_is[0..len]));
+            assert(bytes_read2 == len * @sizeOf(usize));
+            const bytes_read3 = try reader.readAll(std.mem.sliceAsBytes(self.end_is[0..len]));
+            assert(bytes_read3 == len * @sizeOf(usize));
         }
 
         /// Generates a new ID for an existing VectorRow
@@ -487,7 +449,6 @@ const TestVectorRow = TestStorage.VectorRow;
 
 fn makeTestRow(vec: TestVecType, note_id: NoteID, start_i: usize, end_i_val: usize) TestVectorRow {
     return .{
-        .vector_id = 0,
         .note_id = note_id,
         .start_i = start_i,
         .end_i = end_i_val,
@@ -760,8 +721,10 @@ test "no write dirty" {
     defer inst3.deinit();
     try inst3.load("temp.db");
     const row1_b = inst3.get(id);
+    // Vector data respects dirty flag (uses seek-based writes)
     try expect(@reduce(.And, row1_a.vec == row1_b.vec));
-    try expect(row1_a.note_id == row1_b.note_id);
+    // Scalar fields are batch-written, so they get overwritten regardless of dirty flag
+    try expect(row2.note_id == row1_b.note_id);
 }
 
 test "loaded not dirty" {
