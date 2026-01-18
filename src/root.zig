@@ -38,7 +38,7 @@ pub const Runtime = struct {
         errdefer allocator.destroy(embedder_ptr);
         embedder_ptr.* = try Embedder.init();
 
-        const vectors = try VectorDB.init(allocator, opts.basedir, db, embedder_ptr.embedder());
+        const vectors = try VectorDB.init(allocator, opts.basedir, embedder_ptr.embedder());
         try vectors.validate();
 
         var self = Runtime{

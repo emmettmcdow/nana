@@ -1,4 +1,4 @@
-pub const Error = error{MultipleRemove};
+pub const Error = error{ MultipleRemove, OverlappingVectors };
 
 const LATEST_META_FORMAT_VERSION = 2;
 
@@ -438,8 +438,79 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
         pub fn setOccupied(self: *Self, i: usize, set: bool) void {
             self.index[i].occupied = set;
         }
+
+        pub const VecForNoteEntry = struct {
+            id: VectorID,
+            row: VectorRow,
+        };
+
+        /// Returns all vectors for a given note_id, sorted by start_i
+        pub fn vecsForNote(self: Self, allocator: std.mem.Allocator, note_id: NoteID) ![]VecForNoteEntry {
+            var results = std.ArrayList(VecForNoteEntry).init(allocator);
+            errdefer results.deinit();
+
+            for (self.index, 0..) |idx_entry, i| {
+                if (!idx_entry.occupied) continue;
+                if (self.note_ids[i] == note_id) {
+                    try results.append(.{
+                        .id = i,
+                        .row = self.get(i),
+                    });
+                }
+            }
+
+            const items = try results.toOwnedSlice();
+            std.sort.insertion(VecForNoteEntry, items, {}, struct {
+                fn lessThan(_: void, a: VecForNoteEntry, b: VecForNoteEntry) bool {
+                    return a.row.start_i < b.row.start_i;
+                }
+            }.lessThan);
+
+            return items;
+        }
+
+        /// Removes all vectors for a given note_id
+        pub fn rmByNoteId(self: *Self, note_id: NoteID) void {
+            for (self.index, 0..) |idx_entry, i| {
+                if (!idx_entry.occupied) continue;
+                if (self.note_ids[i] == note_id) {
+                    self.rm(i) catch |err| {
+                        std.log.err("rmByNoteId: failed to remove vector at index {d} for note {d}: {}", .{ i, note_id, err });
+                        @panic("rmByNoteId: unexpected error during removal");
+                    };
+                }
+            }
+        }
+
+        /// Validates that per note, there are no overlapping indices in the vectors.
+        pub fn validate(self: *Self) !void {
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena.deinit();
+
+            var note_ids_seen = std.AutoHashMap(NoteID, void).init(arena.allocator());
+            for (self.index, 0..) |idx_entry, i| {
+                if (!idx_entry.occupied) continue;
+                try note_ids_seen.put(self.note_ids[i], {});
+            }
+
+            var it = note_ids_seen.keyIterator();
+            while (it.next()) |note_id_ptr| {
+                const entries = try self.vecsForNote(arena.allocator(), note_id_ptr.*);
+                for (0..entries.len) |i| {
+                    for (i + 1..entries.len) |j| {
+                        const a = entries[i].row;
+                        const b = entries[j].row;
+                        if (a.start_i < b.end_i and b.start_i < a.end_i) {
+                            return Error.OverlappingVectors;
+                        }
+                    }
+                }
+            }
+        }
     };
 }
+
+
 
 const TestT = f32;
 const TestN = 3;
@@ -838,6 +909,34 @@ test "cosine zero-vec" {
     try expect(output == 0);
 }
 
+test "rmByNoteId" {
+    var tmpD = tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+
+    var s = try TestStorage.init(testing_allocator, tmpD.dir, .{});
+    defer s.deinit();
+
+    const note1: NoteID = 1;
+    const note2: NoteID = 2;
+
+    _ = try s.put(makeTestRow(.{ 1, 0, 0 }, note1, 0, 5));
+    _ = try s.put(makeTestRow(.{ 0, 1, 0 }, note1, 5, 10));
+    _ = try s.put(makeTestRow(.{ 0, 0, 1 }, note2, 0, 5));
+
+    try std.testing.expectEqual(@as(usize, 3), s.meta.vec_n);
+
+    s.rmByNoteId(note1);
+
+    try std.testing.expectEqual(@as(usize, 1), s.meta.vec_n);
+
+    const entries = try s.vecsForNote(testing_allocator, note2);
+    defer testing_allocator.free(entries);
+    try std.testing.expectEqual(@as(usize, 1), entries.len);
+    try std.testing.expectEqual(note2, entries[0].row.note_id);
+}
+
+
+
 const std = @import("std");
 const assert = std.debug.assert;
 const FileWriter = std.fs.File.Writer;
@@ -851,4 +950,4 @@ const tracy = @import("tracy");
 
 const types = @import("types.zig");
 const VectorID = types.VectorID;
-const NoteID = u64;
+pub const NoteID = u64;
