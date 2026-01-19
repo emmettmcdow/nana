@@ -846,7 +846,6 @@ const tracy = @import("tracy");
 const embed = @import("embed.zig");
 const expect = std.testing.expect;
 const EmbeddingModel = embed.EmbeddingModel;
-const MultipleRemove = vec_storage.Error.MultipleRemove;
 const NoteID = @import("model.zig").NoteID;
 const NLEmbedder = embed.NLEmbedder;
 const JinaEmbedder = embed.JinaEmbedder;

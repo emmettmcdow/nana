@@ -76,7 +76,6 @@ pub const Runtime = struct {
 
     /// De-initializes the libnana runtime.
     pub fn deinit(self: *Runtime) void {
-        self.vectors.shutdown();
         self.vectors.deinit();
         self.db.deinit();
         self.allocator.destroy(self.db);
