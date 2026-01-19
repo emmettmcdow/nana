@@ -510,8 +510,6 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
     };
 }
 
-
-
 const TestT = f32;
 const TestN = 3;
 const TestVecType = @Vector(TestN, TestT);
@@ -934,8 +932,6 @@ test "rmByNoteId" {
     try std.testing.expectEqual(@as(usize, 1), entries.len);
     try std.testing.expectEqual(note2, entries[0].row.note_id);
 }
-
-
 
 const std = @import("std");
 const assert = std.debug.assert;

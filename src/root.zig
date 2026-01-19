@@ -144,10 +144,12 @@ pub const Runtime = struct {
 
         // Handle collision: if file already exists in basedir, prefix with underscore
         if (isAbsolute) {
-            var collisionBuf: [PATH_MAX]u8 = undefined;
+            var collisionBufs: [2][PATH_MAX]u8 = undefined;
+            var bufIdx: u1 = 0;
             while (self.basedir.access(destName, .{})) |_| {
                 if (destName.len + 1 >= PATH_MAX) return Error.MalformedPath;
-                destName = try std.fmt.bufPrint(&collisionBuf, "_{s}", .{destName});
+                destName = try std.fmt.bufPrint(&collisionBufs[bufIdx], "_{s}", .{destName});
+                bufIdx +%= 1;
             } else |e| switch (e) {
                 error.FileNotFound => {},
                 else => return e,
