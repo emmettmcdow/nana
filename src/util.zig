@@ -177,7 +177,7 @@ const HashMapUnmanaged = std.hash_map.HashMapUnmanaged;
 const Mutex = std.Thread.Mutex;
 const OutOfMemory = std.mem.Allocator.Error.OutOfMemory;
 
-const model = @import("model.zig");
-const Note = model.Note;
-const NoteID = model.NoteID;
+const note_id_map = @import("note_id_map.zig");
+const NoteID = note_id_map.NoteID;
 const root = @import("root.zig");
+const Note = root.Note;

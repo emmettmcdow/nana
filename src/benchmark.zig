@@ -238,7 +238,7 @@ const EXAMPLE_NOTE_1 =
 const std = @import("std");
 const testing_allocator = std.testing.allocator;
 
-const model = @import("model.zig");
-const NoteID = model.NoteID;
-const Note = model.Note;
+const note_id_map = @import("note_id_map.zig");
+const NoteID = note_id_map.NoteID;
 const root = @import("root.zig");
+const Note = root.Note;

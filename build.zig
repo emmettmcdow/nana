@@ -33,7 +33,7 @@ pub fn build(b: *std.Build) !void {
 
     // Sources
     const root_file = b.path("src/root.zig");
-    const model_file = b.path("src/model.zig");
+    const note_id_map_file = b.path("src/note_id_map.zig");
     const diff_file = b.path("src/dmp.zig");
     const embed_file = b.path("src/embed.zig");
     const vec_storage_file = b.path("src/vec_storage.zig");
@@ -115,12 +115,6 @@ pub fn build(b: *std.Build) !void {
         .root_source_file = root_file,
     }));
     real_vec_cfg.install(b, exe, debug, embedding_model);
-    _ = SQLite.create(.{
-        .b = b,
-        .dest = exe,
-        .target = native_target,
-        .optimize = optimize,
-    });
     _ = ObjC.create(.{
         .b = b,
         .dest = exe,
@@ -162,12 +156,6 @@ pub fn build(b: *std.Build) !void {
         .filters = &.{"root"},
     });
     real_vec_cfg.install(b, root_unit_tests, debug, embedding_model);
-    _ = SQLite.create(.{
-        .b = b,
-        .dest = root_unit_tests,
-        .target = x86_target,
-        .optimize = optimize,
-    });
     _ = ObjC.create(.{
         .b = b,
         .dest = root_unit_tests,
@@ -185,28 +173,22 @@ pub fn build(b: *std.Build) !void {
     const test_root = b.step("test-root", "run the tests for src/root.zig");
     test_root.dependOn(&run_root_unit_tests.step);
 
-    // Model
-    const model_unit_tests = b.addTest(.{
-        .root_source_file = model_file,
+    // NoteIdMap
+    const note_id_map_unit_tests = b.addTest(.{
+        .root_source_file = note_id_map_file,
         .target = x86_target,
         .optimize = optimize,
-        .filters = &.{"model"},
-    });
-    _ = SQLite.create(.{
-        .b = b,
-        .dest = model_unit_tests,
-        .target = x86_target,
-        .optimize = optimize,
+        .filters = &.{"note_id_map"},
     });
     _ = Tracy.create(.{
         .b = b,
-        .dest = model_unit_tests,
+        .dest = note_id_map_unit_tests,
         .target = x86_target,
         .optimize = optimize,
     });
-    const run_model_unit_tests = b.addRunArtifact(model_unit_tests);
-    const test_model = b.step("test-model", "run the tests for src/model.zig");
-    test_model.dependOn(&run_model_unit_tests.step);
+    const run_note_id_map_unit_tests = b.addRunArtifact(note_id_map_unit_tests);
+    const test_note_id_map = b.step("test-note_id_map", "run the tests for src/note_id_map.zig");
+    test_note_id_map.dependOn(&run_note_id_map_unit_tests.step);
 
     // Embed
     const embed_unit_tests = b.addTest(.{
@@ -285,12 +267,6 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .filters = &.{"vector"},
     });
-    _ = SQLite.create(.{
-        .b = b,
-        .dest = vec_unit_tests,
-        .target = x86_target,
-        .optimize = optimize,
-    });
     _ = ObjC.create(.{
         .b = b,
         .dest = vec_unit_tests,
@@ -338,12 +314,6 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
         .filters = &.{"benchmark"},
-    });
-    _ = SQLite.create(.{
-        .b = b,
-        .dest = benchmark_unit_tests,
-        .target = x86_target,
-        .optimize = optimize,
     });
     _ = ObjC.create(.{
         .b = b,
@@ -393,12 +363,6 @@ pub fn build(b: *std.Build) !void {
         .target = x86_target,
         .optimize = optimize,
     });
-    _ = SQLite.create(.{
-        .b = b,
-        .dest = profile_exe,
-        .target = x86_target,
-        .optimize = optimize,
-    });
     _ = ObjC.create(.{
         .b = b,
         .dest = profile_exe,
@@ -419,7 +383,7 @@ pub fn build(b: *std.Build) !void {
     // All
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(test_root);
-    test_step.dependOn(test_model);
+    test_step.dependOn(test_note_id_map);
     test_step.dependOn(test_embed);
     test_step.dependOn(test_vec_storage);
     test_step.dependOn(test_vec);
@@ -522,12 +486,6 @@ const Baselib = struct {
             .optimize = opts.optimize,
         });
         base_nana_lib.root_module.addOptions("config", options);
-        const sqlite_step = SQLite.create(.{
-            .b = opts.b,
-            .dest = base_nana_lib,
-            .target = opts.target,
-            .optimize = opts.optimize,
-        });
         _ = ObjC.create(.{
             .b = opts.b,
             .dest = base_nana_lib,
@@ -541,56 +499,9 @@ const Baselib = struct {
             .optimize = opts.optimize,
         });
 
-        // Combine Libs
-        var lib_sources = [_]LazyPath{
-            base_nana_lib.getEmittedBin(),
-            sqlite_step.output,
-        };
-        const outname = opts.b.fmt("libnana-{s}-{s}.a", .{
-            @tagName(opts.target.query.os_tag.?),
-            @tagName(opts.target.query.cpu_arch.?),
-        });
-        const combine_lib = Libtool.create(opts.b, .{
-            .name = "nana",
-            .out_name = outname,
-            .sources = &lib_sources,
-        });
-        combine_lib.step.dependOn(&base_nana_lib.step);
-
         return .{
-            .step = combine_lib.step,
-            .output = combine_lib.output,
-        };
-    }
-};
-
-const SQLite = struct {
-    // step: *Step,
-    output: LazyPath,
-
-    const SQLiteOptions = struct {
-        b: *std.Build,
-        dest: *Step.Compile,
-        target: std.Build.ResolvedTarget,
-        optimize: std.builtin.OptimizeMode,
-    };
-
-    pub fn create(opts: SQLiteOptions) SQLite {
-        const sqlite_dep = opts.b.dependency("sqlite", .{
-            .target = opts.target,
-            .optimize = opts.optimize,
-        });
-        const sqlite_art = sqlite_dep.artifact("sqlite");
-        const sqlite_mod = sqlite_dep.module("sqlite");
-
-        opts.dest.root_module.addImport("sqlite", sqlite_mod);
-        opts.dest.linkLibrary(sqlite_art);
-        opts.dest.bundle_compiler_rt = true;
-        opts.dest.linkLibC();
-
-        return .{
-            // .step = null,
-            .output = sqlite_art.getEmittedBin(),
+            .step = &base_nana_lib.step,
+            .output = base_nana_lib.getEmittedBin(),
         };
     }
 };

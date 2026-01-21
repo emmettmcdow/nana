@@ -946,4 +946,4 @@ const tracy = @import("tracy");
 
 const types = @import("types.zig");
 const VectorID = types.VectorID;
-pub const NoteID = u64;
+pub const NoteID = @import("note_id_map.zig").NoteID;

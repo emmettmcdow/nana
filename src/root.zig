@@ -1,38 +1,44 @@
-pub const Error = error{ NotFound, BufferTooSmall, MalformedPath, NotNote, IncoherentDB };
+pub const Error = error{
+    NotFound,
+    BufferTooSmall,
+    MalformedPath,
+    NotNote,
+    IncoherentDB,
+    ExhaustedIDs,
+};
 
 pub const TITLE_BUF_LEN = 64;
 pub const ELLIPSIS_LEN = 3;
 pub const TITLE_LEN = TITLE_BUF_LEN - ELLIPSIS_LEN;
 
+pub const Note = struct {
+    path: []const u8,
+    created: i64,
+    modified: i64,
+};
+
 pub const Runtime = struct {
     basedir: std.fs.Dir,
-    db: *model.DB,
     vectors: *VectorDB,
     markdown: markdown.Markdown,
     allocator: std.mem.Allocator,
     skipEmbed: bool = false,
     lastParsedMD: ?std.ArrayList(u8) = null,
     embedder: *Embedder,
+    next_id: u64 = 1,
 
-    const Embedder = if (embedding_model == .jina_embedding) embed.JinaEmbedder else embed.NLEmbedder;
+    const Embedder = if (embedding_model == .jina_embedding)
+        embed.JinaEmbedder
+    else
+        embed.NLEmbedder;
 
-    /// Optional arguments for initializing the libnana runtime.
     pub const Opts = struct {
-        /// Storage directory for dbs and notes.
         basedir: std.fs.Dir,
-        /// Testing only. Use memory instead of the file-system.
-        mem: bool = false,
-        /// Testing only. Don't bother embedding when writing.
         skipEmbed: bool = false,
     };
 
-    /// Intializes the libnana runtime.
     pub fn init(allocator: std.mem.Allocator, opts: Runtime.Opts) !Runtime {
         const markdown_parser = markdown.Markdown.init(allocator);
-
-        const db = try allocator.create(model.DB);
-        errdefer allocator.destroy(db);
-        db.* = try model.DB.init(allocator, .{ .basedir = opts.basedir, .mem = opts.mem });
 
         const embedder_ptr = try allocator.create(Embedder);
         errdefer allocator.destroy(embedder_ptr);
@@ -43,7 +49,6 @@ pub const Runtime = struct {
 
         var self = Runtime{
             .basedir = opts.basedir,
-            .db = db,
             .vectors = vectors,
             .markdown = markdown_parser,
             .allocator = allocator,
@@ -51,65 +56,67 @@ pub const Runtime = struct {
             .embedder = embedder_ptr,
         };
 
-        try self.migrate();
-
-        var notes = try self.db.notes();
-        defer notes.deinit();
-
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        defer arena.deinit();
-        while (try notes.next(arena.allocator())) |n| {
-            const f = self.basedir.openFile(n.path, .{}) catch |e| switch (e) {
-                error.FileNotFound => {
-                    try self.delete(n.id);
-                    continue;
-                },
-                else => return e,
-            };
-            defer f.close();
-            const stat = try f.stat();
-            if (stat.size == 0) try self.delete(n.id);
-        }
+        try self.pruneOrphanedNotes();
+        try self.cleanupEmptyFiles();
 
         return self;
     }
 
-    /// De-initializes the libnana runtime.
     pub fn deinit(self: *Runtime) void {
         self.vectors.deinit();
-        self.db.deinit();
-        self.allocator.destroy(self.db);
         self.allocator.destroy(self.embedder);
     }
 
-    /// Create a new note.
-    /// Does not create a new file. That is done lazily in `write*`. Returns the new note id.
-    pub fn create(self: *Runtime) !NoteID {
+    fn pruneOrphanedNotes(self: *Runtime) !void {
+        try self.vectors.pruneOrphanedPaths(self.basedir);
+    }
+
+    fn cleanupEmptyFiles(self: *Runtime) !void {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+
+        var to_delete = std.ArrayList([]const u8).init(arena.allocator());
+
+        var it = self.basedir.iterate();
+        while (try it.next()) |entry| {
+            if (entry.kind != .file) continue;
+            if (!hasNoteExtension(entry.name)) continue;
+            if (shouldIgnoreFile(entry.name)) continue;
+
+            const f = self.basedir.openFile(entry.name, .{}) catch continue;
+            defer f.close();
+            const stat = f.stat() catch continue;
+            if (stat.size == 0) {
+                try to_delete.append(try arena.allocator().dupe(u8, entry.name));
+            }
+        }
+
+        for (to_delete.items) |path| {
+            self.basedir.deleteFile(path) catch {};
+            self.vectors.removePath(path) catch {};
+        }
+    }
+
+    pub fn create(self: *Runtime, outBuf: []u8) ![]const u8 {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:create" });
         defer zone.end();
 
-        return self.db.create();
+        // Iterate until we find something to name the file.
+        for (self.next_id..maxInt(u64)) |id| {
+            self.next_id = id;
+            const path = try std.fmt.bufPrint(outBuf, "{d}.md", .{self.next_id});
+
+            self.basedir.access(path, .{}) catch |err| switch (err) {
+                error.FileNotFound => {
+                    return path;
+                },
+                else => return err,
+            };
+        }
+        return Error.ExhaustedIDs;
     }
 
-    /// Create a new note, but use the contents of another file specified by `path`.
-    /// Overall rules:
-    ///    - If it has a note extension, import it as a note.
-    ///    - If it does not have a note extension, do not add as a note. Just make sure it is in
-    ///      the basedir, copy if necessary.
-    ///    - Never accept .db extension, this is a critical failure.
-    ///    - Modify the name if:
-    ///      - It matches the auto-generated id names (e.g. 123.md)
-    ///      - There is a collision
-    ///    - Only embed if we import as a note. Otherwise skip embedding.
-    ///    - If we see an absolute path, we copy in. If it is relative, assert it is present in the
-    ///      basedir.
-    ///    - Use transactions. If there is a failure to import, we want to clean up our work in
-    ///      both the relational DB and the vector DB.
-    ///    - TOD_O: we want to re-write notes which point to external assets(images, etc). Their
-    ///      paths should be updated to point to their relative paths. Do not implement this yet.
-    ///      This needs to be done carefully.
-    ///
-    pub fn import(self: *Runtime, path: []const u8, destPathBuf: ?[]u8) !?NoteID {
+    pub fn import(self: *Runtime, path: []const u8, outBuf: []u8) !?[]const u8 {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:import" });
         defer zone.end();
 
@@ -121,7 +128,6 @@ pub const Runtime = struct {
 
         const isNote = hasNoteExtension(sourceName);
 
-        // 1. Open the source file
         var f: std.fs.File = undefined;
         if (isAbsolute) {
             f = try std.fs.openFileAbsolute(path, .{});
@@ -130,11 +136,6 @@ pub const Runtime = struct {
         }
         defer f.close();
 
-        // 2. Read the metadata
-        const created: i64 = @intCast(@divTrunc((try f.metadata()).created().?, 1000));
-        const modified: i64 = @intCast(@divTrunc((try f.metadata()).modified(), 1000));
-
-        // 3. Compute destination name (rename if matches auto-generated id pattern or collision)
         var destBuf: [PATH_MAX]u8 = undefined;
         const needsUnderscore = allNums(sourceName);
         var destName = if (needsUnderscore) blk: {
@@ -142,7 +143,6 @@ pub const Runtime = struct {
             break :blk try std.fmt.bufPrint(&destBuf, "_{s}", .{sourceName});
         } else sourceName;
 
-        // Handle collision: if file already exists in basedir, prefix with underscore
         if (isAbsolute) {
             var collisionBufs: [2][PATH_MAX]u8 = undefined;
             var bufIdx: u1 = 0;
@@ -156,7 +156,6 @@ pub const Runtime = struct {
             }
         }
 
-        // 4. Copy the file if absolute path
         if (isAbsolute) {
             const sourceDirPath = std.fs.path.dirname(path) orelse return Error.MalformedPath;
             var sourceDir = try std.fs.openDirAbsolute(sourceDirPath, .{});
@@ -167,26 +166,20 @@ pub const Runtime = struct {
             try self.basedir.deleteFile(sourceName);
         }
 
-        // 5. Write the destination path to the output buffer if provided
-        if (destPathBuf) |outBuf| {
-            if (destName.len > outBuf.len) return Error.BufferTooSmall;
-            @memcpy(outBuf[0..destName.len], destName);
-            @memset(outBuf[destName.len..], 0);
-        }
+        if (destName.len > outBuf.len) return Error.BufferTooSmall;
+        @memcpy(outBuf[0..destName.len], destName);
 
-        // 6. If not a note, just return null (file is now in basedir but not tracked as a note)
         if (!isNote) return null;
 
-        // 7. Import into the DB
-        const id = try self.db.import(created, modified, .{ .path = destName });
-        if (self.skipEmbed) return id;
+        if (self.skipEmbed) {
+            return outBuf[0..destName.len];
+        }
 
-        // 8. Embed the contents
         var bufsz: usize = 128;
         var buf = try self.allocator.alloc(u8, bufsz);
         defer self.allocator.free(buf);
         while (true) {
-            const sz = self.readAll(id, buf[0..bufsz]) catch |e| switch (e) {
+            const sz = self.readAllPath(destName, buf[0..bufsz]) catch |e| switch (e) {
                 Error.BufferTooSmall => {
                     bufsz = try std.math.mul(usize, bufsz, 2);
                     buf = self.allocator.realloc(buf, bufsz) catch |alloc_e| {
@@ -197,58 +190,45 @@ pub const Runtime = struct {
                 },
                 else => |leftover_err| return leftover_err,
             };
-            try self.vectors.embedTextAsync(id, buf[0..sz]);
+            try self.vectors.embedTextAsync(destName, buf[0..sz]);
             break;
         }
 
-        return id;
+        return outBuf[0..destName.len];
     }
 
-    /// Gets metadata about the note specified by `id`.
-    pub fn get(self: *Runtime, id: NoteID, allocator: std.mem.Allocator) !Note {
+    pub fn get(self: *Runtime, path: []const u8) !Note {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:get" });
         defer zone.end();
 
-        return self.db.get(id, allocator);
-    }
-
-    /// Touches a note. Updates the `modified` field of a `Note`.
-    pub fn update(self: *Runtime, noteID: NoteID) !void {
-        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:update" });
-        defer zone.end();
-
-        return self.db.update(noteID);
-    }
-
-    /// Deletes a note in the db, the vector db, and the filesystem.
-    pub fn delete(self: *Runtime, id: NoteID) !void {
-        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:delete" });
-        defer zone.end();
-
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-
-        const note = try self.get(id, arena.allocator());
-
-        self.basedir.access(note.path, .{}) catch |e| switch (e) {
-            error.FileNotFound => return self.db.delete(note),
-            else => return e,
+        const f = self.basedir.openFile(path, .{}) catch |err| switch (err) {
+            error.FileNotFound => return Error.NotFound,
+            else => return err,
         };
-        try self.basedir.deleteFile(note.path);
-        return self.db.delete(note);
+        defer f.close();
+
+        const metadata = try f.metadata();
+        const modified: i64 = @intCast(@divTrunc(metadata.modified(), 1000));
+        const created: i64 = if (metadata.created()) |c|
+            @intCast(@divTrunc(c, 1000))
+        else
+            modified;
+
+        return Note{
+            .path = path,
+            .created = created,
+            .modified = modified,
+        };
     }
 
-    /// Writes the contents of `content` to the note and updates the embeddings.
-    pub fn writeAll(self: *Runtime, id: NoteID, content: []const u8) !void {
+    pub fn writeAll(self: *Runtime, path: []const u8, content: []const u8) !void {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:writeAll" });
         defer zone.end();
 
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-
-        const note = try self.get(id, arena.allocator());
-
-        const f = try self.basedir.createFile(note.path, .{ .read = true, .truncate = false });
+        const f = self.basedir.createFile(path, .{ .read = true, .truncate = false }) catch |err| switch (err) {
+            error.FileNotFound => return Error.NotFound,
+            else => return err,
+        };
         defer f.close();
 
         if (try isUnchanged(f, content)) return;
@@ -257,55 +237,58 @@ pub const Runtime = struct {
         try f.setEndPos(0);
         try f.writeAll(content);
 
-        // can we flag this to be removed in prod?
-        if (self.skipEmbed) {
-            try self.update(id);
-            return;
-        }
+        if (self.skipEmbed) return;
 
-        try self.vectors.embedTextAsync(id, content);
-        try self.update(id);
-
-        return;
+        try self.vectors.embedTextAsync(path, content);
     }
 
-    /// Reads all of the contents of the note.
-    pub fn readAll(self: *Runtime, id: NoteID, buf: []u8) !usize {
+    pub fn readAll(self: *Runtime, path: []const u8, buf: []u8) !usize {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:readAll" });
         defer zone.end();
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-        const note = try self.get(id, arena.allocator());
 
-        return util.readAllZ(self.basedir, note.path, buf);
+        return self.readAllPath(path, buf);
     }
 
-    /// Reads a particular range of the contents of the note.
-    pub fn readRange(self: *Runtime, id: NoteID, start_i: usize, end_i: usize, buf: []u8) !void {
+    fn readAllPath(self: *Runtime, path: []const u8, buf: []u8) !usize {
+        return util.readAllZ(self.basedir, path, buf);
+    }
+
+    pub fn readRange(self: *Runtime, path: []const u8, start_i: usize, end_i: usize, buf: []u8) !void {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:readRange" });
         defer zone.end();
 
         const text_len = end_i - start_i;
         assert(buf.len == text_len + 1);
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
 
-        const note = try self.get(id, arena.allocator());
-        const f = try self.basedir.openFile(note.path, .{});
+        const f = self.basedir.openFile(path, .{}) catch |err| switch (err) {
+            error.FileNotFound => return Error.NotFound,
+            else => return err,
+        };
         defer f.close();
         try f.seekBy(@intCast(start_i));
         const n = try f.read(buf[0..text_len]);
         assert(n == text_len);
         buf[n] = 0;
-        return;
+    }
+
+    pub fn delete(self: *Runtime, path: []const u8) !void {
+        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:delete" });
+        defer zone.end();
+
+        try self.vectors.removePath(path);
+
+        self.basedir.access(path, .{}) catch |e| switch (e) {
+            error.FileNotFound => return,
+            else => return e,
+        };
+        try self.basedir.deleteFile(path);
     }
 
     pub const SearchDetailOpts = struct {
         skip_highlights: bool = false,
     };
 
-    /// Get matched area for search result.
-    pub fn search_detail(
+    pub fn searchDetail(
         self: *Runtime,
         search_result: SearchResult,
         query: []const u8,
@@ -315,8 +298,10 @@ pub const Runtime = struct {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:preview" });
         defer zone.end();
 
+        const path = search_result.path;
+
         try self.readRange(
-            search_result.id,
+            path,
             search_result.start_i,
             search_result.end_i,
             output.content,
@@ -329,11 +314,8 @@ pub const Runtime = struct {
                 &output.highlights,
             );
         }
-        return;
     }
 
-    /// Search does an embedding vector distance comparison to find the most semantically similar
-    /// notes. Takes a `query`, writes to `buf`, and returns the number of results found.
     pub fn search(self: *Runtime, query: []const u8, buf: []SearchResult) !usize {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:search" });
         defer zone.end();
@@ -341,15 +323,59 @@ pub const Runtime = struct {
         return self.vectors.search(query, buf);
     }
 
-    /// Index lists notes in reverse chronological order by modify time. Can optionally ignore a
-    /// single note. Writes to `buf` and returns the number of found results.
-    pub fn index(self: *Runtime, buf: []c_int, ignore: ?NoteID) !usize {
-        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:search" });
+    pub fn index(self: *Runtime, buf: [][]const u8, ignore: ?[]const u8) !usize {
+        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:index" });
         defer zone.end();
-        return self.db.searchNoQuery(buf, ignore);
+
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+
+        const Entry = struct {
+            path: []const u8,
+            modified: i64,
+        };
+
+        var entries = std.ArrayList(Entry).init(arena.allocator());
+
+        var it = self.basedir.iterate();
+        while (try it.next()) |entry| {
+            if (entry.kind != .file) continue;
+            if (!hasNoteExtension(entry.name)) continue;
+            if (shouldIgnoreFile(entry.name)) continue;
+
+            if (ignore) |ign| {
+                if (std.mem.eql(u8, entry.name, ign)) continue;
+            }
+
+            const f = self.basedir.openFile(entry.name, .{}) catch continue;
+            defer f.close();
+
+            const stat = f.stat() catch continue;
+            if (stat.size == 0) continue;
+
+            const metadata = f.metadata() catch continue;
+            const modified: i64 = @intCast(@divTrunc(metadata.modified(), 1000));
+
+            try entries.append(.{
+                .path = try arena.allocator().dupe(u8, entry.name),
+                .modified = modified,
+            });
+        }
+
+        std.sort.insertion(Entry, entries.items, {}, struct {
+            fn lessThan(_: void, a: Entry, b: Entry) bool {
+                return a.modified > b.modified;
+            }
+        }.lessThan);
+
+        const count = @min(entries.items.len, buf.len);
+        for (0..count) |i| {
+            buf[i] = try self.allocator.dupe(u8, entries.items[i].path);
+        }
+
+        return count;
     }
 
-    /// Takes the contents of a note and returns a JSON spec of how it should be formatted.
     pub fn parseMarkdown(self: *Runtime, content: []const u8) ![]const u8 {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:parseMarkdown" });
         defer zone.end();
@@ -361,15 +387,14 @@ pub const Runtime = struct {
         return self.lastParsedMD.?.items;
     }
 
-    pub fn title(self: *Runtime, noteID: NoteID, buf: []u8) ![]const u8 {
+    pub fn title(self: *Runtime, path: []const u8, buf: []u8) ![]const u8 {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:title" });
         defer zone.end();
 
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-        const note = try self.get(noteID, arena.allocator());
-
-        const f = try self.basedir.openFile(note.path, .{});
+        const f = self.basedir.openFile(path, .{}) catch |err| switch (err) {
+            error.FileNotFound => return Error.NotFound,
+            else => return err,
+        };
         defer f.close();
 
         assert(buf.len == TITLE_BUF_LEN);
@@ -385,12 +410,8 @@ pub const Runtime = struct {
             };
 
             switch (c) {
-                '\n' => {
-                    // Only get the first line
-                    break;
-                },
+                '\n' => break,
                 '#', ' ' => {
-                    // Skip leading # and spaces
                     if (skipping) continue;
                 },
                 else => {
@@ -410,34 +431,6 @@ pub const Runtime = struct {
 
         return buf[0..pos];
     }
-
-    fn migrate(self: *Runtime) !void {
-        const from = try self.db.version();
-        const to = model.LATEST_V;
-
-        if (from == to) return;
-        try self.db.backup();
-
-        try self.db.startTX();
-        errdefer self.db.dropTX();
-
-        for (from..to) |v| {
-            switch (v) {
-                0 => try self.db.upgrade_zero(),
-                1 => try self.db.upgrade_one(),
-                2 => try self.db.upgrade_two(),
-                else => unreachable,
-            }
-        }
-
-        if (!self.db.integrityCheck()) {
-            std.log.err("Relational DB failed integrity check, exiting.", .{});
-            return Error.IncoherentDB;
-        }
-
-        self.db.commitTX();
-        return;
-    }
 };
 
 pub const N_SEARCH_HIGHLIGHTS = 5;
@@ -451,8 +444,6 @@ pub const CSearchDetail = extern struct {
     highlights: [N_SEARCH_HIGHLIGHTS * 2]c_uint,
 };
 
-/// Resets metadata to a functioning state, returns list of paths to be re-imported.
-/// Returns a double-null-terminated string: "path1\0path2\0\0"
 pub fn doctor(allocator: std.mem.Allocator, basedir: std.fs.Dir) ![:0]const u8 {
     try deleteAllMeta(basedir);
     var output = std.ArrayList(u8).init(allocator);
@@ -468,7 +459,6 @@ pub fn doctor(allocator: std.mem.Allocator, basedir: std.fs.Dir) ![:0]const u8 {
         }
     }
 
-    // Final null terminator to mark end of array
     try output.append(0);
     return output.toOwnedSliceSentinel(0);
 }
@@ -480,6 +470,8 @@ fn deleteAllMeta(basedir: std.fs.Dir) !void {
             try basedir.deleteFile(entry.name);
         }
     }
+    basedir.deleteFile(".nana_note_ids") catch {};
+    basedir.deleteFile(".nana_note_ids.tmp") catch {};
 }
 
 const IGNORED_FILES = [_][]const u8{".DS_Store"};
@@ -550,28 +542,28 @@ test "no create on read" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
     var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
         .basedir = tmpD.dir,
         .skipEmbed = true,
     });
     defer rt.deinit();
 
-    const nid1 = try rt.create();
-    const n1 = try rt.get(nid1, arena.allocator());
-    try expectError(error.FileNotFound, rt.basedir.access(n1.path, .{ .mode = .read_write }));
+    var path_buf: [PATH_MAX]u8 = undefined;
+    const path = try rt.create(&path_buf);
+    try expectError(error.FileNotFound, rt.basedir.access(path, .{ .mode = .read_write }));
 
     var buf: [1000]u8 = undefined;
-    const sz = try rt.readAll(nid1, &buf);
+    const sz = try rt.readAll(path, &buf);
     try expect(sz == 0);
-    try expectError(error.FileNotFound, rt.basedir.access(n1.path, .{ .mode = .read_write }));
+    try expectError(error.FileNotFound, rt.basedir.access(path, .{ .mode = .read_write }));
 }
 
 fn _test_empty_dir_exclude_db(dir: std.fs.Dir) !bool {
     var dirIterator = dir.iterate();
-    const dbname = "db.db";
     while (try dirIterator.next()) |dirent| {
-        for (dirent.name, 0..) |c, i| {
-            if (c != dbname[i]) return false;
+        if (!std.mem.endsWith(u8, dirent.name, ".db") and
+            !std.mem.eql(u8, dirent.name, ".nana_note_ids"))
+        {
+            return false;
         }
     }
     return true;
@@ -583,16 +575,16 @@ test "lazily create files" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
     var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
         .basedir = tmpD.dir,
         .skipEmbed = true,
     });
     defer rt.deinit();
 
-    const noteID = try rt.create();
+    var path_buf: [PATH_MAX]u8 = undefined;
+    const path = try rt.create(&path_buf);
     try expect(try _test_empty_dir_exclude_db(rt.basedir));
 
-    _ = try rt.writeAll(noteID, "norecycle");
+    _ = try rt.writeAll(path, "norecycle");
     try expect(!try _test_empty_dir_exclude_db(rt.basedir));
 }
 
@@ -602,20 +594,21 @@ test "modify on write" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
     var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
         .basedir = tmpD.dir,
         .skipEmbed = true,
     });
     defer rt.deinit();
 
-    const noteID = try rt.create();
-    const n1 = try rt.get(noteID, arena.allocator());
-    try expect(n1.created == n1.modified);
+    var path_buf: [PATH_MAX]u8 = undefined;
+    const path = try rt.create(&path_buf);
 
-    var expected = "Contents of a note!";
-    try rt.writeAll(noteID, expected[0..]);
-    const n2 = try rt.get(noteID, arena.allocator());
-    try expect(n2.created != n2.modified);
+    try rt.writeAll(path, "first");
+    const n1 = try rt.get(path);
+    std.time.sleep(10 * std.time.ns_per_ms);
+
+    try rt.writeAll(path, "second");
+    const n2 = try rt.get(path);
+    try expect(n2.modified >= n1.modified);
 }
 
 test "readAll null-term" {
@@ -624,17 +617,17 @@ test "readAll null-term" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
     var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
         .basedir = tmpD.dir,
         .skipEmbed = true,
     });
     defer rt.deinit();
 
-    const noteID = try rt.create();
-    try rt.writeAll(noteID, "1234");
+    var path_buf: [PATH_MAX]u8 = undefined;
+    const path = try rt.create(&path_buf);
+    try rt.writeAll(path, "1234");
 
     var buf: [20]u8 = [_]u8{'1'} ** 20;
-    _ = try rt.readAll(noteID, &buf);
+    _ = try rt.readAll(path, &buf);
     try expectEqual('4', buf[3]);
     try expectEqual(0, buf[4]);
 }
@@ -645,17 +638,17 @@ test "readRange" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
     var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
         .basedir = tmpD.dir,
         .skipEmbed = true,
     });
     defer rt.deinit();
 
-    const noteID = try rt.create();
-    try rt.writeAll(noteID, "1/23/4");
+    var path_buf: [PATH_MAX]u8 = undefined;
+    const path = try rt.create(&path_buf);
+    try rt.writeAll(path, "1/23/4");
 
     var buf: [3]u8 = [_]u8{'1'} ** 3;
-    _ = try rt.readRange(noteID, 2, 4, &buf);
+    _ = try rt.readRange(path, 2, 4, &buf);
     try expectEqlStrings("23", buf[0..2]);
     try expectEqual(0, buf[2]);
 }
@@ -666,42 +659,20 @@ test "no modify on read" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
     var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
         .basedir = tmpD.dir,
         .skipEmbed = true,
     });
     defer rt.deinit();
 
-    const noteID = try rt.create();
-    const n1 = try rt.get(noteID, arena.allocator());
-    try expect(n1.created == n1.modified);
+    var path_buf: [PATH_MAX]u8 = undefined;
+    const path = try rt.create(&path_buf);
+    try rt.writeAll(path, "hello");
+    const n1 = try rt.get(path);
 
     var buf: [20]u8 = undefined;
-    _ = try rt.readAll(noteID, &buf);
-    const n2 = try rt.get(noteID, arena.allocator());
-    try expect(n2.created == n2.modified);
-}
-
-test "no modify on index" {
-    var tmpD = std.testing.tmpDir(.{ .iterate = true });
-    defer tmpD.cleanup();
-    var arena = std.heap.ArenaAllocator.init(testing_allocator);
-    defer arena.deinit();
-    var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
-        .basedir = tmpD.dir,
-        .skipEmbed = true,
-    });
-    defer rt.deinit();
-
-    const noteID = try rt.create();
-    const n1 = try rt.get(noteID, arena.allocator());
-    try expect(n1.created == n1.modified);
-
-    var buf2: [20]c_int = undefined;
-    _ = try rt.index(&buf2, 420);
-    const n2 = try rt.get(noteID, arena.allocator());
-    try expectEqual(n2.created, n2.modified);
+    _ = try rt.readAll(path, &buf);
+    const n2 = try rt.get(path);
+    try expectEqual(n1.modified, n2.modified);
 }
 
 test "r/w-all note" {
@@ -710,44 +681,21 @@ test "r/w-all note" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
     var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
         .basedir = tmpD.dir,
         .skipEmbed = true,
     });
     defer rt.deinit();
 
-    const noteID = try rt.create();
+    var path_buf: [PATH_MAX]u8 = undefined;
+    const path = try rt.create(&path_buf);
 
-    var expected = "Contents of a note!";
-    try rt.writeAll(noteID, expected[0..]);
+    const expected = "Contents of a note!";
+    try rt.writeAll(path, expected);
 
     var buffer: [21]u8 = undefined;
-    const n = try rt.readAll(noteID, &buffer);
+    const n = try rt.readAll(path, &buffer);
 
     try std.testing.expectEqualStrings(expected, buffer[0..n]);
-}
-
-test "r/w-all updated time" {
-    var tmpD = std.testing.tmpDir(.{ .iterate = true });
-    defer tmpD.cleanup();
-    var arena = std.heap.ArenaAllocator.init(testing_allocator);
-    defer arena.deinit();
-    var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
-        .basedir = tmpD.dir,
-        .skipEmbed = true,
-    });
-    defer rt.deinit();
-
-    const noteID = try rt.create();
-    const oldNote = try rt.get(noteID, arena.allocator());
-
-    var expected = "Contents of a note!";
-    try rt.writeAll(noteID, expected[0..]);
-
-    const newNote = try rt.get(noteID, arena.allocator());
-
-    try expect(newNote.modified > oldNote.modified);
 }
 
 test "r/w-all too smol output buffer" {
@@ -756,19 +704,19 @@ test "r/w-all too smol output buffer" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
     var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
         .basedir = tmpD.dir,
         .skipEmbed = true,
     });
     defer rt.deinit();
 
-    const noteID = try rt.create();
+    var path_buf: [PATH_MAX]u8 = undefined;
+    const path = try rt.create(&path_buf);
 
-    var expected = "Should be way too big!!!";
-    try rt.writeAll(noteID, expected[0..]);
+    const expected = "Should be way too big!!!";
+    try rt.writeAll(path, expected);
 
     var buffer: [1]u8 = undefined;
-    _ = rt.readAll(noteID, &buffer) catch |err| {
+    _ = rt.readAll(path, &buffer) catch |err| {
         try expect(err == Error.BufferTooSmall);
         return;
     };
@@ -782,141 +730,120 @@ test "delete only if exists" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
     var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
         .basedir = tmpD.dir,
         .skipEmbed = true,
     });
     defer rt.deinit();
 
-    const noteID = try rt.create();
-    try rt.delete(noteID);
+    var path_buf: [PATH_MAX]u8 = undefined;
+    const path = try rt.create(&path_buf);
+    try rt.delete(path);
 }
 
-test "index no query" {
+test "index" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
     var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
         .basedir = tmpD.dir,
         .skipEmbed = true,
     });
     defer rt.deinit();
 
-    var i: usize = 0;
-    var id: NoteID = undefined;
-    while (i < 9) : (i += 1) {
-        id = try rt.create();
-        _ = try rt.writeAll(id, "norecycle");
+    var path_bufs: [9][PATH_MAX]u8 = undefined;
+    var paths: [9][]const u8 = undefined;
+    for (0..9) |i| {
+        paths[i] = try rt.create(&path_bufs[i]);
+        try rt.writeAll(paths[i], "norecycle");
+        std.time.sleep(10 * std.time.ns_per_ms);
     }
 
-    var buffer: [10]c_int = undefined;
+    var buffer: [10][]const u8 = undefined;
     try expectEqual(9, try rt.index(&buffer, null));
-
-    i = 0;
-    while (i < 9) : (i += 1) {
-        try expectEqual(@as(c_int, @intCast(i + 1)), buffer[8 - i]);
-    }
+    defer for (buffer[0..9]) |p| rt.allocator.free(p);
 }
 
-test "search no query orderby modified" {
+test "index orderby modified" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
     var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
         .basedir = tmpD.dir,
         .skipEmbed = true,
     });
     defer rt.deinit();
 
-    const noteID1 = try rt.create();
-    _ = try rt.writeAll(noteID1, "norecycle");
-    const noteID2 = try rt.create();
-    _ = try rt.writeAll(noteID2, "norecycle");
+    var path1_buf: [PATH_MAX]u8 = undefined;
+    const path1 = try rt.create(&path1_buf);
+    try rt.writeAll(path1, "norecycle");
+    std.time.sleep(50 * std.time.ns_per_ms);
 
-    var buffer: [10]c_int = undefined;
+    var path2_buf: [PATH_MAX]u8 = undefined;
+    const path2 = try rt.create(&path2_buf);
+    try rt.writeAll(path2, "norecycle");
+
+    var buffer: [10][]const u8 = undefined;
     try expectEqual(2, try rt.index(&buffer, null));
-    try expectEqual(@as(c_int, @intCast(noteID2)), buffer[0]);
-    try expectEqual(@as(c_int, @intCast(noteID1)), buffer[1]);
+    defer rt.allocator.free(buffer[0]);
+    defer rt.allocator.free(buffer[1]);
 
-    try rt.update(noteID1);
-
-    var buffer2: [10]c_int = undefined;
-    const written2 = try rt.index(&buffer2, null);
-    try expectEqual(2, written2);
-    try expectEqual(@as(c_int, @intCast(noteID1)), buffer2[0]);
-    try expectEqual(@as(c_int, @intCast(noteID2)), buffer2[1]);
+    try expectEqlStrings(path2, buffer[0]);
+    try expectEqlStrings(path1, buffer[1]);
 }
 
-test "exclude param 'empty search'" {
+test "index exclude param" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
     var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
         .basedir = tmpD.dir,
         .skipEmbed = true,
     });
     defer rt.deinit();
 
-    const noteID1 = try rt.create();
-    _ = try rt.writeAll(noteID1, "norecycle");
-    const noteID2 = try rt.create();
-    _ = try rt.writeAll(noteID2, "norecycle");
+    var path1_buf: [PATH_MAX]u8 = undefined;
+    const path1 = try rt.create(&path1_buf);
+    try rt.writeAll(path1, "norecycle");
 
-    var buffer: [10]c_int = undefined;
-    const written = try rt.index(&buffer, noteID1);
+    var path2_buf: [PATH_MAX]u8 = undefined;
+    const path2 = try rt.create(&path2_buf);
+    try rt.writeAll(path2, "norecycle");
+
+    var buffer: [10][]const u8 = undefined;
+    const written = try rt.index(&buffer, path1);
+    defer for (buffer[0..written]) |p| rt.allocator.free(p);
+
     try expectEqual(1, written);
-    try expectEqual(@as(c_int, @intCast(noteID2)), buffer[0]);
+    try expectEqlStrings(path2, buffer[0]);
 }
 
-test "exclude param 'empty search' - 2" {
+test "index exclude unmodifieds" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
     var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
         .basedir = tmpD.dir,
         .skipEmbed = true,
     });
     defer rt.deinit();
 
-    const noteID1 = try rt.create();
-    _ = try rt.writeAll(noteID1, "norecycle");
-    const noteID2 = try rt.create();
-    _ = try rt.writeAll(noteID2, "norecycle");
+    var path1_buf: [PATH_MAX]u8 = undefined;
+    const path1 = try rt.create(&path1_buf);
+    try rt.writeAll(path1, "norecycle");
 
-    var buffer: [10]c_int = undefined;
-    const written = try rt.index(&buffer, noteID2);
-    try expectEqual(1, written);
-    try expectEqual(@as(c_int, @intCast(noteID1)), buffer[0]);
-}
+    var path2_buf: [PATH_MAX]u8 = undefined;
+    _ = try rt.create(&path2_buf);
 
-test "exclude from 'empty search' unmodifieds" {
-    var tmpD = std.testing.tmpDir(.{ .iterate = true });
-    defer tmpD.cleanup();
-    var arena = std.heap.ArenaAllocator.init(testing_allocator);
-    defer arena.deinit();
-    var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
-        .basedir = tmpD.dir,
-        .skipEmbed = true,
-    });
-    defer rt.deinit();
-
-    const noteID1 = try rt.create();
-    _ = try rt.writeAll(noteID1, "norecycle");
-    _ = try rt.create();
-
-    var buffer: [10]c_int = undefined;
+    var buffer: [10][]const u8 = undefined;
     const written = try rt.index(&buffer, null);
+    defer for (buffer[0..written]) |p| rt.allocator.free(p);
+
     try expectEqual(1, written);
-    try expectEqual(@as(c_int, @intCast(noteID1)), buffer[0]);
+    try expectEqlStrings(path1, buffer[0]);
 }
 
 test "import" {
@@ -925,28 +852,23 @@ test "import" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
     var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
         .basedir = tmpD.dir,
         .skipEmbed = true,
     });
     defer rt.deinit();
 
-    const path = "somefile.txt";
-    var f = try tmpD.dir.createFile(path, .{});
-    f.close();
+    const sourcePath = "somefile.txt";
+    {
+        var f = try tmpD.dir.createFile(sourcePath, .{});
+        defer f.close();
+        try f.writeAll("Something!");
+    }
 
-    var f2 = try tmpD.dir.openFile(path, .{ .mode = .write_only });
-    try f2.writeAll("Something!");
-    const created: i64 = @intCast(@divTrunc((try f2.metadata()).created().?, 1000));
-    const modified: i64 = @intCast(@divTrunc((try f2.metadata()).modified(), 1000));
-    f2.close();
+    var destBuf: [PATH_MAX]u8 = undefined;
+    const destPath = (try rt.import(sourcePath, &destBuf)).?;
+    const note = try rt.get(destPath);
 
-    const id = (try rt.import(path, null)).?;
-    const note = try rt.get(id, arena.allocator());
-
-    try expect(note.created == created);
-    try expect(note.modified == modified);
-    try expectEqlStrings(note.path, path);
+    try expectEqlStrings(note.path, sourcePath);
 }
 
 test "import copy" {
@@ -955,28 +877,23 @@ test "import copy" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
     var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
         .basedir = tmpD.dir,
         .skipEmbed = true,
     });
     defer rt.deinit();
 
-    const path = "/tmp/something.txt";
-    var f = try std.fs.createFileAbsolute(path, .{});
-    f.close();
+    const path = "/tmp/something_import_copy.txt";
+    {
+        var f = try std.fs.createFileAbsolute(path, .{});
+        defer f.close();
+        try f.writeAll("Something!");
+    }
+    defer std.fs.deleteFileAbsolute(path) catch {};
 
-    var f2 = try std.fs.openFileAbsolute(path, .{ .mode = .write_only });
-    try f2.writeAll("Something!");
-    const created: i64 = @intCast(@divTrunc((try f2.metadata()).created().?, 1000));
-    const modified: i64 = @intCast(@divTrunc((try f2.metadata()).modified(), 1000));
-    f2.close();
+    var destBuf: [PATH_MAX]u8 = undefined;
+    const destPath = (try rt.import(path, &destBuf)).?;
+    const note = try rt.get(destPath);
 
-    const id = (try rt.import(path, null)).?;
-    try std.fs.deleteFileAbsolute(path);
-    const note = try rt.get(id, arena.allocator());
-
-    try expect(note.created == created);
-    try expect(note.modified == modified);
     try expectEqlStrings(note.path, std.fs.path.basename(path));
 }
 
@@ -986,23 +903,25 @@ test "import run embedding" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
     var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
         .basedir = tmpD.dir,
     });
     defer rt.deinit();
 
-    const path = "/tmp/something.txt";
-    var f = try std.fs.createFileAbsolute(path, .{});
-    defer f.close();
-    try f.writeAll("hello");
+    const path = "/tmp/something_embed.txt";
+    {
+        var f = try std.fs.createFileAbsolute(path, .{});
+        defer f.close();
+        try f.writeAll("hello");
+    }
 
-    const id = (try rt.import(path, null)).?;
-    // Give the other thread time to run the embedding.
+    var destBuf: [PATH_MAX]u8 = undefined;
+    const destPath = (try rt.import(path, &destBuf)).?;
+
     std.time.sleep(2 * std.time.ns_per_s);
 
     var buf: [1]SearchResult = undefined;
     try expectEqual(1, try rt.search("hello", &buf));
-    try expectEqual(id, buf[0].id);
+    try expectEqlStrings(destPath, buf[0].path);
     try expectEqual(@as(usize, 0), buf[0].start_i);
     try expectEqual(@as(usize, 5), buf[0].end_i);
 }
@@ -1013,7 +932,6 @@ test "import skip unrecognized file extensions" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
     var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
         .basedir = tmpD.dir,
         .skipEmbed = true,
     });
@@ -1023,60 +941,73 @@ test "import skip unrecognized file extensions" {
     var f = try std.fs.createFileAbsolute(png, .{});
     try f.writeAll("something");
     f.close();
+    defer std.fs.deleteFileAbsolute(png) catch {};
+
     const tar = "/tmp/something.tar";
     f = try std.fs.createFileAbsolute(tar, .{});
     try f.writeAll("something");
     f.close();
+    defer std.fs.deleteFileAbsolute(tar) catch {};
+
     const pdf = "/tmp/something.pdf";
     f = try std.fs.createFileAbsolute(pdf, .{});
     try f.writeAll("something");
     f.close();
+    defer std.fs.deleteFileAbsolute(pdf) catch {};
 
-    const txt = "/tmp/something.txt";
+    const txt = "/tmp/something_ext.txt";
     f = try std.fs.createFileAbsolute(txt, .{});
     try f.writeAll("something");
     f.close();
-    const md = "/tmp/something.md";
+    defer std.fs.deleteFileAbsolute(txt) catch {};
+
+    const md = "/tmp/something_ext.md";
     f = try std.fs.createFileAbsolute(md, .{});
     try f.writeAll("something");
     f.close();
+    defer std.fs.deleteFileAbsolute(md) catch {};
 
     const ds_store = "/tmp/.DS_Store";
     f = try std.fs.createFileAbsolute(ds_store, .{});
     try f.writeAll("something");
     f.close();
+    defer std.fs.deleteFileAbsolute(ds_store) catch {};
 
-    for ([_][]const u8{ txt, md }) |path| {
-        try expect((try rt.import(path, null)) != null);
-        (try tmpD.dir.openFile(std.fs.path.basename(path), .{})).close();
+    var destBuf: [PATH_MAX]u8 = undefined;
+    for ([_][]const u8{ txt, md }) |p| {
+        const result = try rt.import(p, &destBuf);
+        try expect(result != null);
+        (try tmpD.dir.openFile(std.fs.path.basename(p), .{})).close();
     }
-    for ([_][]const u8{ png, tar, pdf }) |path| {
-        try expect((try rt.import(path, null)) == null);
-        (try tmpD.dir.openFile(std.fs.path.basename(path), .{})).close();
+    for ([_][]const u8{ png, tar, pdf }) |p| {
+        try expect((try rt.import(p, &destBuf)) == null);
+        (try tmpD.dir.openFile(std.fs.path.basename(p), .{})).close();
     }
-    for ([_][]const u8{ds_store}) |path| {
-        try expectError(Error.NotNote, rt.import(path, null));
-        try expectError(FileNotFound, tmpD.dir.openFile(std.fs.path.basename(path), .{}));
+    for ([_][]const u8{ds_store}) |p| {
+        try expectError(Error.NotNote, rt.import(p, &destBuf));
+        try expectError(FileNotFound, tmpD.dir.openFile(std.fs.path.basename(p), .{}));
     }
 }
+
 test "import auto-rename numeric filenames" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
     var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
         .basedir = tmpD.dir,
         .skipEmbed = true,
     });
     defer rt.deinit();
 
+    // Only delete files which are within our storage
     const cases = [_]struct { src: []const u8, dest: []const u8, srcDeleted: bool }{
-        .{ .src = "/tmp/123.md", .dest = "_123.md", .srcDeleted = false },
+        .{ .src = "/tmp/777.md", .dest = "_777.md", .srcDeleted = false },
         .{ .src = "456.txt", .dest = "_456.txt", .srcDeleted = true },
         .{ .src = "normal.md", .dest = "normal.md", .srcDeleted = false },
     };
 
+    var destBuf: [PATH_MAX]u8 = undefined;
     for (cases) |case| {
         const src_is_absolute = case.src[0] == '/';
 
@@ -1086,7 +1017,8 @@ test "import auto-rename numeric filenames" {
             (try rt.basedir.createFile(case.src, .{})).close();
         }
 
-        try expect((try rt.import(case.src, null)) != null);
+        const result = try rt.import(case.src, &destBuf);
+        try expect(result != null);
 
         (try rt.basedir.openFile(case.dest, .{})).close();
 
@@ -1099,6 +1031,9 @@ test "import auto-rename numeric filenames" {
             try expectError(FileNotFound, maybe_f);
         } else {
             (try maybe_f).close();
+            if (src_is_absolute) {
+                std.fs.deleteFileAbsolute(case.src) catch {};
+            }
         }
     }
 }
@@ -1109,7 +1044,6 @@ test "import collision handling" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
     var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
         .basedir = tmpD.dir,
         .skipEmbed = true,
     });
@@ -1119,9 +1053,11 @@ test "import collision handling" {
 
     const path = "/tmp/existing.md";
     (try std.fs.createFileAbsolute(path, .{})).close();
+    defer std.fs.deleteFileAbsolute(path) catch {};
 
-    const id = (try rt.import(path, null)).?;
-    const note = try rt.get(id, arena.allocator());
+    var destBuf: [PATH_MAX]u8 = undefined;
+    const destPath = (try rt.import(path, &destBuf)).?;
+    const note = try rt.get(destPath);
 
     try expectEqlStrings("_existing.md", note.path);
     (try rt.basedir.openFile("existing.md", .{})).close();
@@ -1134,7 +1070,6 @@ test "import reject db extension" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
     var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
         .basedir = tmpD.dir,
         .skipEmbed = true,
     });
@@ -1144,7 +1079,8 @@ test "import reject db extension" {
     (try std.fs.createFileAbsolute(path, .{})).close();
     defer std.fs.deleteFileAbsolute(path) catch {};
 
-    try expectError(Error.NotNote, rt.import(path, null));
+    var destBuf: [PATH_MAX]u8 = undefined;
+    try expectError(Error.NotNote, rt.import(path, &destBuf));
 }
 
 test "import returns dest path in buffer" {
@@ -1153,41 +1089,43 @@ test "import returns dest path in buffer" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
     var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
         .basedir = tmpD.dir,
         .skipEmbed = true,
     });
     defer rt.deinit();
 
     {
-        const path = "/tmp/test_import_destbuf.md";
+        const path = "/tmp/test_import_destbuf2.md";
         (try std.fs.createFileAbsolute(path, .{})).close();
         defer std.fs.deleteFileAbsolute(path) catch {};
 
         var destBuf: [PATH_MAX]u8 = undefined;
-        _ = try rt.import(path, &destBuf);
-        try expectEqlStrings("test_import_destbuf.md", std.mem.sliceTo(&destBuf, 0));
+        const result = try rt.import(path, &destBuf);
+        try expect(result != null);
+        try expectEqlStrings("test_import_destbuf2.md", result.?);
     }
 
     {
-        const path = "/tmp/123.md";
+        const path = "/tmp/999.md";
         (try std.fs.createFileAbsolute(path, .{})).close();
         defer std.fs.deleteFileAbsolute(path) catch {};
 
         var destBuf: [PATH_MAX]u8 = undefined;
-        _ = try rt.import(path, &destBuf);
-        try expectEqlStrings("_123.md", std.mem.sliceTo(&destBuf, 0));
+        const result = try rt.import(path, &destBuf);
+        try expect(result != null);
+        try expectEqlStrings("_999.md", result.?);
     }
 
     {
-        (try rt.basedir.createFile("collision.md", .{})).close();
-        const path = "/tmp/collision.md";
+        (try rt.basedir.createFile("collision2.md", .{})).close();
+        const path = "/tmp/collision2.md";
         (try std.fs.createFileAbsolute(path, .{})).close();
         defer std.fs.deleteFileAbsolute(path) catch {};
 
         var destBuf: [PATH_MAX]u8 = undefined;
-        _ = try rt.import(path, &destBuf);
-        try expectEqlStrings("_collision.md", std.mem.sliceTo(&destBuf, 0));
+        const result = try rt.import(path, &destBuf);
+        try expect(result != null);
+        try expectEqlStrings("_collision2.md", result.?);
     }
 }
 
@@ -1197,16 +1135,16 @@ test "writeAll unchanged" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
     var rt = try Runtime.init(arena.allocator(), .{
-        .mem = true,
         .basedir = tmpD.dir,
     });
     defer rt.deinit();
 
-    const id = try rt.create();
-    _ = try rt.writeAll(id, "hello");
-    const note_before = try rt.get(id, arena.allocator());
-    _ = try rt.writeAll(id, "hello");
-    const note_after = try rt.get(id, arena.allocator());
+    var path_buf: [PATH_MAX]u8 = undefined;
+    const path = try rt.create(&path_buf);
+    try rt.writeAll(path, "hello");
+    const note_before = try rt.get(path);
+    try rt.writeAll(path, "hello");
+    const note_after = try rt.get(path);
 
     try expect(note_before.modified == note_after.modified);
 }
@@ -1214,28 +1152,53 @@ test "writeAll unchanged" {
 test "clear empties upon init" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-    var arena = std.heap.ArenaAllocator.init(testing_allocator);
-    var rt = try Runtime.init(arena.allocator(), .{
-        .basedir = tmpD.dir,
-    });
 
-    _ = try rt.writeAll(try rt.create(), "present");
-    const id = try rt.create();
-    _ = try rt.writeAll(id, "hello");
-    _ = try rt.writeAll(id, "");
-    _ = try rt.writeAll(try rt.create(), "present");
+    var path1_copy: [32]u8 = undefined;
+    var path1_saved: []u8 = undefined;
+    var path2_copy: [32]u8 = undefined;
+    var path2_saved: []u8 = undefined;
 
-    rt.deinit();
-    arena.deinit();
+    {
+        var arena = std.heap.ArenaAllocator.init(testing_allocator);
+        defer arena.deinit();
+
+        var rt = try Runtime.init(arena.allocator(), .{
+            .basedir = tmpD.dir,
+            .skipEmbed = true,
+        });
+        defer rt.deinit();
+
+        var path1_buf: [PATH_MAX]u8 = undefined;
+        const path1 = try rt.create(&path1_buf);
+        @memcpy(path1_copy[0..path1.len], path1);
+        path1_saved = path1_copy[0..path1.len];
+        try rt.writeAll(path1, "present");
+
+        var path2_buf: [PATH_MAX]u8 = undefined;
+        const path2 = try rt.create(&path2_buf);
+        @memcpy(path2_copy[0..path2.len], path2);
+        path2_saved = path2_copy[0..path2.len];
+        try rt.writeAll(path2_saved, "hello");
+
+        try rt.writeAll(path2_saved, "");
+
+        var path3_buf: [PATH_MAX]u8 = undefined;
+        const path3 = try rt.create(&path3_buf);
+        try rt.writeAll(path3, "present");
+    }
 
     var arena2 = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena2.deinit();
     var rt2 = try Runtime.init(arena2.allocator(), .{
         .basedir = tmpD.dir,
+        .skipEmbed = true,
     });
     defer rt2.deinit();
 
-    try expect(rt2.writeAll(id, "this should fail") == model.Error.NotFound);
+    // Path1 should be present because it had content
+    try rt2.basedir.access(path1_saved, .{});
+    // Path2 should get deleted because it was empty
+    try expectError(error.FileNotFound, rt2.basedir.access(path2_saved, .{}));
 }
 
 test "parse markdown" {
@@ -1262,6 +1225,10 @@ test "parse markdown" {
     );
 }
 
+fn stringLessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
+    return std.mem.order(u8, lhs, rhs) == .lt;
+}
+
 test "doctor" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
@@ -1281,7 +1248,6 @@ test "doctor" {
     try expectError(error.FileNotFound, tmpD.dir.access("metadata.db", .{}));
     try expectError(error.FileNotFound, tmpD.dir.access("vectors.db", .{}));
 
-    // Parse the double-null-terminated string
     var names: [3][]const u8 = undefined;
     var count: usize = 0;
     var i: usize = 0;
@@ -1290,14 +1256,15 @@ test "doctor" {
         while (result[i] != 0) : (i += 1) {}
         names[count] = result[start..i];
         count += 1;
-        i += 1; // skip the null terminator
+        i += 1;
     }
 
     try expectEqual(3, count);
-    try expect(std.mem.eql(u8, names[0], "note1.txt"));
-    try expect(std.mem.eql(u8, names[1], "note2.md"));
-    try expect(std.mem.eql(u8, names[2], "1234"));
-    try expect(!std.mem.eql(u8, names[0], names[1]));
+
+    std.mem.sort([]const u8, &names, {}, stringLessThan);
+    try expectEqualSlices(u8, names[0], "1234");
+    try expectEqualSlices(u8, names[1], "note1.txt");
+    try expectEqualSlices(u8, names[2], "note2.md");
 }
 
 test "title" {
@@ -1310,36 +1277,33 @@ test "title" {
     });
     defer rt.deinit();
 
-    const id = try rt.create();
-    {
-        var buf: [TITLE_BUF_LEN]u8 = undefined;
-        try rt.writeAll(id, "Hello world!");
-        try expectEqlStrings("Hello world!", try rt.title(id, buf[0..TITLE_BUF_LEN]));
+    var buf: [TITLE_BUF_LEN]u8 = undefined;
+    var path_buf: [PATH_MAX]u8 = undefined;
+    const path = try rt.create(&path_buf);
+    { // Single line
+        try rt.writeAll(path, "Hello world!");
+        try expectEqlStrings("Hello world!", try rt.title(path, buf[0..TITLE_BUF_LEN]));
     }
-    {
-        // Only the first line
-        var buf: [TITLE_BUF_LEN]u8 = undefined;
-        try rt.writeAll(id, "Hello world!\n foo bar baz");
-        try expectEqlStrings("Hello world!", try rt.title(id, buf[0..TITLE_BUF_LEN]));
+    { // Multiple lines
+        try rt.writeAll(path, "Hello world!\n foo bar baz");
+        try expectEqlStrings("Hello world!", try rt.title(path, buf[0..TITLE_BUF_LEN]));
     }
-    {
-        // Strip markdown headers
-        var buf: [TITLE_BUF_LEN]u8 = undefined;
-        try rt.writeAll(id, "# Hello world!");
-        try expectEqlStrings("Hello world!", try rt.title(id, buf[0..TITLE_BUF_LEN]));
+    { // Single line strip single header
+        try rt.writeAll(path, "# Hello world!");
+        try expectEqlStrings("Hello world!", try rt.title(path, buf[0..TITLE_BUF_LEN]));
     }
-    {
-        var buf: [TITLE_BUF_LEN]u8 = undefined;
-        try rt.writeAll(id, "####### Hello world!");
-        try expectEqlStrings("Hello world!", try rt.title(id, buf[0..TITLE_BUF_LEN]));
+    { // Single line strip multiple headers
+        try rt.writeAll(path, "####### Hello world!");
+        try expectEqlStrings("Hello world!", try rt.title(path, buf[0..TITLE_BUF_LEN]));
     }
-    {
-        // Truncate past TITLE_BUF_LEN
-        var buf: [TITLE_BUF_LEN]u8 = undefined;
-        try rt.writeAll(id, "******************************************************************");
+    { // Truncate long first line
+        try rt.writeAll(
+            path,
+            "******************************************************************",
+        );
         try expectEqlStrings(
             "*************************************************************...",
-            try rt.title(id, buf[0..TITLE_BUF_LEN]),
+            try rt.title(path, buf[0..TITLE_BUF_LEN]),
         );
     }
 }
@@ -1354,51 +1318,52 @@ test "search_detail" {
     });
     defer rt.deinit();
 
-    const id = try rt.create();
+    var path_buf: [PATH_MAX]u8 = undefined;
+    const path = try rt.create(&path_buf);
     const content = "Hello world!";
-    const nullterm_content = "Hello world!\x00";
-    try rt.writeAll(id, content);
-    {
+    const nullterm_content = content ++ "\x00";
+    try rt.writeAll(path, content);
+
+    { // Preview on the entire content
         var preview_buf: [content.len + 1]u8 = undefined;
         var preview = SearchDetail{ .content = &preview_buf };
-        try rt.search_detail(
-            .{ .id = id, .start_i = 0, .end_i = content.len },
+        try rt.searchDetail(
+            .{ .path = path, .start_i = 0, .end_i = content.len },
             "hello",
             &preview,
             .{},
         );
         try expectEqlStrings(nullterm_content, preview.content);
-        // Verify highlight indices are correct (start=0, end=5 for "Hello")
         try expectEqual(0, preview.highlights[0]);
         try expectEqual(5, preview.highlights[1]);
-        try expectEqlStrings("Hello", preview.content[preview.highlights[0]..preview.highlights[1]]);
+        try expectEqlStrings(
+            "Hello",
+            preview.content[preview.highlights[0]..preview.highlights[1]],
+        );
     }
-    // Test with a partial range that simulates C interop (buffer includes null terminator in length)
-    {
+    { // Preview over a subset of the content
         const start_i = 0;
-        const end_i = 5; // "Hello"
+        const end_i = 5;
         const text_len = end_i - start_i;
         var preview_buf: [text_len + 1]u8 = undefined;
         var preview = SearchDetail{ .content = &preview_buf };
-        try rt.search_detail(
-            .{ .id = id, .start_i = start_i, .end_i = end_i },
+        try rt.searchDetail(
+            .{ .path = path, .start_i = start_i, .end_i = end_i },
             "hello",
             &preview,
             .{},
         );
-        // Verify highlight indices exclude the null terminator
         try expectEqual(0, preview.highlights[0]);
         try expectEqual(5, preview.highlights[1]);
     }
-    // Skip highlighting
-    {
+    { // Skip highlighting
         const start_i = 0;
-        const end_i = 5; // "Hello"
+        const end_i = 5;
         const text_len = end_i - start_i;
         var preview_buf: [text_len + 1]u8 = undefined;
         var preview = SearchDetail{ .content = &preview_buf };
-        try rt.search_detail(
-            .{ .id = id, .start_i = start_i, .end_i = end_i },
+        try rt.searchDetail(
+            .{ .path = path, .start_i = start_i, .end_i = end_i },
             "hello",
             &preview,
             .{ .skip_highlights = true },
@@ -1407,10 +1372,6 @@ test "search_detail" {
     }
 }
 
-// The purpose of this test is to make sure that we are using byte indices for these endpoints.
-// The markdown endpoint needs to be utf-8 character indices, but these are byte indices because
-// that's easier to do. It doesn't *really* matter which we do, just as long as we are consistent
-// between endpoints which interact.
 test "unicode endpoint checks" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
@@ -1421,10 +1382,13 @@ test "unicode endpoint checks" {
     });
     defer rt.deinit();
 
-    const id = try rt.create();
+    var path_buf: [PATH_MAX]u8 = undefined;
+    const path = try rt.create(&path_buf);
     const query = "heart";
     const note_content = "heart❤️";
-    try rt.writeAll(id, note_content);
+    try rt.writeAll(path, note_content);
+
+    std.time.sleep(2 * std.time.ns_per_s);
 
     var results: [1]SearchResult = undefined;
     const n_results = try rt.search(query, &results);
@@ -1436,7 +1400,7 @@ test "unicode endpoint checks" {
     var detail: SearchDetail = .{
         .content = content_buf,
     };
-    try rt.search_detail(result, query, &detail, .{});
+    try rt.searchDetail(result, query, &detail, .{});
     try expectEqlStrings(
         note_content,
         note_content[detail.highlights[0]..detail.highlights[1]],
@@ -1452,6 +1416,7 @@ const expectEqualSlices = std.testing.expectEqualSlices;
 const File = std.fs.File;
 const FileNotFound = std.fs.File.OpenError.FileNotFound;
 const json = std.json;
+const maxInt = std.math.maxInt;
 const OutOfMemory = std.mem.Allocator.Error.OutOfMemory;
 const PATH_MAX = std.posix.PATH_MAX;
 const testing_allocator = std.testing.allocator;
@@ -1462,9 +1427,6 @@ const tracy = @import("tracy");
 pub const CSearchResult = vector.CSearchResult;
 const embed = @import("embed.zig");
 const markdown = @import("markdown.zig");
-const model = @import("model.zig");
-const Note = model.Note;
-const NoteID = model.NoteID;
 pub const SearchResult = vector.SearchResult;
 const util = @import("util.zig");
 const vector = @import("vector.zig");
