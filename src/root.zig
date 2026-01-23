@@ -202,7 +202,12 @@ pub const Runtime = struct {
         defer zone.end();
 
         const f = self.basedir.openFile(path, .{}) catch |err| switch (err) {
-            error.FileNotFound => return Error.NotFound,
+            // File doesn't exist yet (lazy creation) - return zero timestamps
+            error.FileNotFound => return Note{
+                .path = path,
+                .created = 0,
+                .modified = 0,
+            },
             else => return err,
         };
         defer f.close();
@@ -1147,6 +1152,52 @@ test "writeAll unchanged" {
     const note_after = try rt.get(path);
 
     try expect(note_before.modified == note_after.modified);
+}
+
+test "root: get returns zero timestamps for uncreated file" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .basedir = tmpD.dir,
+    });
+    defer rt.deinit();
+
+    var path_buf: [PATH_MAX]u8 = undefined;
+    const path = try rt.create(&path_buf);
+
+    // File doesn't exist yet (lazy creation), get should return zero timestamps
+    const note = try rt.get(path);
+    try expectEqual(0, note.created);
+    try expectEqual(0, note.modified);
+}
+
+test "root: get returns real timestamps after file is written" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .basedir = tmpD.dir,
+    });
+    defer rt.deinit();
+
+    var path_buf: [PATH_MAX]u8 = undefined;
+    const path = try rt.create(&path_buf);
+
+    // Before writing, timestamps are zero
+    const note_before = try rt.get(path);
+    try expectEqual(0, note_before.created);
+    try expectEqual(0, note_before.modified);
+
+    // Write content to create the file
+    try rt.writeAll(path, "hello world");
+
+    // After writing, timestamps should be real (non-zero)
+    const note_after = try rt.get(path);
+    try expect(note_after.created > 0);
+    try expect(note_after.modified > 0);
 }
 
 test "clear empties upon init" {

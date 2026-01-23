@@ -15,8 +15,10 @@ typedef NS_ENUM(NSInteger, NanaError) {
 #define TITLE_BUF_SZ 64
 #define N_SEARCH_HIGHLIGHTS 5
 
+#define PATH_MAX 1024
+
 typedef struct {
-    unsigned int id;
+    char path[PATH_MAX];
     unsigned int start_i;
     unsigned int end_i;
     float similarity;
@@ -29,19 +31,18 @@ typedef struct {
 
 int nana_init(const char *);
 int nana_deinit(void);
-int nana_create(void);
+int nana_create(char *, unsigned int);
 int nana_import(const char *, char *, unsigned int);
-long nana_create_time(int);
-long nana_mod_time(int);
+long nana_create_time(const char *);
+long nana_mod_time(const char *);
 int nana_search(const char *, CSearchResult *, unsigned int);
-int nana_search_detail(int, unsigned int, unsigned int, const char *, CSearchDetail *, bool);
-int nana_index(int *, unsigned int, int);
-int nana_write_all(int, const char *);
-long nana_write_all_with_time(int, const char *);
-int nana_read_all(int, char *, unsigned int);
-const char * nana_title(int, char *);
+int nana_search_detail(const char *, unsigned int, unsigned int, const char *, CSearchDetail *, bool);
+int nana_index(char *, unsigned int, const char *);
+int nana_write_all(const char *, const char *);
+long nana_write_all_with_time(const char *, const char *);
+int nana_read_all(const char *, char *, unsigned int);
+const char * nana_title(const char *, char *);
 const char * nana_doctor(const char *);
 void nana_doctor_finish(void);
-void nana_doctor_finish2(void);
 
 const char * nana_parse_markdown(const char *);

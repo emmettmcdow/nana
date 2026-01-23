@@ -10,10 +10,52 @@ import SwiftUI
 
 #if DISABLE_NANAKIT
 
-    let N_SEARCH_HIGHLIGHTS = 5
+    let N_SEARCH_HIGHLIGHTS: Int32 = 5
+    let PATH_MAX: Int32 = 1024
 
     struct CSearchResult {
-        var id: UInt32 = 0
+        var path: (CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar,
+                   CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar,
+                   CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar,
+                   CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar,
+                   CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar,
+                   CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar,
+                   CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar,
+                   CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar,
+                   CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar,
+                   CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar,
+                   // ... 924 more for PATH_MAX=1024
+                   CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar,
+                   CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar,
+                   CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar,
+                   CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar,
+                   CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar,
+                   CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar,
+                   CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar,
+                   CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar,
+                   CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar,
+                   CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar) = (
+                       0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                   )
         var start_i: UInt32 = 0
         var end_i: UInt32 = 0
         var similarity: Float = 0.5
@@ -25,34 +67,58 @@ import SwiftUI
     }
 
     // Stub implementations for SwiftUI Previews
-    private func nana_create() -> Int32 {
-        return Int32.random(in: 1 ... 1000)
+    private func nana_create(_ outbuf: UnsafeMutablePointer<CChar>?, _ outbuf_len: UInt32) -> Int32 {
+        let path = "preview-note-\(Int.random(in: 1...1000)).md"
+        guard let outbuf = outbuf else { return -1 }
+        for (i, char) in path.utf8.enumerated() {
+            if i >= outbuf_len - 1 { break }
+            outbuf[i] = CChar(bitPattern: char)
+        }
+        outbuf[min(path.utf8.count, Int(outbuf_len) - 1)] = 0
+        return Int32(path.utf8.count)
     }
 
-    private func nana_search(_: String, _ ids: UnsafeMutablePointer<CSearchResult>?, _ maxCount: Int32) -> Int32 {
-        // Return some sample note IDs for preview
-        let sampleIds: [Int32] = [1, 2, 3, 4, 5]
-        let returnCount = min(sampleIds.count, Int(maxCount))
+    private func nana_search(_: UnsafePointer<CChar>, _ results: UnsafeMutablePointer<CSearchResult>?, _ maxCount: UInt32) -> Int32 {
+        // Return some sample paths for preview
+        let samplePaths = ["note1.md", "note2.md", "note3.md"]
+        let returnCount = min(samplePaths.count, Int(maxCount))
         for i in 0 ..< returnCount {
-            ids?[i] = CSearchResult(id: UInt32(sampleIds[i]), start_i: 0, end_i: 5)
+            var result = CSearchResult()
+            for (j, char) in samplePaths[i].utf8.enumerated() {
+                withUnsafeMutableBytes(of: &result.path) { ptr in
+                    ptr[j] = char
+                }
+            }
+            result.start_i = 0
+            result.end_i = 50
+            result.similarity = 0.8
+            results?[i] = result
         }
         return Int32(returnCount)
     }
 
-    private func nana_index(_ ids: inout [Int32], _ maxCount: Int, _: Int32) -> Int32 {
-        // Return some sample note IDs for preview
-        let sampleIds: [Int32] = [1, 2, 3, 4, 5]
-        let returnCount = min(sampleIds.count, maxCount)
-        for i in 0 ..< returnCount {
-            ids[i] = sampleIds[i]
+    private func nana_index(_ outbuf: UnsafeMutablePointer<CChar>?, _ sz: UInt32, _: UnsafePointer<CChar>?) -> Int32 {
+        // Return sample double-null-terminated paths
+        let samplePaths = ["note1.md", "note2.md", "note3.md"]
+        guard let outbuf = outbuf else { return 0 }
+        var pos = 0
+        for path in samplePaths {
+            for char in path.utf8 {
+                if pos >= sz - 2 { break }
+                outbuf[pos] = CChar(bitPattern: char)
+                pos += 1
+            }
+            outbuf[pos] = 0
+            pos += 1
         }
-        return Int32(returnCount)
+        outbuf[pos] = 0
+        return Int32(samplePaths.count)
     }
 
-    private func nana_search_detail(_: Int32,
+    private func nana_search_detail(_: UnsafePointer<CChar>,
                                     _: UInt32,
                                     _: UInt32,
-                                    _: String,
+                                    _: UnsafePointer<CChar>,
                                     _: UnsafeMutablePointer<CSearchDetail>?,
                                     _: Bool) -> Int32
     {
@@ -75,6 +141,7 @@ struct SearchResult: Identifiable, Equatable {
 }
 
 let MAX_ITEMS = 100
+let INDEX_BUF_SIZE = 256 * 1024  // 256KB for double-null-terminated paths
 
 class NotesManager: ObservableObject {
     @AppStorage("skipHighlights") private var skipHighlights: Bool = false
@@ -87,9 +154,13 @@ class NotesManager: ObservableObject {
     private var writing: Bool = false
 
     init() {
-        let newId = nana_create()
-        assert(newId > 0, "Failed to create new note")
-        currentNote = Note(id: newId)
+        var pathBuf = [CChar](repeating: 0, count: Int(PATH_MAX))
+        let pathLen = pathBuf.withUnsafeMutableBufferPointer { buffer in
+            nana_create(buffer.baseAddress, UInt32(buffer.count))
+        }
+        assert(pathLen > 0, "Failed to create new note")
+        let path = String(cString: pathBuf)
+        currentNote = Note(path: path)
         modified = currentNote.modified
 
         // Auto-save when content changes
@@ -104,36 +175,48 @@ class NotesManager: ObservableObject {
     }
 
     private func saveCurrentNote() {
-        guard currentNote.id != -1 else { return }
+        guard !currentNote.id.isEmpty else { return }
         modified = currentNote.writeAll()
     }
 
     func createNewNote() {
-        let newId = nana_create()
-        assert(newId > 0, "Failed to create new note")
-        currentNote = Note(id: newId)
+        var pathBuf = [CChar](repeating: 0, count: Int(PATH_MAX))
+        let pathLen = pathBuf.withUnsafeMutableBufferPointer { buffer in
+            nana_create(buffer.baseAddress, UInt32(buffer.count))
+        }
+        assert(pathLen > 0, "Failed to create new note")
+        let path = String(cString: pathBuf)
+        currentNote = Note(path: path)
     }
 
     func search(query: String) {
         queriedNotes = []
         var n = 0
         if query.isEmpty {
-            var ids = [Int32](repeating: 0, count: MAX_ITEMS)
-            n = min(Int(nana_index(&ids, numericCast(ids.count), currentNote.id)), MAX_ITEMS)
+            // Use nana_index for listing notes
+            var outbuf = [CChar](repeating: 0, count: INDEX_BUF_SIZE)
+            n = outbuf.withUnsafeMutableBufferPointer { buffer in
+                currentNote.id.withCString { ignorePath in
+                    Int(nana_index(buffer.baseAddress, UInt32(buffer.count), ignorePath))
+                }
+            }
             if n < 0 {
-                print("Some error occurred while searching: ", n)
+                print("Some error occurred while indexing: ", n)
                 return
             }
-            for i in 0 ..< n {
-                let result = ids[i]
-                let note = Note(id: Int32(result))
+            // Parse double-null-terminated paths
+            let paths = parseDoubleNullTerminatedPaths(outbuf)
+            for path in paths {
+                let note = Note(path: path)
                 let preview = note.content
                 queriedNotes.append(SearchResult(note: note, preview: preview))
             }
         } else {
             var results = [CSearchResult](repeating: CSearchResult(), count: MAX_ITEMS)
             n = results.withUnsafeMutableBufferPointer { buffer in
-                min(Int(nana_search(query, buffer.baseAddress, numericCast(MAX_ITEMS))), MAX_ITEMS)
+                query.withCString { queryCString in
+                    min(Int(nana_search(queryCString, buffer.baseAddress, UInt32(MAX_ITEMS))), MAX_ITEMS)
+                }
             }
             if n < 0 {
                 print("Some error occurred while searching: ", n)
@@ -141,7 +224,12 @@ class NotesManager: ObservableObject {
             }
             for i in 0 ..< n {
                 let result = results[i]
-                let note = Note(id: Int32(result.id))
+                let path = withUnsafePointer(to: result.path) { ptr in
+                    ptr.withMemoryRebound(to: CChar.self, capacity: Int(PATH_MAX)) { charPtr in
+                        String(cString: charPtr)
+                    }
+                }
+                let note = Note(path: path)
 
                 let bufsize = Int((result.end_i - result.start_i) + 1)
 
@@ -150,13 +238,18 @@ class NotesManager: ObservableObject {
                 charPointer[bufsize] = 0
                 var tmp_search_detail = CSearchDetail(content: charPointer,
                                                       highlights: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
-                guard nana_search_detail(Int32(result.id),
-                                         result.start_i,
-                                         result.end_i,
-                                         query,
-                                         &tmp_search_detail,
-                                         skipHighlights) == 0
-                else {
+                let detailResult = path.withCString { pathCString in
+                    query.withCString { queryCString in
+                        nana_search_detail(pathCString,
+                                           result.start_i,
+                                           result.end_i,
+                                           queryCString,
+                                           &tmp_search_detail,
+                                           skipHighlights)
+                    }
+                }
+                guard detailResult == 0 else {
+                    charPointer.deallocate()
                     continue
                 }
                 let highlights = Mirror(reflecting: tmp_search_detail.highlights).children.map {
@@ -164,7 +257,7 @@ class NotesManager: ObservableObject {
                 } as! [Int]
                 let preview: String
                 if let content = tmp_search_detail.content {
-                    preview = String(cString: content, encoding: .utf8) ?? ""
+                    preview = String(cString: content)
                 } else {
                     preview = ""
                 }
@@ -175,6 +268,26 @@ class NotesManager: ObservableObject {
             }
         }
     }
+}
+
+/// Parse a double-null-terminated buffer into an array of paths
+func parseDoubleNullTerminatedPaths(_ buffer: [CChar]) -> [String] {
+    var paths: [String] = []
+    var start = 0
+    for i in 0 ..< buffer.count {
+        if buffer[i] == 0 {
+            if i == start {
+                // Double null - end of list
+                break
+            }
+            let pathData = buffer[start ..< i]
+            if let path = String(bytes: pathData.map { UInt8(bitPattern: $0) }, encoding: .utf8) {
+                paths.append(path)
+            }
+            start = i + 1
+        }
+    }
+    return paths
 }
 
 struct ContentView: View {

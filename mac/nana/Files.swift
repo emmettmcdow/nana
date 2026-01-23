@@ -213,13 +213,13 @@ let it_ok = [0, 4, 7, 13, 0, 0, 0, 0, 0, 0]
 #Preview("Notes") {
     @Previewable @State var visible = true
     @Previewable @State var results: [SearchResult] = [
-        SearchResult(note: Note(id: 0, created: Date(), modified: Date(), content: li1, title: "How to train your dragon"), preview: "It's a pretty ok movie", highlights: it_ok),
-        SearchResult(note: Note(id: 1, created: Date(), modified: Date(), content: li2, title: "Goodfellas"), preview: "Also pretty good.", highlights: pretty_highlights),
-        SearchResult(note: Note(id: 2, created: Date(), modified: Date(), content: li3, title: "Toy Story"), preview: "Now we're talking baby. This is CINEMA."),
-        SearchResult(note: Note(id: 3, created: Date(), modified: Date(), content: li3, title: "foo"), preview: "zim"),
-        SearchResult(note: Note(id: 4, created: Date(), modified: Date(), content: li3, title: "foo"), preview: "zam"),
-        SearchResult(note: Note(id: 5, created: Date(), modified: Date(), content: li3, title: "foo"), preview: "zot"),
-        SearchResult(note: Note(id: 6, created: Date(), modified: Date(), content: li3, title: "foo"), preview: "zing"),
+        SearchResult(note: Note(id: "note0.md", created: Date(), modified: Date(), content: li1, title: "How to train your dragon"), preview: "It's a pretty ok movie", highlights: it_ok),
+        SearchResult(note: Note(id: "note1.md", created: Date(), modified: Date(), content: li2, title: "Goodfellas"), preview: "Also pretty good.", highlights: pretty_highlights),
+        SearchResult(note: Note(id: "note2.md", created: Date(), modified: Date(), content: li3, title: "Toy Story"), preview: "Now we're talking baby. This is CINEMA."),
+        SearchResult(note: Note(id: "note3.md", created: Date(), modified: Date(), content: li3, title: "foo"), preview: "zim"),
+        SearchResult(note: Note(id: "note4.md", created: Date(), modified: Date(), content: li3, title: "foo"), preview: "zam"),
+        SearchResult(note: Note(id: "note5.md", created: Date(), modified: Date(), content: li3, title: "foo"), preview: "zot"),
+        SearchResult(note: Note(id: "note6.md", created: Date(), modified: Date(), content: li3, title: "foo"), preview: "zing"),
     ]
     FileList(visible: $visible, results: $results,
              onSelect: { (n: SearchResult) in print(n.note.id) },

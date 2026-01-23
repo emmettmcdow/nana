@@ -395,6 +395,8 @@ const Baselib = struct {
             .target = opts.target,
             .optimize = opts.optimize,
         });
+        // Bundle compiler_rt to include __zig_probe_stack for x86_64
+        base_nana_lib.bundle_compiler_rt = true;
         base_nana_lib.root_module.addOptions("config", options);
         const dep_opts = DepOptions{
             .b = opts.b,
