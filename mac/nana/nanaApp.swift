@@ -29,9 +29,26 @@ struct nanaApp: App {
     @AppStorage("fontSize") private var fontSize: Double = 14
     @Environment(\.colorScheme) private var colorScheme
 
+    #if DEBUG
+    @State private var showingDirectoryPicker = true
+    @State private var selectedBasedir: URL?
+    #endif
+
     private nonisolated func onStartup() async {
         guard !(await startupRun) else { return }
 
+        #if DEBUG
+        guard let basedirURL = await selectedBasedir else {
+            print("No basedir selected in debug mode")
+            return
+        }
+        guard basedirURL.startAccessingSecurityScopedResource() else {
+            print("DEBUG: Failed to access security scoped resource")
+            return
+        }
+        let basedir = basedirURL.path()
+        print("DEBUG: Using basedir: \(basedir)")
+        #else
         guard let containerIdentifier = Bundle.main.object(forInfoDictionaryKey:
             "CloudKitContainerIdentifier") as? String
         else {
@@ -50,7 +67,10 @@ struct nanaApp: App {
             return
         }
         let basedir = url.path()
+        #endif
+
         let err = nana_init(basedir)
+        print("DEBUG: nana_init returned: \(err)")
         if err != 0 {
             await MainActor.run {
                 self.initializationFailed = true
@@ -81,6 +101,46 @@ struct nanaApp: App {
 
         WindowGroup {
             ZStack {
+                #if DEBUG
+                if showingDirectoryPicker {
+                    VStack(spacing: 20) {
+                        Text("Debug Mode")
+                            .font(.title)
+                        Text("Select a base directory for notes")
+                            .foregroundColor(.secondary)
+                        Button("Choose Directory...") {
+                            let panel = NSOpenPanel()
+                            panel.canChooseFiles = false
+                            panel.canChooseDirectories = true
+                            panel.allowsMultipleSelection = false
+                            panel.message = "Select the base directory for your notes"
+                            if panel.runModal() == .OK {
+                                selectedBasedir = panel.url
+                                showingDirectoryPicker = false
+                                Task.detached {
+                                    await onStartup()
+                                }
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(palette.background)
+                } else if !startupRun {
+                    HStack {
+                        VStack {
+                            Spacer()
+                            LoadingBanana()
+                        }
+                        Spacer()
+                    }
+                    .background(palette.background)
+                } else if let notesManager = notesManager {
+                    ContentView()
+                        .environmentObject(notesManager)
+                        .disabled(initializationFailed)
+                }
+                #else
                 if !startupRun {
                     HStack {
                         VStack {
@@ -95,14 +155,17 @@ struct nanaApp: App {
                         .environmentObject(notesManager)
                         .disabled(initializationFailed)
                 }
+                #endif
                 ToastView(showingToast: $showingToast, message: $toastMessage)
             }
             .disabled(initializationFailed)
+            #if !DEBUG
             .onAppear {
                 Task.detached {
                     await onStartup()
                 }
             }
+            #endif
             .alert("Initialization Error",
                    isPresented: $initializationFailed) {
                 Button("OK") {}

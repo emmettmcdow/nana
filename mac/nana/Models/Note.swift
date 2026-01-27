@@ -9,15 +9,15 @@ import Foundation
 
 #if DISABLE_NANAKIT
     // Stub implementations for SwiftUI Previews
-    private func nana_create_time(_: Int32) -> Int64 {
+    private func nana_create_time(_: UnsafePointer<CChar>) -> Int64 {
         return Int64(Date().timeIntervalSince1970)
     }
 
-    private func nana_mod_time(_: Int32) -> Int64 {
+    private func nana_mod_time(_: UnsafePointer<CChar>) -> Int64 {
         return Int64(Date().timeIntervalSince1970)
     }
 
-    private func nana_read_all(_: Int32, _ buffer: inout [Int8], _ bufferSize: Int) -> Int32 {
+    private func nana_read_all(_: UnsafePointer<CChar>, _ buffer: UnsafeMutablePointer<CChar>?, _ bufferSize: UInt32) -> Int32 {
         let sampleContent =
             """
             Sample note content for preview. Foo bar baz bop bing bang boom yap yip
@@ -29,33 +29,35 @@ import Foundation
             for which it stands one nation under god indivisibile with liberty and justice for all. the
             quick brown fox jumped over the lazy dog.
             """
-        let utf8Array = Array(sampleContent.utf8.map { Int8(bitPattern: $0) }) + [0]
+        guard let buffer = buffer else { return -1 }
+        let utf8Array = Array(sampleContent.utf8)
 
-        // If buffer is too small, return -1 to signal error
-        if utf8Array.count > bufferSize {
+        if utf8Array.count >= bufferSize {
             return -1
         }
 
-        // Copy entire content including null terminator
-        buffer.replaceSubrange(0 ..< utf8Array.count, with: utf8Array)
-        return Int32(utf8Array.count - 1) // Don't count null terminator in length
+        for (i, byte) in utf8Array.enumerated() {
+            buffer[i] = CChar(bitPattern: byte)
+        }
+        buffer[utf8Array.count] = 0
+        return Int32(utf8Array.count)
     }
 
-    private func nana_write_all_with_time(_: Int32, _: String) -> Int64 {
-        return Int64(Date().timeIntervalSince1970) // Return current timestamp
+    private func nana_write_all_with_time(_: UnsafePointer<CChar>, _: UnsafePointer<CChar>) -> Int64 {
+        return Int64(Date().timeIntervalSince1970)
     }
 
-    private func nana_title(_: Int32, _: inout [Int8]) -> UnsafePointer<Int8>? {
-        return nil
+    private func nana_title(_: UnsafePointer<CChar>, _ buf: UnsafeMutablePointer<CChar>?) -> UnsafePointer<CChar>? {
+        return UnsafePointer(buf)
     }
 
-    let TITLE_BUF_SZ = 32
+    let TITLE_BUF_SZ: Int32 = 64
 #else
     import NanaKit
 #endif
 
 struct Note: Identifiable, Equatable {
-    var id: Int32
+    var id: String  // path
     var created: Date
     var modified: Date
     var content: String
@@ -65,44 +67,57 @@ struct Note: Identifiable, Equatable {
 // 1MB
 let MAX_BUF = 1_000_000
 extension Note {
-    init(id: Int32) {
-        if id == -1 {
-            self.id = id
+    init(path: String) {
+        if path.isEmpty {
+            self.id = ""
             created = Date.now
             modified = Date.now
             content = ""
             title = ""
             return
         }
-        let create = nana_create_time(id)
-        assert(create > 0, "Failed to get create_time")
 
-        let mod = nana_mod_time(id)
-        assert(mod > 0, "Failed to get mod_time")
+        let create = path.withCString { cString in
+            nana_create_time(cString)
+        }
+        // 0 is valid for lazily-created files that haven't been written yet
+        assert(create >= 0, "Failed to get create_time for \(path)")
+
+        let mod = path.withCString { cString in
+            nana_mod_time(cString)
+        }
+        // 0 is valid for lazily-created files that haven't been written yet
+        assert(mod >= 0, "Failed to get mod_time for \(path)")
 
         var bufsize = 10
         var sz: Int32 = -1
-        var content_buf = [Int8](repeating: 0, count: bufsize)
+        var content_buf = [CChar](repeating: 0, count: bufsize)
         while bufsize < MAX_BUF {
-            sz = nana_read_all(id, &content_buf, numericCast(content_buf.count))
+            sz = path.withCString { pathCString in
+                content_buf.withUnsafeMutableBufferPointer { buffer in
+                    nana_read_all(pathCString, buffer.baseAddress, UInt32(buffer.count))
+                }
+            }
             if sz >= 0 {
                 break
             }
             bufsize *= 10
-            content_buf = [Int8](repeating: 0, count: bufsize)
+            content_buf = [CChar](repeating: 0, count: bufsize)
         }
-        assert(sz >= 0, "Failed to read content")
+        assert(sz >= 0, "Failed to read content for \(path)")
 
-        var title_buf = [Int8](repeating: 1, count: Int(TITLE_BUF_SZ) + 1)
+        var title_buf = [CChar](repeating: 1, count: Int(TITLE_BUF_SZ) + 1)
         title_buf[Int(TITLE_BUF_SZ)] = 0
-        // I do not understand the Swift GC / Zig --release=safe interaction, but in release mode
-        // the result of title does not work. Therefore we have to use the original buffer.
-        _ = nana_title(id, &title_buf)
+        _ = path.withCString { pathCString in
+            title_buf.withUnsafeMutableBufferPointer { buffer in
+                nana_title(pathCString, buffer.baseAddress)
+            }
+        }
 
-        self.id = id
+        self.id = path
         created = Date(timeIntervalSince1970: TimeInterval(create))
         modified = Date(timeIntervalSince1970: TimeInterval(mod))
-        content = String(cString: content_buf, encoding: .utf8) ?? ""
+        content = String(cString: content_buf)
         title = String(cString: title_buf)
     }
 
@@ -111,14 +126,21 @@ extension Note {
     }
 
     func writeAll() -> Date {
-        let res = nana_write_all_with_time(id, content)
-        assert(res > 0, "Failed to write-all note")
+        let res = id.withCString { pathCString in
+            content.withCString { contentCString in
+                nana_write_all_with_time(pathCString, contentCString)
+            }
+        }
+        assert(res > 0, "Failed to write-all note \(id)")
         return Date(timeIntervalSince1970: TimeInterval(res))
     }
 
     func modTime() -> Date {
-        let new_mod = nana_mod_time(id)
-        assert(new_mod > 0, "Failed to get mod_time")
+        let new_mod = id.withCString { cString in
+            nana_mod_time(cString)
+        }
+        // 0 is valid for lazily-created files that haven't been written yet
+        assert(new_mod >= 0, "Failed to get mod_time for \(id)")
         return Date(timeIntervalSince1970: TimeInterval(new_mod))
     }
 }

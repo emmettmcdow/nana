@@ -4,9 +4,17 @@ const xc_fw_path = "macos/NanaKit.xcframework";
 
 pub fn build(b: *std.Build) !void {
     const debug = b.option(bool, "debug-output", "Show debug output") orelse false;
-    const embedding_model = b.option(EmbeddingModel, "embedding-model", "Embedding model to use (apple_nlembedding or jina_embedding)") orelse .apple_nlembedding;
+    const embedding_model = b.option(
+        EmbeddingModel,
+        "embedding-model",
+        "Embedding model to use (apple_nlembedding or jina_embedding)",
+    ) orelse .apple_nlembedding;
     // Need to find a way to merge this with existing filtering per compilation unit
-    // const test_filter = b.option([]const u8, "test-filter", "Skip tests that do not match any filter") orelse &[]const u8{};
+    // const test_filter = b.option(
+    //     []const u8,
+    //     "test-filter",
+    //     "Skip tests that do not match any filter",
+    // ) orelse &[]const u8{};
     const optimize = b.standardOptimizeOption(.{});
 
     const install_step = b.getInstallStep();
@@ -14,18 +22,10 @@ pub fn build(b: *std.Build) !void {
     // Targets
     const arm_target = b.resolveTargetQuery(.{ .cpu_arch = .aarch64, .os_tag = .macos });
     const x86_target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .macos });
-    // const ios_target = b.resolveTargetQuery(.{
-    //     .cpu_arch = .x86_64,
-    //     .os_tag = .ios,
-    //     .abi = .simulator,
-    //     .os_version_min = .{ .semver = .{ .major = 18, .minor = 2, .patch = 0 } },
-    // });
 
     const targets: [2]std.Build.ResolvedTarget = .{
         x86_target,
         arm_target,
-        // This one has proven much harder than expected to build for. Get back to it later.
-        // ios_target,
     };
 
     const fake_vec_cfg = GlobalOptions{};
@@ -33,7 +33,7 @@ pub fn build(b: *std.Build) !void {
 
     // Sources
     const root_file = b.path("src/root.zig");
-    const model_file = b.path("src/model.zig");
+    const note_id_map_file = b.path("src/note_id_map.zig");
     const diff_file = b.path("src/dmp.zig");
     const embed_file = b.path("src/embed.zig");
     const vec_storage_file = b.path("src/vec_storage.zig");
@@ -42,6 +42,7 @@ pub fn build(b: *std.Build) !void {
     const perf_file = b.path("src/perf_benchmark.zig");
     const profile_file = b.path("src/profile.zig");
     const markdown_file = b.path("src/markdown.zig");
+    const util_file = b.path("src/util.zig");
 
     ///////////////////
     // Build the Lib //
@@ -82,7 +83,10 @@ pub fn build(b: *std.Build) !void {
     // Jina Model Fetch //
     //////////////////////
     const jina_model = JinaModel.create(b);
-    const fetch_jina_step = b.step("fetch-jina-model", "Download Jina embeddings model from HuggingFace");
+    const fetch_jina_step = b.step(
+        "fetch-jina-model",
+        "Download Jina embeddings model from HuggingFace",
+    );
     fetch_jina_step.dependOn(jina_model.step);
 
     // Copy model to mac app Resources for bundling
@@ -114,24 +118,7 @@ pub fn build(b: *std.Build) !void {
         .root_source_file = root_file,
     }));
     real_vec_cfg.install(b, exe, debug, embedding_model);
-    _ = SQLite.create(.{
-        .b = b,
-        .dest = exe,
-        .target = native_target,
-        .optimize = optimize,
-    });
-    _ = ObjC.create(.{
-        .b = b,
-        .dest = exe,
-        .target = native_target,
-        .optimize = optimize,
-    });
-    _ = Tracy.create(.{
-        .b = b,
-        .dest = exe,
-        .target = native_target,
-        .optimize = optimize,
-    });
+    addAllDeps(.{ .b = b, .dest = exe, .target = native_target, .optimize = optimize });
     b.installArtifact(exe);
 
     // Install model files to share directory
@@ -153,280 +140,175 @@ pub fn build(b: *std.Build) !void {
     ////////////////
     // Unit Tests //
     ////////////////
-    // Root
-    const root_unit_tests = b.addTest(.{
-        .root_source_file = root_file,
-        .target = x86_target,
-        .optimize = optimize,
-        .filters = &.{"root"},
-    });
-    real_vec_cfg.install(b, root_unit_tests, debug, embedding_model);
-    _ = SQLite.create(.{
+    const x86_deps = DepOptions{
         .b = b,
-        .dest = root_unit_tests,
+        .dest = undefined,
         .target = x86_target,
         .optimize = optimize,
-    });
-    _ = ObjC.create(.{
-        .b = b,
-        .dest = root_unit_tests,
-        .target = x86_target,
-        .optimize = optimize,
-    });
-    _ = Tracy.create(.{
-        .b = b,
-        .dest = root_unit_tests,
-        .target = x86_target,
-        .optimize = optimize,
-    });
+    };
 
-    const run_root_unit_tests = b.addRunArtifact(root_unit_tests);
     const test_root = b.step("test-root", "run the tests for src/root.zig");
-    test_root.dependOn(&run_root_unit_tests.step);
+    {
+        const t = b.addTest(.{
+            .root_source_file = root_file,
+            .target = x86_target,
+            .optimize = optimize,
+            .filters = &.{"root"},
+        });
+        real_vec_cfg.install(b, t, debug, embedding_model);
+        addAllDeps(depOpts(x86_deps, t));
+        test_root.dependOn(&b.addRunArtifact(t).step);
+    }
 
-    // Model
-    const model_unit_tests = b.addTest(.{
-        .root_source_file = model_file,
-        .target = x86_target,
-        .optimize = optimize,
-        .filters = &.{"model"},
-    });
-    _ = SQLite.create(.{
-        .b = b,
-        .dest = model_unit_tests,
-        .target = x86_target,
-        .optimize = optimize,
-    });
-    _ = Tracy.create(.{
-        .b = b,
-        .dest = model_unit_tests,
-        .target = x86_target,
-        .optimize = optimize,
-    });
-    const run_model_unit_tests = b.addRunArtifact(model_unit_tests);
-    const test_model = b.step("test-model", "run the tests for src/model.zig");
-    test_model.dependOn(&run_model_unit_tests.step);
+    const test_note_id_map = b.step("test-note_id_map", "run the tests for src/note_id_map.zig");
+    {
+        const t = b.addTest(.{
+            .root_source_file = note_id_map_file,
+            .target = x86_target,
+            .optimize = optimize,
+            .filters = &.{"note_id_map"},
+        });
+        addTracy(depOpts(x86_deps, t));
+        test_note_id_map.dependOn(&b.addRunArtifact(t).step);
+    }
 
-    // Embed
-    const embed_unit_tests = b.addTest(.{
-        .root_source_file = embed_file,
-        .target = x86_target,
-        .optimize = optimize,
-        .filters = &.{"embed"},
-    });
-    _ = ObjC.create(.{
-        .b = b,
-        .dest = embed_unit_tests,
-        .target = x86_target,
-        .optimize = optimize,
-    });
-    _ = Tracy.create(.{
-        .b = b,
-        .dest = embed_unit_tests,
-        .target = x86_target,
-        .optimize = optimize,
-    });
-    (real_vec_cfg).install(b, embed_unit_tests, debug, embedding_model);
-
-    // Install model files relative to test executable
-    const install_test_models = b.addInstallDirectory(.{
-        .source_dir = .{ .cwd_relative = JinaModel.MODEL_DIR },
-        .install_dir = .{ .custom = "share/nana" },
-        .install_subdir = "jina-embeddings-v2-base-en",
-    });
-    install_test_models.step.dependOn(jina_model.step);
-
-    const run_embed_unit_tests = b.addRunArtifact(embed_unit_tests);
-    run_embed_unit_tests.step.dependOn(&install_test_models.step);
     const test_embed = b.step("test-embed", "run the tests for src/embed.zig");
-    test_embed.dependOn(&run_embed_unit_tests.step);
+    {
+        const t = b.addTest(.{
+            .root_source_file = embed_file,
+            .target = x86_target,
+            .optimize = optimize,
+            .filters = &.{"embed"},
+        });
+        real_vec_cfg.install(b, t, debug, embedding_model);
+        addObjC(depOpts(x86_deps, t));
+        addTracy(depOpts(x86_deps, t));
+        const install_models = b.addInstallDirectory(.{
+            .source_dir = .{ .cwd_relative = JinaModel.MODEL_DIR },
+            .install_dir = .{ .custom = "share/nana" },
+            .install_subdir = "jina-embeddings-v2-base-en",
+        });
+        install_models.step.dependOn(jina_model.step);
+        const run = b.addRunArtifact(t);
+        run.step.dependOn(&install_models.step);
+        test_embed.dependOn(&run.step);
+    }
 
-    // Vector Storage
-    const vec_storage_unit_tests = b.addTest(.{
-        .root_source_file = vec_storage_file,
-        .target = x86_target,
-        .optimize = optimize,
-        .filters = &.{"vec_storage"},
-    });
-    _ = Tracy.create(.{
-        .b = b,
-        .dest = vec_storage_unit_tests,
-        .target = x86_target,
-        .optimize = optimize,
-    });
-    fake_vec_cfg.install(b, vec_storage_unit_tests, debug, embedding_model);
-    const run_vec_storage_unit_tests = b.addRunArtifact(vec_storage_unit_tests);
     const test_vec_storage = b.step("test-vec_storage", "run the tests for src/vec_storage.zig");
-    test_vec_storage.dependOn(&run_vec_storage_unit_tests.step);
+    {
+        const t = b.addTest(.{
+            .root_source_file = vec_storage_file,
+            .target = x86_target,
+            .optimize = optimize,
+            .filters = &.{"vec_storage"},
+        });
+        fake_vec_cfg.install(b, t, debug, embedding_model);
+        addTracy(depOpts(x86_deps, t));
+        test_vec_storage.dependOn(&b.addRunArtifact(t).step);
+    }
 
-    // Vector Storage
-    const markdown_unit_tests = b.addTest(.{
-        .root_source_file = markdown_file,
-        .target = x86_target,
-        .optimize = optimize,
-        .filters = &.{"markdown"},
-    });
-    _ = Tracy.create(.{
-        .b = b,
-        .dest = markdown_unit_tests,
-        .target = x86_target,
-        .optimize = optimize,
-    });
-    fake_vec_cfg.install(b, markdown_unit_tests, debug, embedding_model);
-    const run_markdown_unit_tests = b.addRunArtifact(markdown_unit_tests);
     const test_markdown = b.step("test-markdown", "run the tests for src/markdown.zig");
-    test_markdown.dependOn(&run_markdown_unit_tests.step);
+    {
+        const t = b.addTest(.{
+            .root_source_file = markdown_file,
+            .target = x86_target,
+            .optimize = optimize,
+            .filters = &.{"markdown"},
+        });
+        fake_vec_cfg.install(b, t, debug, embedding_model);
+        addTracy(depOpts(x86_deps, t));
+        test_markdown.dependOn(&b.addRunArtifact(t).step);
+    }
 
-    // Vector DB
-    const vec_unit_tests = b.addTest(.{
-        .root_source_file = vector_file,
-        .target = x86_target,
-        .optimize = optimize,
-        .filters = &.{"vector"},
-    });
-    _ = SQLite.create(.{
-        .b = b,
-        .dest = vec_unit_tests,
-        .target = x86_target,
-        .optimize = optimize,
-    });
-    _ = ObjC.create(.{
-        .b = b,
-        .dest = vec_unit_tests,
-        .target = x86_target,
-        .optimize = optimize,
-    });
-    _ = Tracy.create(.{
-        .b = b,
-        .dest = vec_unit_tests,
-        .target = x86_target,
-        .optimize = optimize,
-    });
-    real_vec_cfg.install(b, vec_unit_tests, debug, embedding_model);
-    const run_vec_unit_tests = b.addRunArtifact(vec_unit_tests);
-    const test_vec = b.step("test-vector", "run the tests for src/vector.zig");
-    test_vec.dependOn(&run_vec_unit_tests.step);
+    const test_vector = b.step("test-vector", "run the tests for src/vector.zig");
+    {
+        const t = b.addTest(.{
+            .root_source_file = vector_file,
+            .target = x86_target,
+            .optimize = optimize,
+            .filters = &.{"vector"},
+        });
+        real_vec_cfg.install(b, t, debug, embedding_model);
+        addAllDeps(depOpts(x86_deps, t));
+        test_vector.dependOn(&b.addRunArtifact(t).step);
+    }
 
-    // Diff
-    const diff_unit_tests = b.addTest(.{
-        .root_source_file = diff_file,
-        .target = x86_target,
-        .optimize = optimize,
-        .filters = &.{"diff"},
-    });
-    fake_vec_cfg.install(b, diff_unit_tests, debug, embedding_model);
-    const run_diff_unit_tests = b.addRunArtifact(diff_unit_tests);
     const test_diff = b.step("test-diff", "run the tests for src/diff.zig");
-    test_diff.dependOn(&run_diff_unit_tests.step);
+    {
+        const t = b.addTest(.{
+            .root_source_file = diff_file,
+            .target = x86_target,
+            .optimize = optimize,
+            .filters = &.{"diff"},
+        });
+        fake_vec_cfg.install(b, t, debug, embedding_model);
+        test_diff.dependOn(&b.addRunArtifact(t).step);
+    }
 
-    // Benchmark
-    const benchmark_unit_tests = b.addTest(.{
-        .root_source_file = benchmark_file,
-        .target = x86_target,
-        .optimize = optimize,
-        .filters = &.{"benchmark"},
-    });
-    _ = SQLite.create(.{
-        .b = b,
-        .dest = benchmark_unit_tests,
-        .target = x86_target,
-        .optimize = optimize,
-    });
-    _ = ObjC.create(.{
-        .b = b,
-        .dest = benchmark_unit_tests,
-        .target = x86_target,
-        .optimize = optimize,
-    });
-    _ = Tracy.create(.{
-        .b = b,
-        .dest = benchmark_unit_tests,
-        .target = x86_target,
-        .optimize = optimize,
-    });
-    real_vec_cfg.install(b, benchmark_unit_tests, debug, embedding_model);
-    const run_benchmark_unit_tests = b.addRunArtifact(benchmark_unit_tests);
+    const test_util = b.step("test-util", "run the tests for src/util.zig");
+    {
+        const t = b.addTest(.{
+            .root_source_file = util_file,
+            .target = x86_target,
+            .optimize = optimize,
+            .filters = &.{"util"},
+        });
+        fake_vec_cfg.install(b, t, debug, embedding_model);
+        test_util.dependOn(&b.addRunArtifact(t).step);
+    }
+
     const test_benchmark = b.step("test-benchmark", "run the tests for src/benchmark.zig");
-    test_benchmark.dependOn(&run_benchmark_unit_tests.step);
+    {
+        const t = b.addTest(.{
+            .root_source_file = benchmark_file,
+            .target = x86_target,
+            .optimize = optimize,
+            .filters = &.{"benchmark"},
+        });
+        real_vec_cfg.install(b, t, debug, embedding_model);
+        addAllDeps(depOpts(x86_deps, t));
+        test_benchmark.dependOn(&b.addRunArtifact(t).step);
+    }
 
-    // Benchmark
-    const perf_tests = b.addTest(.{
-        .root_source_file = perf_file,
-        .target = x86_target,
-        .optimize = optimize,
-        .filters = &.{"perf"},
-    });
-    _ = ObjC.create(.{
-        .b = b,
-        .dest = perf_tests,
-        .target = x86_target,
-        .optimize = optimize,
-    });
-    _ = Tracy.create(.{
-        .b = b,
-        .dest = perf_tests,
-        .target = x86_target,
-        .optimize = optimize,
-    });
-    real_vec_cfg.install(b, perf_tests, debug, embedding_model);
-    const run_perf_tests = b.addRunArtifact(perf_tests);
     const test_perf = b.step("perf", "Run performance benchmark tests");
-    run_perf_tests.step.dependOn(jina_model.step);
-    test_perf.dependOn(&run_perf_tests.step);
+    {
+        const t = b.addTest(.{
+            .root_source_file = perf_file,
+            .target = x86_target,
+            .optimize = optimize,
+            .filters = &.{"perf"},
+        });
+        real_vec_cfg.install(b, t, debug, embedding_model);
+        addObjC(depOpts(x86_deps, t));
+        addTracy(depOpts(x86_deps, t));
+        const run = b.addRunArtifact(t);
+        run.step.dependOn(jina_model.step);
+        test_perf.dependOn(&run.step);
+    }
 
-    const profile_exe = b.addExecutable(.{
-        .name = "profile",
-        .root_source_file = profile_file,
-        .target = x86_target,
-        .optimize = optimize,
-    });
-    _ = SQLite.create(.{
-        .b = b,
-        .dest = profile_exe,
-        .target = x86_target,
-        .optimize = optimize,
-    });
-    _ = ObjC.create(.{
-        .b = b,
-        .dest = profile_exe,
-        .target = x86_target,
-        .optimize = optimize,
-    });
-    _ = Tracy.create(.{
-        .b = b,
-        .dest = profile_exe,
-        .target = x86_target,
-        .optimize = optimize,
-    });
-    real_vec_cfg.install(b, profile_exe, debug, embedding_model);
-    const run_profile = b.addRunArtifact(profile_exe);
     const profile_step = b.step("profile", "run the profile executable");
-    profile_step.dependOn(&run_profile.step);
+    {
+        const p = b.addExecutable(.{
+            .name = "profile",
+            .root_source_file = profile_file,
+            .target = x86_target,
+            .optimize = optimize,
+        });
+        real_vec_cfg.install(b, p, debug, embedding_model);
+        addAllDeps(depOpts(x86_deps, p));
+        profile_step.dependOn(&b.addRunArtifact(p).step);
+    }
 
-    // All
+    // All tests
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(test_root);
-    test_step.dependOn(test_model);
+    test_step.dependOn(test_note_id_map);
     test_step.dependOn(test_embed);
     test_step.dependOn(test_vec_storage);
-    test_step.dependOn(test_vec);
+    test_step.dependOn(test_vector);
     test_step.dependOn(test_diff);
     test_step.dependOn(test_markdown);
-    // Enable this to see benchmark output
-    // test_step.dependOn(test_benchmark);
-
-    ////////////////////
-    // Test Debugging //
-    ////////////////////
-    const lldb = b.addSystemCommand(&.{
-        "lldb",
-        // add lldb flags before --
-        // Uncomment this if lib_unit_tests needs lldb args or test args
-        // "--",
-    });
-    lldb.addArtifactArg(vec_unit_tests);
-    const lldb_step = b.step("debug", "run the tests under lldb");
-    lldb_step.dependOn(&lldb.step);
+    test_step.dependOn(test_util);
 
     const lint_cmd = b.step("lint", "Lint source code.");
     lint_cmd.dependOn(step: {
@@ -471,7 +353,13 @@ const GlobalOptions = struct {
 
     const Self = @This();
 
-    pub fn install(self: Self, b: *std.Build, dest: *Step.Compile, debug: bool, embedding_model: EmbeddingModel) void {
+    pub fn install(
+        self: Self,
+        b: *std.Build,
+        dest: *Step.Compile,
+        debug: bool,
+        embedding_model: EmbeddingModel,
+    ) void {
         const options = b.addOptions();
         options.addOption(usize, "vec_sz", self.vec_sz);
         // options.addOption(type, "vec_type", self.vec_type);
@@ -507,134 +395,69 @@ const Baselib = struct {
             .target = opts.target,
             .optimize = opts.optimize,
         });
+        // Bundle compiler_rt to include __zig_probe_stack for x86_64
+        base_nana_lib.bundle_compiler_rt = true;
         base_nana_lib.root_module.addOptions("config", options);
-        const sqlite_step = SQLite.create(.{
+        const dep_opts = DepOptions{
             .b = opts.b,
             .dest = base_nana_lib,
             .target = opts.target,
             .optimize = opts.optimize,
-        });
-        _ = ObjC.create(.{
-            .b = opts.b,
-            .dest = base_nana_lib,
-            .target = opts.target,
-            .optimize = opts.optimize,
-        });
-        _ = Tracy.create(.{
-            .b = opts.b,
-            .dest = base_nana_lib,
-            .target = opts.target,
-            .optimize = opts.optimize,
-        });
-
-        // Combine Libs
-        var lib_sources = [_]LazyPath{
-            base_nana_lib.getEmittedBin(),
-            sqlite_step.output,
         };
-        const outname = opts.b.fmt("libnana-{s}-{s}.a", .{
-            @tagName(opts.target.query.os_tag.?),
-            @tagName(opts.target.query.cpu_arch.?),
-        });
-        const combine_lib = Libtool.create(opts.b, .{
-            .name = "nana",
-            .out_name = outname,
-            .sources = &lib_sources,
-        });
-        combine_lib.step.dependOn(&base_nana_lib.step);
+        addObjC(dep_opts);
+        addTracy(dep_opts);
 
         return .{
-            .step = combine_lib.step,
-            .output = combine_lib.output,
+            .step = &base_nana_lib.step,
+            .output = base_nana_lib.getEmittedBin(),
         };
     }
 };
 
-const SQLite = struct {
-    // step: *Step,
-    output: LazyPath,
-
-    const SQLiteOptions = struct {
-        b: *std.Build,
-        dest: *Step.Compile,
-        target: std.Build.ResolvedTarget,
-        optimize: std.builtin.OptimizeMode,
-    };
-
-    pub fn create(opts: SQLiteOptions) SQLite {
-        const sqlite_dep = opts.b.dependency("sqlite", .{
-            .target = opts.target,
-            .optimize = opts.optimize,
-        });
-        const sqlite_art = sqlite_dep.artifact("sqlite");
-        const sqlite_mod = sqlite_dep.module("sqlite");
-
-        opts.dest.root_module.addImport("sqlite", sqlite_mod);
-        opts.dest.linkLibrary(sqlite_art);
-        opts.dest.bundle_compiler_rt = true;
-        opts.dest.linkLibC();
-
-        return .{
-            // .step = null,
-            .output = sqlite_art.getEmittedBin(),
-        };
-    }
+const DepOptions = struct {
+    b: *std.Build,
+    dest: *Step.Compile,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
 };
 
-const ObjC = struct {
-    const ObjCOptions = struct {
-        b: *std.Build,
-        dest: *Step.Compile,
-        target: std.Build.ResolvedTarget,
-        optimize: std.builtin.OptimizeMode,
-    };
+fn addObjC(opts: DepOptions) void {
+    const objc_dep = opts.b.dependency("zig_objc", .{
+        .target = opts.target,
+        .optimize = opts.optimize,
+    });
+    opts.dest.root_module.addImport("objc", objc_dep.module("objc"));
+    opts.dest.root_module.linkFramework("NaturalLanguage", .{});
+    opts.dest.root_module.linkFramework("CoreML", .{});
+    opts.dest.root_module.linkFramework("Foundation", .{});
+}
 
-    pub fn create(opts: ObjCOptions) ObjC {
-        var objc_dep = opts.b.dependency("zig_objc", .{
-            .target = opts.target,
-            .optimize = opts.optimize,
-        });
-        opts.dest.root_module.addImport("objc", objc_dep.module("objc"));
-        opts.dest.root_module.linkFramework("NaturalLanguage", .{});
-        opts.dest.root_module.linkFramework("CoreML", .{});
-        opts.dest.root_module.linkFramework("Foundation", .{});
+fn addTracy(opts: DepOptions) void {
+    const tracy_enable = opts.optimize == .Debug;
+    const tracy_dep = opts.b.dependency("tracy", .{
+        .target = opts.target,
+        .optimize = opts.optimize,
+        .tracy_enable = tracy_enable,
+        .tracy_callstack = 62,
+    });
+    opts.dest.root_module.addImport("tracy", tracy_dep.module("tracy"));
+    if (!tracy_enable) return;
 
-        return ObjC{};
-    }
-};
+    opts.dest.root_module.linkLibrary(tracy_dep.artifact("tracy"));
+    opts.dest.root_module.link_libcpp = true;
+    opts.b.getInstallStep().dependOn(&opts.b.addInstallArtifact(tracy_dep.artifact("tracy"), .{
+        .dest_dir = .{ .override = .{ .bin = {} } },
+    }).step);
+}
 
-const Tracy = struct {
-    const TracyOptions = struct {
-        b: *std.Build,
-        dest: *Step.Compile,
-        target: std.Build.ResolvedTarget,
-        optimize: std.builtin.OptimizeMode,
-    };
+fn addAllDeps(opts: DepOptions) void {
+    addObjC(opts);
+    addTracy(opts);
+}
 
-    pub fn create(opts: TracyOptions) Tracy {
-        const tracy_enable = if (opts.optimize == .Debug) true else false;
-        var tracy_dep = opts.b.dependency("tracy", .{
-            .target = opts.target,
-            .optimize = opts.optimize,
-            .tracy_enable = tracy_enable,
-            .tracy_callstack = 62,
-        });
-        opts.dest.root_module.addImport("tracy", tracy_dep.module("tracy"));
-        if (!tracy_enable) {
-            return Tracy{};
-        }
-
-        opts.dest.root_module.linkLibrary(tracy_dep.artifact("tracy"));
-        opts.dest.root_module.link_libcpp = true;
-        const install_dir = std.Build.Step.InstallArtifact.Options.Dir{ .override = .{ .bin = {} } };
-        const install_tracy = opts.b.addInstallArtifact(tracy_dep.artifact("tracy"), .{
-            .dest_dir = install_dir,
-        });
-        opts.b.getInstallStep().dependOn(&install_tracy.step);
-
-        return Tracy{};
-    }
-};
+fn depOpts(base: DepOptions, dest: *Step.Compile) DepOptions {
+    return .{ .b = base.b, .dest = dest, .target = base.target, .optimize = base.optimize };
+}
 
 // TY mitchellh
 // https://gist.github.com/mitchellh/0ee168fb34915e96159b558b89c9a74b#file-libtoolstep-zig
@@ -838,14 +661,15 @@ const JinaModel = struct {
 
         const dl_mlmodel = RunStep.create(b, "jina: download model.mlmodel");
         dl_mlmodel.addArgs(&.{
-            "curl",                                                                           "-fsSL", "-o", MODEL_DIR ++ "/float32_model.mlpackage/Data/com.apple.CoreML/model.mlmodel",
-            HF_BASE ++ "/coreml/float32_model.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+            "curl",                                                                      "-fsSL",                                                                          "-o",
+            MODEL_DIR ++ "/float32_model.mlpackage/Data/com.apple.CoreML/model.mlmodel", HF_BASE ++ "/coreml/float32_model.mlpackage/Data/com.apple.CoreML/model.mlmodel",
         });
         dl_mlmodel.step.dependOn(&mkdir_step.step);
 
         const dl_weights = RunStep.create(b, "jina: download weight.bin");
         dl_weights.addArgs(&.{
-            "curl",                                                                                "-fsSL", "-o", MODEL_DIR ++ "/float32_model.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+            "curl",                                                                                "-fsSL",
+            "-o",                                                                                  MODEL_DIR ++ "/float32_model.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
             HF_BASE ++ "/coreml/float32_model.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
         });
         dl_weights.step.dependOn(&mkdir_step.step);

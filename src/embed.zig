@@ -192,9 +192,15 @@ pub const JinaEmbedder = struct {
         };
     }
 
+    pub fn deinit(self: *JinaEmbedder) void {
+        const release_sel = objc.Sel.registerName("release");
+        _ = self.model.msgSend(void, release_sel, .{});
+        self.tokenizer_alloc.deinit();
+    }
+
     fn deinitFn(ptr: *anyopaque) void {
         const self: *JinaEmbedder = @ptrCast(@alignCast(ptr));
-        self.tokenizer_alloc.deinit();
+        self.deinit();
     }
 
     fn split(self_ptr: *anyopaque, note: []const u8) SentenceSpliterator {
@@ -482,6 +488,10 @@ pub const NLEmbedder = struct {
         const ns_lang = NSString.msgSend(Object, fromUTF8, .{language});
 
         const embedder_obj = NLEmbedding.msgSend(Object, sentenceEmbeddingForLang, .{ns_lang});
+        if (embedder_obj.value == 0) {
+            std.log.err("NLEmbedding.sentenceEmbeddingForLanguage returned nil - ensure this is called from main thread", .{});
+            return error.EmbedderInitFailed;
+        }
         assert(embedder_obj.getProperty(c_int, "dimension") == VEC_SZ);
 
         // Retain the Objective-C object to prevent it from being deallocated
@@ -499,7 +509,7 @@ pub const NLEmbedder = struct {
             .ptr = self,
             .splitFn = split,
             .embedFn = embed,
-            .deinitFn = deinit,
+            .deinitFn = deinitFn,
             .id = ID,
             .threshold = THRESHOLD,
             .strict_threshold = STRICT_THRESHOLD,
@@ -507,11 +517,14 @@ pub const NLEmbedder = struct {
         };
     }
 
-    fn deinit(ptr: *anyopaque) void {
-        const self: *NLEmbedder = @ptrCast(@alignCast(ptr));
-        // Release the retained Objective-C object
+    pub fn deinit(self: *NLEmbedder) void {
         const release_sel = objc.Sel.registerName("release");
         _ = self.embedder_obj.msgSend(void, release_sel, .{});
+    }
+
+    fn deinitFn(ptr: *anyopaque) void {
+        const self: *NLEmbedder = @ptrCast(@alignCast(ptr));
+        self.deinit();
     }
 
     fn split(self: *anyopaque, note: []const u8) SentenceSpliterator {
@@ -614,10 +627,10 @@ test "embed - nlembed" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var e = out: {
-        var e_temp = try NLEmbedder.init();
-        break :out e_temp.embedder();
-    };
+    var nl = try NLEmbedder.init();
+    defer nl.deinit();
+
+    var e = nl.embedder();
 
     var output = try e.embed(allocator, "Hello world");
     // We don't check this too hard because the work to save vectors is not worth the reward.
@@ -639,11 +652,10 @@ test "embed - jinaembed" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var e = out: {
-        var e_temp = try JinaEmbedder.init();
-        break :out e_temp.embedder();
-    };
-    defer e.deinit();
+    var jina = try JinaEmbedder.init();
+    defer jina.deinit();
+
+    var e = jina.embedder();
 
     const output = try e.embed(allocator, "Hello world");
     try std.testing.expect(output != null);
@@ -670,10 +682,10 @@ test "embed skip empty" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var e = out: {
-        var e_temp = try NLEmbedder.init();
-        break :out e_temp.embedder();
-    };
+    var nl = try NLEmbedder.init();
+    defer nl.deinit();
+
+    var e = nl.embedder();
 
     try expectEqual(null, try e.embed(allocator, ""));
 }
@@ -683,10 +695,10 @@ test "embed skip failures" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var e = out: {
-        var e_temp = try NLEmbedder.init();
-        break :out e_temp.embedder();
-    };
+    var nl = try NLEmbedder.init();
+    defer nl.deinit();
+
+    var e = nl.embedder();
 
     _ = (try e.embed(allocator, "(*^(*&(# 4327897493287498*&)(FKJDHDHLKDJHL")).?;
 }

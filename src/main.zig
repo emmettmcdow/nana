@@ -11,11 +11,8 @@ pub fn main() !void {
 
     var runtime = try root.Runtime.init(arena.allocator(), .{
         .basedir = tmp_dir.dir,
-        .mem = true,
     });
     defer runtime.deinit();
-
-    var map = std.hash_map.AutoHashMap(model.NoteID, []const u8).init(arena.allocator());
 
     {
         var embed_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -27,13 +24,13 @@ pub fn main() !void {
             if (file.path[0] == '.') continue;
 
             std.debug.print("Embedding `{s}`\n", .{file.path});
-            const note_id = try runtime.create();
-            try map.put(note_id, try arena.allocator().dupe(u8, file.path));
+            var note_path_buf: [std.posix.PATH_MAX]u8 = undefined;
+            const note_path = try runtime.create(&note_path_buf);
 
             const f = try cwd.openFile(file.path, .{});
             defer f.close();
             const contents = try f.readToEndAlloc(embed_arena.allocator(), MAX_FILESIZE_BYTES);
-            try runtime.writeAll(note_id, contents);
+            try runtime.writeAll(note_path, contents);
         }
     }
 
@@ -52,11 +49,11 @@ pub fn main() !void {
                 var detail = root.SearchDetail{
                     .content = try arena.allocator().alloc(u8, text_len + 1),
                 };
-                try runtime.search_detail(result, query, &detail, .{});
+                try runtime.searchDetail(result, query, &detail, .{});
                 std.debug.print("{}\n", .{result});
                 std.debug.print("({d:.2}%){s}: '{s}'\n", .{
                     result.similarity * 100.0,
-                    map.get(result.id).?,
+                    result.path,
                     detail.content[0..text_len],
                 });
             }
@@ -70,4 +67,3 @@ pub const std_options = std.Options{
 
 const std = @import("std");
 const root = @import("root.zig");
-const model = @import("model.zig");

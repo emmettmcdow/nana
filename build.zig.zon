@@ -24,11 +24,6 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
-        .sqlite = .{
-            // .url = "git+https://github.com/vrischmann/zig-sqlite#59c06617d5b86546c0c739e73ae01d3965dbe8ce",
-            // .hash = "sqlite-3.48.0-F2R_a_uGDgCfOH5UEJYjuOCe-HixnLjToxOdEGAEM3xk",
-            .path = "../zig-sqlite",
-        },
         .zig_objc = .{
             .url = "git+https://github.com/mitchellh/zig-objc#3bdbabb4f79533191a3d33a6df62b61400c40848",
             .hash = "zig_objc-0.0.0-Ir_SpwUPAQDFk6tSkHUBvYrSBqTWCCkyyROrXDe9udTV",
