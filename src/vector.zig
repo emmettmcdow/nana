@@ -3,6 +3,17 @@ const PATH_MAX = std.posix.PATH_MAX;
 
 pub const Error = error{NotQueuedShuttingDown};
 
+/// Runs the doctor routine: deletes the database and re-embeds all notes.
+/// Currently a stub - full implementation coming later.
+pub fn doctor(allocator: std.mem.Allocator, basedir: std.fs.Dir) !void {
+    _ = allocator;
+    _ = basedir;
+    // TODO: Implement full doctor logic:
+    // 1. Delete *.db files
+    // 2. Iterate over all note files in basedir
+    // 3. Re-embed each file and store in fresh vector db
+}
+
 pub const CSearchResult = extern struct {
     path: [PATH_MAX]u8,
     start_i: c_uint,

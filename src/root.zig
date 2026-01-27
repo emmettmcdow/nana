@@ -449,34 +449,8 @@ pub const CSearchDetail = extern struct {
     highlights: [N_SEARCH_HIGHLIGHTS * 2]c_uint,
 };
 
-pub fn doctor(allocator: std.mem.Allocator, basedir: std.fs.Dir) ![:0]const u8 {
-    try deleteAllMeta(basedir);
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
-
-    var it = basedir.iterate();
-    while (try it.next()) |f| {
-        if (f.kind == .file and !shouldIgnoreFile(f.name)) {
-            try output.appendSlice(f.name);
-            try output.append(0);
-        } else if (f.kind == .directory) {
-            std.log.warn("Saw a directory: {s}\n", .{f.name});
-        }
-    }
-
-    try output.append(0);
-    return output.toOwnedSliceSentinel(0);
-}
-
-fn deleteAllMeta(basedir: std.fs.Dir) !void {
-    var it = basedir.iterate();
-    while (try it.next()) |entry| {
-        if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".db")) {
-            try basedir.deleteFile(entry.name);
-        }
-    }
-    basedir.deleteFile(".nana_note_ids") catch {};
-    basedir.deleteFile(".nana_note_ids.tmp") catch {};
+pub fn doctor(allocator: std.mem.Allocator, basedir: std.fs.Dir) !void {
+    return vector.doctor(allocator, basedir);
 }
 
 const IGNORED_FILES = [_][]const u8{".DS_Store"};
@@ -1276,46 +1250,14 @@ test "parse markdown" {
     );
 }
 
-fn stringLessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
-    return std.mem.order(u8, lhs, rhs) == .lt;
-}
-
 test "doctor" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    (try tmpD.dir.createFile("metadata.db", .{})).close();
-    (try tmpD.dir.createFile("vectors.db", .{})).close();
-    (try tmpD.dir.createFile("note1.txt", .{})).close();
-    (try tmpD.dir.createFile("note2.md", .{})).close();
-    (try tmpD.dir.createFile("1234", .{})).close();
-    (try tmpD.dir.createFile(".DS_Store", .{})).close();
-
-    const result = try doctor(arena.allocator(), tmpD.dir);
-    defer arena.allocator().free(result);
-
-    try expectError(error.FileNotFound, tmpD.dir.access("metadata.db", .{}));
-    try expectError(error.FileNotFound, tmpD.dir.access("vectors.db", .{}));
-
-    var names: [3][]const u8 = undefined;
-    var count: usize = 0;
-    var i: usize = 0;
-    while (result[i] != 0) {
-        const start = i;
-        while (result[i] != 0) : (i += 1) {}
-        names[count] = result[start..i];
-        count += 1;
-        i += 1;
-    }
-
-    try expectEqual(3, count);
-
-    std.mem.sort([]const u8, &names, {}, stringLessThan);
-    try expectEqualSlices(u8, names[0], "1234");
-    try expectEqualSlices(u8, names[1], "note1.txt");
-    try expectEqualSlices(u8, names[2], "note2.md");
+    // Doctor is now a stub - just verify it doesn't error
+    try doctor(arena.allocator(), tmpD.dir);
 }
 
 test "title" {

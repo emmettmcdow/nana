@@ -347,42 +347,25 @@ export fn nana_title(path: [*:0]const u8, outbuf: [*:0]u8) [*:0]const u8 {
     return @ptrCast(output.ptr);
 }
 
-export fn nana_doctor(basedir_path: [*:0]const u8) [*:0]const u8 {
+export fn nana_doctor(basedir_path: [*:0]const u8) c_int {
     mutex.lock();
     defer mutex.unlock();
-    std.log.info("nana_doctor {s}", .{std.mem.sliceTo(basedir_path, 0)});
-
-    refresh_arena();
-
-    const basedir_sz = outer: {
-        for (0..PATH_MAX + 1) |i| {
-            const c: u8 = basedir_path[i];
-            if (c == 0) {
-                break :outer i;
-            }
-        }
-        std.log.err("Provided path is too long\n", .{});
-        return "\x00";
-    };
+    const basedir_slice = std.mem.sliceTo(basedir_path, 0);
+    std.log.info("nana_doctor {s}", .{basedir_slice});
+    if (basedir_slice.len >= PATH_MAX) return @intFromEnum(CError.PathTooLong);
 
     var buf: [PATH_MAX]u8 = undefined;
-    const decoded_path: []const u8 = std.Uri.percentDecodeBackwards(&buf, basedir_path[0..basedir_sz :0]);
+    const decoded_path: []const u8 = std.Uri.percentDecodeBackwards(&buf, basedir_slice);
     const basedir = std.fs.openDirAbsolute(decoded_path, .{ .iterate = true }) catch |err| {
         std.log.err("Failed to access working directory '{s}': {}\n", .{ decoded_path, err });
-        return "\x00";
+        return @intFromEnum(CError.FileNotFound);
     };
 
-    const result = doctor(persistent_arena.allocator(), basedir) catch |err| {
+    nana.doctor(gpa.allocator(), basedir) catch |err| {
         std.log.err("Failed to run doctor: {}\n", .{err});
-        return "\x00";
+        return @intFromEnum(CError.GenericFail);
     };
-    return result.ptr;
-}
-
-export fn nana_doctor_finish() void {
-    mutex.lock();
-    defer mutex.unlock();
-    refresh_arena();
+    return @intFromEnum(CError.Success);
 }
 
 const std = @import("std");
@@ -390,7 +373,6 @@ const assert = std.debug.assert;
 const PATH_MAX = std.posix.PATH_MAX;
 
 const nana = @import("root.zig");
-const doctor = nana.doctor;
 const SearchResult = nana.SearchResult;
 const CSearchResult = nana.CSearchResult;
 const SearchDetail = nana.SearchDetail;

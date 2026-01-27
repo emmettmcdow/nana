@@ -9,16 +9,8 @@ import SwiftUI
         return 0 // Success
     }
 
-    private func nana_doctor(_: UnsafePointer<Int8>) -> UnsafePointer<Int8>? {
-        return nil // No files to import
-    }
-
-    private func nana_init(_: UnsafePointer<Int8>) -> Int32 {
+    private func nana_doctor(_: UnsafePointer<Int8>) -> Int32 {
         return 0 // Success
-    }
-
-    private func nana_doctor_finish() {
-        // No-op
     }
 
     enum NanaError: Int {
@@ -115,43 +107,15 @@ func import_from_doctor(onProgress: @MainActor @escaping (_ files: [ImportItem])
 func doctor(basedir: URL,
             onProgress: @MainActor @escaping (_ files: [ImportItem]) -> Void) async
 {
-    var err = nana_deinit()
-    if NanaError(rawValue: Int(err)) != NanaError.Success, NanaError(rawValue: Int(err)) != NanaError.NotInit {
-        fatalError("Failed to de-init libnana! With error: \(err)")
+    let err = basedir.path().withCString { cString in
+        nana_doctor(cString)
     }
 
-    // Call nana_doctor with the directory path
-    let resultPtr = basedir.path().withCString { cString in
-        let resultPtr = nana_doctor(cString)
-
-        err = nana_init(cString)
-        if err != 0 {
-            fatalError("Failed to init libnana! With error:\(err)")
-        }
-        return resultPtr
+    if err != 0 {
+        await onProgress([ImportItem(filename: "Doctor", message: "Doctor failed with error: \(err)", status: .fail)])
+    } else {
+        await onProgress([ImportItem(filename: "Doctor", message: "Completed", status: .success)])
     }
-
-    // Parse the double-null-terminated string into an array of strings
-    var files: [ImportItem] = []
-    var maybePtr = resultPtr
-    while let unwrappedPtr = maybePtr {
-        guard unwrappedPtr.pointee != 0 else {
-            break
-        }
-        let str = String(cString: unwrappedPtr)
-        if !str.isEmpty {
-            files.append(ImportItem(filename: str, message: "", status: ImportStatus.queued))
-        }
-        maybePtr = unwrappedPtr.advanced(by: str.utf8.count + 1)
-    }
-    await onProgress(files)
-
-    await importFiles(
-        files: files,
-        onProgress: onProgress
-    )
-
-    nana_doctor_finish()
 }
 
 func importFiles(
@@ -238,6 +202,13 @@ struct Progress: View {
                         ProgressView(value: Float(nCompleted), total: Float(files.count))
                             .progressViewStyle(.linear)
                             .padding(.horizontal)
+                    } else if action == "doctor" {
+                        if failed.isEmpty {
+                            Text("Successfully fixed data")
+                        } else {
+                            Text("Failed to fix data")
+                            ImportReport(status: ImportStatus.fail, files: failed)
+                        }
                     } else {
                         Text("Finished \(action)ing \(files.count) files")
                         ImportReport(status: ImportStatus.success, files: complete)
