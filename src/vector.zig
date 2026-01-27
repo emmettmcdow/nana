@@ -355,7 +355,7 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
             for (old_vecs) |old_v| {
                 self.vec_storage.rm(old_v.id) catch |e| switch (e) {
                     vec_storage.Error.MultipleRemove => continue,
-                    vec_storage.Error.OverlappingVectors => unreachable,
+                    else => unreachable,
                 };
             }
             try self.vec_storage.save(self.embedder.path);

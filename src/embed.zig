@@ -488,6 +488,10 @@ pub const NLEmbedder = struct {
         const ns_lang = NSString.msgSend(Object, fromUTF8, .{language});
 
         const embedder_obj = NLEmbedding.msgSend(Object, sentenceEmbeddingForLang, .{ns_lang});
+        if (embedder_obj.value == 0) {
+            std.log.err("NLEmbedding.sentenceEmbeddingForLanguage returned nil - ensure this is called from main thread", .{});
+            return error.EmbedderInitFailed;
+        }
         assert(embedder_obj.getProperty(c_int, "dimension") == VEC_SZ);
 
         // Retain the Objective-C object to prevent it from being deallocated

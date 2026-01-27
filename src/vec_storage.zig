@@ -1,4 +1,4 @@
-pub const Error = error{ MultipleRemove, OverlappingVectors };
+pub const Error = error{ MultipleRemove, OverlappingVectors, IncompatibleDatabase };
 
 const LATEST_META_FORMAT_VERSION = 2;
 
@@ -344,10 +344,19 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
 
             const endian = self.meta.endianness();
             self.meta = try reader.readStructEndian(StorageMetadata, endian);
-            assert(self.meta.fmt_v == LATEST_META_FORMAT_VERSION);
-            assert(self.meta.vec_sz == vec_sz);
-            assert(self.meta.vec_type == BinaryTypeRepresentation.to_binary(vec_type));
-            assert(self.meta.idx_type == DEFAULT_DB_IDX_TYPE);
+            if (self.meta.fmt_v != LATEST_META_FORMAT_VERSION or
+                self.meta.vec_sz != vec_sz or
+                self.meta.vec_type != BinaryTypeRepresentation.to_binary(vec_type) or
+                self.meta.idx_type != DEFAULT_DB_IDX_TYPE)
+            {
+                std.log.err("Incompatible database: fmt_v={} (expected {}), vec_sz={} (expected {})", .{
+                    self.meta.fmt_v,
+                    LATEST_META_FORMAT_VERSION,
+                    self.meta.vec_sz,
+                    vec_sz,
+                });
+                return Error.IncompatibleDatabase;
+            }
 
             try self.grow();
             const index_bytes = try self.allocator.alloc(u8, self.index.len);
