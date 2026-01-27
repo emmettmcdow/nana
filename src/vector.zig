@@ -4,14 +4,56 @@ const PATH_MAX = std.posix.PATH_MAX;
 pub const Error = error{NotQueuedShuttingDown};
 
 /// Runs the doctor routine: deletes the database and re-embeds all notes.
-/// Currently a stub - full implementation coming later.
 pub fn doctor(allocator: std.mem.Allocator, basedir: std.fs.Dir) !void {
-    _ = allocator;
-    _ = basedir;
-    // TODO: Implement full doctor logic:
-    // 1. Delete *.db files
-    // 2. Iterate over all note files in basedir
-    // 3. Re-embed each file and store in fresh vector db
+    // 1. Delete all db files and note id map
+    try deleteAllMeta(basedir);
+
+    // 2. Create embedder and fresh vector db
+    const embedder_ptr = try allocator.create(NLEmbedder);
+    errdefer allocator.destroy(embedder_ptr);
+    embedder_ptr.* = try NLEmbedder.init();
+
+    var db = try VectorDB(.apple_nlembedding).init(allocator, basedir, embedder_ptr.embedder());
+    defer db.deinit();
+
+    // 3. Iterate over all note files and re-embed them
+    var it = basedir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.kind != .file) continue;
+        if (!hasNoteExtension(entry.name)) continue;
+
+        const contents = basedir.readFileAlloc(allocator, entry.name, MAX_NOTE_LEN) catch |err| {
+            std.log.warn("Failed to read {s}: {}\n", .{ entry.name, err });
+            continue;
+        };
+        defer allocator.free(contents);
+
+        db.embedText(entry.name, contents) catch |err| {
+            std.log.warn("Failed to embed {s}: {}\n", .{ entry.name, err });
+            continue;
+        };
+    }
+}
+
+fn deleteAllMeta(basedir: std.fs.Dir) !void {
+    var it = basedir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".db")) {
+            try basedir.deleteFile(entry.name);
+        }
+    }
+    basedir.deleteFile(".nana_note_ids") catch {};
+    basedir.deleteFile(".nana_note_ids.tmp") catch {};
+}
+
+const NOTE_EXT = [_][]const u8{ ".md", ".txt" };
+fn hasNoteExtension(path: []const u8) bool {
+    for (NOTE_EXT) |ext| {
+        if (path.len >= ext.len and std.mem.eql(u8, path[path.len - ext.len ..], ext)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 pub const CSearchResult = extern struct {
@@ -882,6 +924,61 @@ test "embedTextAsync rejects after shutdown" {
     const path = "test.md";
     db.shutdown();
     try expectEqual(Error.NotQueuedShuttingDown, db.embedTextAsync(path, "pizza"));
+}
+
+test "doctor deletes db files" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    // Create some db files that should be deleted
+    (try tmpD.dir.createFile("vectors.db", .{})).close();
+    (try tmpD.dir.createFile("metadata.db", .{})).close();
+    // Create note files that should NOT be deleted
+    (try tmpD.dir.createFile("note1.md", .{})).close();
+    (try tmpD.dir.createFile("note2.txt", .{})).close();
+
+    try doctor(arena.allocator(), tmpD.dir);
+
+    // DB files should be deleted
+    try std.testing.expectError(error.FileNotFound, tmpD.dir.access("vectors.db", .{}));
+    try std.testing.expectError(error.FileNotFound, tmpD.dir.access("metadata.db", .{}));
+    // Note files should still exist
+    try tmpD.dir.access("note1.md", .{});
+    try tmpD.dir.access("note2.txt", .{});
+}
+
+test "doctor re-embeds all notes" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    // Create note files with content
+    {
+        const f1 = try tmpD.dir.createFile("note1.md", .{});
+        defer f1.close();
+        try f1.writeAll("apple banana");
+    }
+    {
+        const f2 = try tmpD.dir.createFile("note2.txt", .{});
+        defer f2.close();
+        try f2.writeAll("cherry dragonfruit");
+    }
+
+    try doctor(arena.allocator(), tmpD.dir);
+
+    // After doctor, we should be able to search and find the notes
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try TestVecDB.init(arena.allocator(), tmpD.dir, te.iface);
+    defer db.deinit();
+
+    var results: [10]SearchResult = undefined;
+    const found = try db.search("apple", &results);
+    try expect(found >= 1);
+    try std.testing.expectEqualStrings("note1.md", results[0].path);
 }
 
 const std = @import("std");

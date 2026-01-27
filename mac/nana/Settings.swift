@@ -10,7 +10,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 #if DISABLE_NANAKIT
-    private func nana_doctor(_: UnsafePointer<CChar>) -> Int32 {
+    private func nana_doctor() -> Int32 {
         return 0 // Success
     }
 #else

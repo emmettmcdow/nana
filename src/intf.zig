@@ -347,21 +347,16 @@ export fn nana_title(path: [*:0]const u8, outbuf: [*:0]u8) [*:0]const u8 {
     return @ptrCast(output.ptr);
 }
 
-export fn nana_doctor(basedir_path: [*:0]const u8) c_int {
+export fn nana_doctor() c_int {
     mutex.lock();
     defer mutex.unlock();
-    const basedir_slice = std.mem.sliceTo(basedir_path, 0);
-    std.log.info("nana_doctor {s}", .{basedir_slice});
-    if (basedir_slice.len >= PATH_MAX) return @intFromEnum(CError.PathTooLong);
+    std.log.info("nana_doctor", .{});
 
-    var buf: [PATH_MAX]u8 = undefined;
-    const decoded_path: []const u8 = std.Uri.percentDecodeBackwards(&buf, basedir_slice);
-    const basedir = std.fs.openDirAbsolute(decoded_path, .{ .iterate = true }) catch |err| {
-        std.log.err("Failed to access working directory '{s}': {}\n", .{ decoded_path, err });
-        return @intFromEnum(CError.FileNotFound);
-    };
+    if (!init) {
+        return @intFromEnum(CError.NotInit);
+    }
 
-    nana.doctor(gpa.allocator(), basedir) catch |err| {
+    rt.doctor() catch |err| {
         std.log.err("Failed to run doctor: {}\n", .{err});
         return @intFromEnum(CError.GenericFail);
     };

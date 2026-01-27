@@ -42,6 +42,6 @@ int nana_write_all(const char *, const char *);
 long nana_write_all_with_time(const char *, const char *);
 int nana_read_all(const char *, char *, unsigned int);
 const char * nana_title(const char *, char *);
-int nana_doctor(const char *);
+int nana_doctor(void);
 
 const char * nana_parse_markdown(const char *);

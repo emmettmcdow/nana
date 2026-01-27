@@ -67,6 +67,25 @@ pub const Runtime = struct {
         self.allocator.destroy(self.embedder);
     }
 
+    pub fn doctor(self: *Runtime) !void {
+        // Deinitialize old vectordb (also deinits the embedder interface)
+        self.vectors.deinit();
+        self.allocator.destroy(self.embedder);
+
+        // Call vector.doctor to delete db files and re-embed all notes
+        try vector.doctor(self.allocator, self.basedir);
+
+        // Create new embedder and vectordb
+        const embedder_ptr = try self.allocator.create(Embedder);
+        errdefer self.allocator.destroy(embedder_ptr);
+        embedder_ptr.* = try Embedder.init();
+
+        const vectors = try VectorDB.init(self.allocator, self.basedir, embedder_ptr.embedder());
+
+        self.embedder = embedder_ptr;
+        self.vectors = vectors;
+    }
+
     fn pruneOrphanedNotes(self: *Runtime) !void {
         try self.vectors.pruneOrphanedPaths(self.basedir);
     }
@@ -1250,14 +1269,37 @@ test "parse markdown" {
     );
 }
 
-test "doctor" {
+test "doctor reinitializes vectordb" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    // Doctor is now a stub - just verify it doesn't error
-    try doctor(arena.allocator(), tmpD.dir);
+    // Create a note file
+    {
+        const f = try tmpD.dir.createFile("note1.md", .{});
+        defer f.close();
+        try f.writeAll("hello world");
+    }
+
+    var rt = try Runtime.init(arena.allocator(), .{
+        .basedir = tmpD.dir,
+    });
+    defer rt.deinit();
+
+    // Capture old vectordb pointer
+    const old_vectors = rt.vectors;
+
+    // Run doctor - should deinit old db, call vector.doctor, and create new instance
+    try rt.doctor();
+
+    // Verify vectordb instance was replaced
+    try expect(rt.vectors != old_vectors);
+
+    // Verify search still works after doctor
+    var results: [10]SearchResult = undefined;
+    const found = try rt.search("hello", &results);
+    try expect(found >= 1);
 }
 
 test "title" {

@@ -9,7 +9,7 @@ import SwiftUI
         return 0 // Success
     }
 
-    private func nana_doctor(_: UnsafePointer<Int8>) -> Int32 {
+    private func nana_doctor() -> Int32 {
         return 0 // Success
     }
 
@@ -88,28 +88,12 @@ func import_from_dir(result: Result<[URL], any Error>,
 }
 
 func import_from_doctor(onProgress: @MainActor @escaping (_ files: [ImportItem]) -> Void) async {
-    guard let containerIdentifier = Bundle.main.object(forInfoDictionaryKey:
-        "CloudKitContainerIdentifier") as? String
-    else {
-        await onProgress([ImportItem(filename: "Config", message: "Could not get container identifier from Info.plist", status: .fail)])
-        return
-    }
-    let filemanager = FileManager.default
-    guard let dirURL = filemanager.url(forUbiquityContainerIdentifier: containerIdentifier) else {
-        await onProgress([ImportItem(filename: "iCloud", message: "Could not get iCloud container URL", status: .fail)])
-        return
-    }
-
-    await doctor(basedir: dirURL,
-                 onProgress: onProgress)
+    await doctor(onProgress: onProgress)
 }
 
-func doctor(basedir: URL,
-            onProgress: @MainActor @escaping (_ files: [ImportItem]) -> Void) async
+func doctor(onProgress: @MainActor @escaping (_ files: [ImportItem]) -> Void) async
 {
-    let err = basedir.path().withCString { cString in
-        nana_doctor(cString)
-    }
+    let err = nana_doctor()
 
     if err != 0 {
         await onProgress([ImportItem(filename: "Doctor", message: "Doctor failed with error: \(err)", status: .fail)])
