@@ -1,7 +1,6 @@
 var rt: nana.Runtime = undefined;
 var init: bool = false;
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-var persistent_arena: std.heap.ArenaAllocator = std.heap.ArenaAllocator.init(gpa.allocator());
 var mutex = std.Thread.Mutex{};
 
 const CError = enum(c_int) {
@@ -13,11 +12,6 @@ const CError = enum(c_int) {
     FileNotFound = -12,
     InvalidFiletype = -13,
 };
-
-fn refresh_arena() void {
-    persistent_arena.deinit();
-    persistent_arena = std.heap.ArenaAllocator.init(gpa.allocator());
-}
 
 export fn nana_init(basedir: [*:0]const u8) c_int {
     mutex.lock();
@@ -171,6 +165,7 @@ export fn nana_search(query: [*:0]const u8, outbuf: [*c]CSearchResult, sz: c_uin
 }
 
 /// Get matched area for search result.
+// zlinter-disable
 export fn nana_search_detail(
     path: [*:0]const u8,
     start_i: c_uint,
@@ -179,6 +174,7 @@ export fn nana_search_detail(
     output: *CSearchDetail,
     skip_highlights: bool,
 ) c_int {
+    // zlinter-enable
     const zigPath: []const u8 = std.mem.sliceTo(path, 0);
     std.log.info(
         "nana_search_detail (path: {s}, start_i: {d}, end_i: {d}, query: '{s}')",

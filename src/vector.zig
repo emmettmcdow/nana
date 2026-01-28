@@ -39,11 +39,14 @@ fn deleteAllMeta(basedir: std.fs.Dir) !void {
     var it = basedir.iterate();
     while (try it.next()) |entry| {
         if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".db")) {
-            try basedir.deleteFile(entry.name);
+            basedir.deleteFile(entry.name) catch |e| {
+                std.log.err("Failed to delete file '{s}' with error: {}", .{ entry.name, e });
+                continue;
+            };
         }
     }
-    basedir.deleteFile(".nana_note_ids") catch {};
-    basedir.deleteFile(".nana_note_ids.tmp") catch {};
+    basedir.deleteFile(".nana_note_ids") catch {}; // zlinter-disable-current-line
+    basedir.deleteFile(".nana_note_ids.tmp") catch {}; // zlinter-disable-current-line
 }
 
 const NOTE_EXT = [_][]const u8{ ".md", ".txt" };

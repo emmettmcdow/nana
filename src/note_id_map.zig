@@ -77,7 +77,13 @@ pub const NoteIdMap = struct {
         _ = self.id_to_path.remove(id);
         self.allocator.free(owned_path);
 
-        try self.save();
+        self.save() catch |e| {
+            std.log.err(
+                "Failed to save mapping after removing path '{s}', with error: {}\n",
+                .{ path, e },
+            );
+            return e;
+        };
     }
 
     pub fn renamePath(self: *Self, old_path: []const u8, new_path: []const u8) !void {
@@ -98,8 +104,8 @@ pub const NoteIdMap = struct {
         return self.path_to_id.count();
     }
 
-    // TODO: update the save and load to use SOA. We want to write the fields of the struct all at
-    // once, we should be able to call one syscall to write all of the data.
+    // Possibly update the save and load to use SOA. We want to write the fields of the struct all
+    // at once, we should be able to call one syscall to write all of the data.
     fn load(self: *Self) !void {
         const zone = tracy.beginZone(@src(), .{ .name = "note_id_map.zig:load" });
         defer zone.end();
@@ -140,7 +146,7 @@ pub const NoteIdMap = struct {
         const tmp_name = MANIFEST_FILENAME ++ ".tmp";
 
         const file = try self.basedir.createFile(tmp_name, .{});
-        errdefer self.basedir.deleteFile(tmp_name) catch {};
+        errdefer self.basedir.deleteFile(tmp_name) catch {}; // zlinter-disable-current-line
 
         var writer = file.writer();
 
@@ -155,7 +161,7 @@ pub const NoteIdMap = struct {
             try writer.writeAll(entry.value_ptr.*);
         }
 
-        file.sync() catch {};
+        try file.sync();
         file.close();
 
         try self.basedir.rename(tmp_name, MANIFEST_FILENAME);
@@ -177,7 +183,7 @@ pub const NoteIdMap = struct {
 
         for (to_remove.items) |id| {
             if (self.id_to_path.get(id)) |path| {
-                self.removePath(path) catch {};
+                try self.removePath(path);
             }
         }
     }

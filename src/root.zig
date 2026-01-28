@@ -111,8 +111,8 @@ pub const Runtime = struct {
         }
 
         for (to_delete.items) |path| {
-            self.basedir.deleteFile(path) catch {};
-            self.vectors.removePath(path) catch {};
+            try self.basedir.deleteFile(path);
+            try self.vectors.removePath(path);
         }
     }
 
