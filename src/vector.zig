@@ -327,16 +327,32 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
         ) !void {
             const zone = tracy.beginZone(@src(), .{ .name = "vector.zig:embedText" });
             defer zone.end();
-
-            assert(contents.len < MAX_NOTE_LEN);
-
-            const note_id = try self.note_id_map.getOrCreateId(path);
-
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             defer arena.deinit();
             const allocator = arena.allocator();
 
-            const embedded_sentences = try self.embedNewText(allocator, contents);
+            assert(contents.len < MAX_NOTE_LEN);
+
+            var embedded_sentence_list = std.ArrayList(EmbeddedSentence).init(allocator);
+            errdefer embedded_sentence_list.deinit();
+            var spliterator = embed.SentenceSpliterator.init(contents);
+            while (spliterator.next()) |sentence| {
+                const vec: ?*const [VEC_SZ]VEC_TYPE =
+                    if (whitespaceOnly(sentence.contents) or !wordlike(sentence.contents))
+                        null
+                    else if (try self.embedder.embed(allocator, sentence.contents)) |v|
+                        @field(v, @tagName(embedding_model))
+                    else
+                        null;
+
+                try embedded_sentence_list.append(.{
+                    .vec = vec,
+                    .start_i = sentence.start_i,
+                    .end_i = sentence.end_i,
+                });
+            }
+            const embedded_sentences = try embedded_sentence_list.toOwnedSlice();
+            const note_id = try self.note_id_map.getOrCreateId(path);
             try self.replaceVectors(allocator, note_id, embedded_sentences);
 
             std.log.info("Embedded {d} sentences\n", .{embedded_sentences.len});
@@ -358,34 +374,6 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
             @memcpy(owned_contents, contents);
             try self.work_queue.push(.{ .path = owned_path, .contents = owned_contents });
             self.work_queue_condition.signal();
-        }
-
-        fn embedNewText(
-            self: *Self,
-            allocator: std.mem.Allocator,
-            contents: []const u8,
-        ) ![]EmbeddedSentence {
-            var embedded = std.ArrayList(EmbeddedSentence).init(allocator);
-            errdefer embedded.deinit();
-
-            var spliterator = embed.SentenceSpliterator.init(contents);
-            while (spliterator.next()) |sentence| {
-                const vec: ?*const [VEC_SZ]VEC_TYPE =
-                    if (whitespaceOnly(sentence.contents) or !wordlike(sentence.contents))
-                        null
-                    else if (try self.embedder.embed(allocator, sentence.contents)) |v|
-                        @field(v, @tagName(embedding_model))
-                    else
-                        null;
-
-                try embedded.append(.{
-                    .vec = vec,
-                    .start_i = sentence.start_i,
-                    .end_i = sentence.end_i,
-                });
-            }
-
-            return embedded.toOwnedSlice();
         }
 
         fn replaceVectors(

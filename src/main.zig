@@ -74,4 +74,4 @@ const config = @import("config");
 const embedding_model: embed.EmbeddingModel = @enumFromInt(@intFromEnum(config.embedding_model));
 const embed = @import("embed.zig");
 const vector = @import("vector.zig");
-const VectorDB = vector.VectorDB(.apple_nlembedding);
+const VectorDB = vector.VectorDB(embedding_model);
