@@ -309,14 +309,14 @@ pub fn build(b: *std.Build) !void {
     // All tests - use test_file to run only specific file's tests
     const test_step = b.step("test", "Run unit tests (-Dtest-file=X to run one file, -Dtest-filter=Y to filter tests)");
     const file_tests = .{
-        .{ "root", test_root },
-        .{ "note_id_map", test_note_id_map },
-        .{ "embed", test_embed },
-        .{ "vec_storage", test_vec_storage },
-        .{ "vector", test_vector },
-        .{ "diff", test_diff },
-        .{ "markdown", test_markdown },
-        .{ "util", test_util },
+        .{ "root.zig", test_root },
+        .{ "note_id_map.zig", test_note_id_map },
+        .{ "embed.zig", test_embed },
+        .{ "vec_storage.zig", test_vec_storage },
+        .{ "vector.zig", test_vector },
+        .{ "diff.zig", test_diff },
+        .{ "markdown.zig", test_markdown },
+        .{ "util.zig", test_util },
     };
     inline for (file_tests) |entry| {
         const name = entry[0];
