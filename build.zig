@@ -9,12 +9,16 @@ pub fn build(b: *std.Build) !void {
         "embedding-model",
         "Embedding model to use (apple_nlembedding or jina_embedding)",
     ) orelse .apple_nlembedding;
-    // Need to find a way to merge this with existing filtering per compilation unit
-    // const test_filter = b.option(
-    //     []const u8,
-    //     "test-filter",
-    //     "Skip tests that do not match any filter",
-    // ) orelse &[]const u8{};
+    const test_filter: ?[]const u8 = b.option(
+        []const u8,
+        "test-filter",
+        "Filter to select specific tests (e.g., -Dtest-filter='my test name')",
+    );
+    const test_file: ?[]const u8 = b.option(
+        []const u8,
+        "test-file",
+        "Run tests only from this file (e.g., -Dtest-file=vector)",
+    );
     const optimize = b.standardOptimizeOption(.{});
 
     const install_step = b.getInstallStep();
@@ -147,13 +151,16 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     };
 
+    // Helper to get filters - uses test_filter if provided, otherwise uses default
+    const filters: []const []const u8 = if (test_filter) |f| &.{f} else &.{};
+
     const test_root = b.step("test-root", "run the tests for src/root.zig");
     {
         const t = b.addTest(.{
             .root_source_file = root_file,
             .target = x86_target,
             .optimize = optimize,
-            .filters = &.{"root"},
+            .filters = if (test_filter != null) filters else &.{"root"},
         });
         real_vec_cfg.install(b, t, debug, embedding_model);
         addAllDeps(depOpts(x86_deps, t));
@@ -166,7 +173,7 @@ pub fn build(b: *std.Build) !void {
             .root_source_file = note_id_map_file,
             .target = x86_target,
             .optimize = optimize,
-            .filters = &.{"note_id_map"},
+            .filters = if (test_filter != null) filters else &.{"note_id_map"},
         });
         addTracy(depOpts(x86_deps, t));
         test_note_id_map.dependOn(&b.addRunArtifact(t).step);
@@ -178,7 +185,7 @@ pub fn build(b: *std.Build) !void {
             .root_source_file = embed_file,
             .target = x86_target,
             .optimize = optimize,
-            .filters = &.{"embed"},
+            .filters = if (test_filter != null) filters else &.{"embed"},
         });
         real_vec_cfg.install(b, t, debug, embedding_model);
         addObjC(depOpts(x86_deps, t));
@@ -200,7 +207,7 @@ pub fn build(b: *std.Build) !void {
             .root_source_file = vec_storage_file,
             .target = x86_target,
             .optimize = optimize,
-            .filters = &.{"vec_storage"},
+            .filters = if (test_filter != null) filters else &.{"vec_storage"},
         });
         fake_vec_cfg.install(b, t, debug, embedding_model);
         addTracy(depOpts(x86_deps, t));
@@ -213,7 +220,7 @@ pub fn build(b: *std.Build) !void {
             .root_source_file = markdown_file,
             .target = x86_target,
             .optimize = optimize,
-            .filters = &.{"markdown"},
+            .filters = if (test_filter != null) filters else &.{"markdown"},
         });
         fake_vec_cfg.install(b, t, debug, embedding_model);
         addTracy(depOpts(x86_deps, t));
@@ -226,7 +233,7 @@ pub fn build(b: *std.Build) !void {
             .root_source_file = vector_file,
             .target = x86_target,
             .optimize = optimize,
-            .filters = &.{"vector"},
+            .filters = if (test_filter != null) filters else &.{"vector"},
         });
         real_vec_cfg.install(b, t, debug, embedding_model);
         addAllDeps(depOpts(x86_deps, t));
@@ -239,7 +246,7 @@ pub fn build(b: *std.Build) !void {
             .root_source_file = diff_file,
             .target = x86_target,
             .optimize = optimize,
-            .filters = &.{"diff"},
+            .filters = if (test_filter != null) filters else &.{"diff"},
         });
         fake_vec_cfg.install(b, t, debug, embedding_model);
         test_diff.dependOn(&b.addRunArtifact(t).step);
@@ -251,7 +258,7 @@ pub fn build(b: *std.Build) !void {
             .root_source_file = util_file,
             .target = x86_target,
             .optimize = optimize,
-            .filters = &.{"util"},
+            .filters = if (test_filter != null) filters else &.{"util"},
         });
         fake_vec_cfg.install(b, t, debug, embedding_model);
         test_util.dependOn(&b.addRunArtifact(t).step);
@@ -263,7 +270,7 @@ pub fn build(b: *std.Build) !void {
             .root_source_file = benchmark_file,
             .target = x86_target,
             .optimize = optimize,
-            .filters = &.{"benchmark"},
+            .filters = if (test_filter != null) filters else &.{"benchmark"},
         });
         real_vec_cfg.install(b, t, debug, embedding_model);
         addAllDeps(depOpts(x86_deps, t));
@@ -276,7 +283,7 @@ pub fn build(b: *std.Build) !void {
             .root_source_file = perf_file,
             .target = x86_target,
             .optimize = optimize,
-            .filters = &.{"perf"},
+            .filters = if (test_filter != null) filters else &.{"perf"},
         });
         real_vec_cfg.install(b, t, debug, embedding_model);
         addObjC(depOpts(x86_deps, t));
@@ -299,16 +306,29 @@ pub fn build(b: *std.Build) !void {
         profile_step.dependOn(&b.addRunArtifact(p).step);
     }
 
-    // All tests
-    const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(test_root);
-    test_step.dependOn(test_note_id_map);
-    test_step.dependOn(test_embed);
-    test_step.dependOn(test_vec_storage);
-    test_step.dependOn(test_vector);
-    test_step.dependOn(test_diff);
-    test_step.dependOn(test_markdown);
-    test_step.dependOn(test_util);
+    // All tests - use test_file to run only specific file's tests
+    const test_step = b.step("test", "Run unit tests (-Dtest-file=X to run one file, -Dtest-filter=Y to filter tests)");
+    const file_tests = .{
+        .{ "root", test_root },
+        .{ "note_id_map", test_note_id_map },
+        .{ "embed", test_embed },
+        .{ "vec_storage", test_vec_storage },
+        .{ "vector", test_vector },
+        .{ "diff", test_diff },
+        .{ "markdown", test_markdown },
+        .{ "util", test_util },
+    };
+    inline for (file_tests) |entry| {
+        const name = entry[0];
+        const step = entry[1];
+        if (test_file) |tf| {
+            if (std.mem.eql(u8, tf, name)) {
+                test_step.dependOn(step);
+            }
+        } else {
+            test_step.dependOn(step);
+        }
+    }
 
     const lint_cmd = b.step("lint", "Lint source code.");
     lint_cmd.dependOn(step: {
