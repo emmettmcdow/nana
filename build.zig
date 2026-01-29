@@ -19,6 +19,7 @@ pub fn build(b: *std.Build) !void {
         "test-file",
         "Run tests only from this file (e.g., -Dtest-file=vector)",
     );
+    const use_lldb = b.option(bool, "lldb", "Run tests under lldb debugger") orelse false;
     const optimize = b.standardOptimizeOption(.{});
 
     const install_step = b.getInstallStep();
@@ -154,6 +155,20 @@ pub fn build(b: *std.Build) !void {
     // Helper to get filters - uses test_filter if provided, otherwise uses default
     const filters: []const []const u8 = if (test_filter) |f| &.{f} else &.{};
 
+    // Helper to create a run step, optionally wrapping with lldb
+    const runTest = struct {
+        fn run(builder: *std.Build, test_artifact: *std.Build.Step.Compile, lldb: bool) *RunStep {
+            if (lldb) {
+                const lldb_run = RunStep.create(builder, "lldb test");
+                lldb_run.addArgs(&.{ "lldb", "--" });
+                lldb_run.addArtifactArg(test_artifact);
+                return lldb_run;
+            } else {
+                return builder.addRunArtifact(test_artifact);
+            }
+        }
+    }.run;
+
     const test_root = b.step("test-root", "run the tests for src/root.zig");
     {
         const t = b.addTest(.{
@@ -164,7 +179,7 @@ pub fn build(b: *std.Build) !void {
         });
         real_vec_cfg.install(b, t, debug, embedding_model);
         addAllDeps(depOpts(x86_deps, t));
-        test_root.dependOn(&b.addRunArtifact(t).step);
+        test_root.dependOn(&runTest(b, t, use_lldb).step);
     }
 
     const test_note_id_map = b.step("test-note_id_map", "run the tests for src/note_id_map.zig");
@@ -176,7 +191,7 @@ pub fn build(b: *std.Build) !void {
             .filters = if (test_filter != null) filters else &.{"note_id_map"},
         });
         addTracy(depOpts(x86_deps, t));
-        test_note_id_map.dependOn(&b.addRunArtifact(t).step);
+        test_note_id_map.dependOn(&runTest(b, t, use_lldb).step);
     }
 
     const test_embed = b.step("test-embed", "run the tests for src/embed.zig");
@@ -196,7 +211,7 @@ pub fn build(b: *std.Build) !void {
             .install_subdir = "jina-embeddings-v2-base-en",
         });
         install_models.step.dependOn(jina_model.step);
-        const run = b.addRunArtifact(t);
+        const run = runTest(b, t, use_lldb);
         run.step.dependOn(&install_models.step);
         test_embed.dependOn(&run.step);
     }
@@ -211,7 +226,7 @@ pub fn build(b: *std.Build) !void {
         });
         fake_vec_cfg.install(b, t, debug, embedding_model);
         addTracy(depOpts(x86_deps, t));
-        test_vec_storage.dependOn(&b.addRunArtifact(t).step);
+        test_vec_storage.dependOn(&runTest(b, t, use_lldb).step);
     }
 
     const test_markdown = b.step("test-markdown", "run the tests for src/markdown.zig");
@@ -224,7 +239,7 @@ pub fn build(b: *std.Build) !void {
         });
         fake_vec_cfg.install(b, t, debug, embedding_model);
         addTracy(depOpts(x86_deps, t));
-        test_markdown.dependOn(&b.addRunArtifact(t).step);
+        test_markdown.dependOn(&runTest(b, t, use_lldb).step);
     }
 
     const test_vector = b.step("test-vector", "run the tests for src/vector.zig");
@@ -237,7 +252,7 @@ pub fn build(b: *std.Build) !void {
         });
         real_vec_cfg.install(b, t, debug, embedding_model);
         addAllDeps(depOpts(x86_deps, t));
-        test_vector.dependOn(&b.addRunArtifact(t).step);
+        test_vector.dependOn(&runTest(b, t, use_lldb).step);
     }
 
     const test_diff = b.step("test-diff", "run the tests for src/diff.zig");
@@ -249,7 +264,7 @@ pub fn build(b: *std.Build) !void {
             .filters = if (test_filter != null) filters else &.{"diff"},
         });
         fake_vec_cfg.install(b, t, debug, embedding_model);
-        test_diff.dependOn(&b.addRunArtifact(t).step);
+        test_diff.dependOn(&runTest(b, t, use_lldb).step);
     }
 
     const test_util = b.step("test-util", "run the tests for src/util.zig");
@@ -261,7 +276,7 @@ pub fn build(b: *std.Build) !void {
             .filters = if (test_filter != null) filters else &.{"util"},
         });
         fake_vec_cfg.install(b, t, debug, embedding_model);
-        test_util.dependOn(&b.addRunArtifact(t).step);
+        test_util.dependOn(&runTest(b, t, use_lldb).step);
     }
 
     const test_benchmark = b.step("test-benchmark", "run the tests for src/benchmark.zig");
@@ -274,7 +289,7 @@ pub fn build(b: *std.Build) !void {
         });
         real_vec_cfg.install(b, t, debug, embedding_model);
         addAllDeps(depOpts(x86_deps, t));
-        test_benchmark.dependOn(&b.addRunArtifact(t).step);
+        test_benchmark.dependOn(&runTest(b, t, use_lldb).step);
     }
 
     const test_perf = b.step("perf", "Run performance benchmark tests");
@@ -288,7 +303,7 @@ pub fn build(b: *std.Build) !void {
         real_vec_cfg.install(b, t, debug, embedding_model);
         addObjC(depOpts(x86_deps, t));
         addTracy(depOpts(x86_deps, t));
-        const run = b.addRunArtifact(t);
+        const run = runTest(b, t, use_lldb);
         run.step.dependOn(jina_model.step);
         test_perf.dependOn(&run.step);
     }
@@ -303,7 +318,13 @@ pub fn build(b: *std.Build) !void {
         });
         real_vec_cfg.install(b, p, debug, embedding_model);
         addAllDeps(depOpts(x86_deps, p));
-        profile_step.dependOn(&b.addRunArtifact(p).step);
+        const profile_run = if (use_lldb) blk: {
+            const lldb_run = RunStep.create(b, "lldb profile");
+            lldb_run.addArgs(&.{ "lldb", "--" });
+            lldb_run.addArtifactArg(p);
+            break :blk lldb_run;
+        } else b.addRunArtifact(p);
+        profile_step.dependOn(&profile_run.step);
     }
 
     // All tests - use test_file to run only specific file's tests
