@@ -1,3 +1,13 @@
+// Note on Objective-C runtime
+// Because we are calling into a garbage-collected language (Objective-C), we need to manage our
+// memory accordingly. When a new Object is created (typically through `msgSend(Object...`), the
+// runtime needs to know whether it can GC that instance. This is done through
+// - Object.retain() - indicates we need this instance, incrementing the refence counter.
+// - Object.release() - indicates we are finished with this object, decrementing the ref counter.
+// - objc.AutoreleasePool.init() and .deinit() - works like an arena.
+// Most allocated objects start with a reference counter of 1, so there is no need to `retain` an
+// object most of the time. The only time we need to explicitly retain is when we get an object
+// from some parent object which we release. The release cascades down to children.
 pub const EmbeddingModel = enum {
     apple_nlembedding,
     jina_embedding,
