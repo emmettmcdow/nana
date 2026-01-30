@@ -145,7 +145,7 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
             note_id: NoteID,
             start_i: usize,
             end_i: usize,
-            vec: Vector,
+            vec_id: VectorID,
         };
 
         pub const SearchEntry = struct {
@@ -212,27 +212,32 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
                 .note_id = self.note_ids[id],
                 .start_i = self.start_is[id],
                 .end_i = self.end_is[id],
-                .vec = self.vectors[id],
+                .vec_id = id,
             };
         }
 
-        pub fn put(self: *Self, row: VectorRow) !VectorID {
+        pub fn getVec(self: Self, id: VectorID) Vector {
+            assert(id != self.nullVec());
+            return self.vectors[id];
+        }
+
+        pub fn put(self: *Self, note_id: NoteID, start_idx: usize, end_idx: usize, vec: Vector) !VectorID {
             const new_id = self.nextIndex();
             assert(!self.isOccupied(new_id));
             self.meta.vec_n += 1;
 
             try self.grow();
 
-            self.putAt(row, new_id);
+            self.putAt(note_id, start_idx, end_idx, vec, new_id);
             return new_id;
         }
-
-        fn putAt(self: *Self, row: VectorRow, id: usize) void {
+        // zlinter-disable-next-line
+        fn putAt(self: *Self, note_id: NoteID, start_idx: usize, end_idx: usize, vec: Vector, id: usize) void {
             assert(id != self.nullVec());
-            self.vectors[id] = row.vec;
-            self.note_ids[id] = row.note_id;
-            self.start_is[id] = row.start_i;
-            self.end_is[id] = row.end_i;
+            self.vectors[id] = vec;
+            self.note_ids[id] = note_id;
+            self.start_is[id] = start_idx;
+            self.end_is[id] = end_idx;
             self.setOccupied(id, true);
             self.setDirty(id, true);
         }
@@ -394,7 +399,7 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
             try self.grow();
 
             const row = self.get(id);
-            self.putAt(row, new_id);
+            self.putAt(row.note_id, row.start_i, row.end_i, self.getVec(id), new_id);
             return new_id;
         }
 
@@ -523,16 +528,6 @@ const TestT = f32;
 const TestN = 3;
 const TestVecType = @Vector(TestN, TestT);
 const TestStorage = Storage(TestN, TestT);
-const TestVectorRow = TestStorage.VectorRow;
-
-fn makeTestRow(vec: TestVecType, note_id: NoteID, start_i: usize, end_i_val: usize) TestVectorRow {
-    return .{
-        .note_id = note_id,
-        .start_i = start_i,
-        .end_i = end_i_val,
-        .vec = vec,
-    };
-}
 
 test "test put / get" {
     var tmpD = tmpDir(.{ .iterate = true });
@@ -543,12 +538,12 @@ test "test put / get" {
     defer inst.deinit();
 
     try expect(inst.meta.vec_n == 0);
-    const row1 = makeTestRow(.{ 1, 1, 1 }, 42, 0, 10);
-    const id = try inst.put(row1);
+    const vec1: TestVecType = .{ 1, 1, 1 };
+    const id = try inst.put(42, 0, 10, vec1);
     try expect(inst.meta.vec_n == 1);
     const row2 = inst.get(id);
 
-    try expect(@reduce(.And, row1.vec == row2.vec));
+    try expect(@reduce(.And, vec1 == inst.getVec(row2.vec_id)));
     try expect(row2.note_id == 42);
     try expect(row2.start_i == 0);
     try expect(row2.end_i == 10);
@@ -563,8 +558,8 @@ test "re Storage" {
     defer inst.deinit();
 
     try expect(inst.meta.vec_n == 0);
-    const row1 = makeTestRow(.{ 1, 1, 1 }, 100, 5, 15);
-    const id = try inst.put(row1);
+    const vec1: TestVecType = .{ 1, 1, 1 };
+    const id = try inst.put(100, 5, 15, vec1);
     try expect(inst.meta.vec_n == 1);
     try inst.save("temp.db");
     inst.deinit();
@@ -574,7 +569,7 @@ test "re Storage" {
     try inst2.load("temp.db");
     try expect(inst2.meta.vec_n == 1);
     const row2 = inst2.get(id);
-    try expect(@reduce(.And, row1.vec == row2.vec));
+    try expect(@reduce(.And, vec1 == inst2.getVec(row2.vec_id)));
     try expect(row2.note_id == 100);
     try expect(row2.start_i == 5);
     try expect(row2.end_i == 15);
@@ -586,17 +581,18 @@ test "re Storage multiple" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    const rows: [4]TestVectorRow = .{
-        makeTestRow(.{ 1, 1, 1 }, 1, 0, 10),
-        makeTestRow(.{ 1, 2, 3 }, 2, 10, 20),
-        makeTestRow(.{ 0.5, 0.5, 0.5 }, 3, 20, 30),
-        makeTestRow(.{ -0.5, -0.5, -0.5 }, 4, 30, 40),
+    const TestRow = struct { vec: TestVecType, note_id: NoteID, start_i: usize, end_i: usize };
+    const rows: [4]TestRow = .{
+        .{ .vec = .{ 1, 1, 1 }, .note_id = 1, .start_i = 0, .end_i = 10 },
+        .{ .vec = .{ 1, 2, 3 }, .note_id = 2, .start_i = 10, .end_i = 20 },
+        .{ .vec = .{ 0.5, 0.5, 0.5 }, .note_id = 3, .start_i = 20, .end_i = 30 },
+        .{ .vec = .{ -0.5, -0.5, -0.5 }, .note_id = 4, .start_i = 30, .end_i = 40 },
     };
 
     var inst = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     try expect(inst.meta.vec_n == 0);
     for (rows) |row| {
-        _ = try inst.put(row);
+        _ = try inst.put(row.note_id, row.start_i, row.end_i, row.vec);
     }
     try expect(inst.meta.vec_n == rows.len);
     try inst.save("temp.db");
@@ -608,7 +604,7 @@ test "re Storage multiple" {
     try expect(inst2.meta.vec_n == rows.len);
     for (rows, 0..) |row, i| {
         const loaded = inst2.get(i);
-        try expect(@reduce(.And, row.vec == loaded.vec));
+        try expect(@reduce(.And, row.vec == inst2.getVec(loaded.vec_id)));
         try expect(row.note_id == loaded.note_id);
         try expect(row.start_i == loaded.start_i);
         try expect(row.end_i == loaded.end_i);
@@ -621,18 +617,19 @@ test "re Storage index" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    const rows: [4]TestVectorRow = .{
-        makeTestRow(.{ 1, 1, 1 }, 1, 0, 10),
-        makeTestRow(.{ 1, 2, 3 }, 2, 10, 20),
-        makeTestRow(.{ 0.5, 0.5, 0.5 }, 3, 20, 30),
-        makeTestRow(.{ -0.5, -0.5, -0.5 }, 4, 30, 40),
+    const TestRow = struct { vec: TestVecType, note_id: NoteID, start_i: usize, end_i: usize };
+    const rows: [4]TestRow = .{
+        .{ .vec = .{ 1, 1, 1 }, .note_id = 1, .start_i = 0, .end_i = 10 },
+        .{ .vec = .{ 1, 2, 3 }, .note_id = 2, .start_i = 10, .end_i = 20 },
+        .{ .vec = .{ 0.5, 0.5, 0.5 }, .note_id = 3, .start_i = 20, .end_i = 30 },
+        .{ .vec = .{ -0.5, -0.5, -0.5 }, .note_id = 4, .start_i = 30, .end_i = 40 },
     };
     var ids: [4]VectorID = undefined;
 
     var inst = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     try expect(inst.meta.vec_n == 0);
     for (rows, 0..) |row, i| {
-        ids[i] = try inst.put(row);
+        ids[i] = try inst.put(row.note_id, row.start_i, row.end_i, row.vec);
     }
     for (0..4) |i| {
         try expect(inst.isOccupied(i));
@@ -669,13 +666,13 @@ test "test put resize" {
     try expect(inst.meta.vec_n == 0);
     try expect(inst.capacity == 32);
 
-    const row1 = makeTestRow(.{ 1, 1, 1 }, 1, 0, 10);
+    const vec1: TestVecType = .{ 1, 1, 1 };
     for (0..31) |_| {
-        _ = try inst.put(row1);
+        _ = try inst.put(1, 0, 10, vec1);
     }
     try expect(inst.meta.vec_n == 31);
     try expect(inst.capacity == 32);
-    _ = try inst.put(row1);
+    _ = try inst.put(1, 0, 10, vec1);
     try expect(inst.meta.vec_n == 32);
     try expect(inst.capacity == 64);
 }
@@ -707,17 +704,17 @@ test "grow" {
     try expect(inst.start_is.len == 1);
     try expect(inst.end_is.len == 1);
 
-    _ = try inst.put(makeTestRow(std.mem.zeroes(TestVecType), 1, 0, 0));
+    _ = try inst.put(1, 0, 0, std.mem.zeroes(TestVecType));
     try expect(inst.capacity == 2);
     try expect(inst.vectors.len == 2);
     try expect(inst.index.len == 2);
 
-    _ = try inst.put(makeTestRow(std.mem.zeroes(TestVecType), 2, 0, 0));
+    _ = try inst.put(2, 0, 0, std.mem.zeroes(TestVecType));
     try expect(inst.capacity == 4);
     try expect(inst.vectors.len == 4);
     try expect(inst.index.len == 4);
 
-    _ = try inst.put(makeTestRow(std.mem.zeroes(TestVecType), 3, 0, 0));
+    _ = try inst.put(3, 0, 0, std.mem.zeroes(TestVecType));
     try expect(inst.capacity == 4);
     try expect(inst.vectors.len == 4);
     try expect(inst.index.len == 4);
@@ -734,12 +731,13 @@ test "copy" {
     defer arena.deinit();
     var inst = try TestStorage.init(arena.allocator(), tmpD.dir, .{ .sz = 2 });
 
-    const row1 = makeTestRow(.{ 1, 1, 1 }, 42, 5, 15);
-    const old_id = try inst.put(row1);
+    const vec1: TestVecType = .{ 1, 1, 1 };
+    const old_id = try inst.put(42, 5, 15, vec1);
     const new_id = try inst.copy(old_id);
     try expect(old_id != new_id);
+    const row1 = inst.get(old_id);
     const row2 = inst.get(new_id);
-    try expect(@reduce(.And, row1.vec == row2.vec));
+    try expect(@reduce(.And, inst.getVec(row1.vec_id) == inst.getVec(row2.vec_id)));
     try expect(row1.note_id == row2.note_id);
     try expect(row1.start_i == row2.start_i);
     try expect(row1.end_i == row2.end_i);
@@ -754,16 +752,14 @@ test "dirty and occupied" {
     var inst = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     defer inst.deinit();
 
-    const row1 = makeTestRow(.{ 1, 1, 1 }, 1, 0, 10);
-    const id1 = try inst.put(row1);
+    const id1 = try inst.put(1, 0, 10, .{ 1, 1, 1 });
     try expect(inst.isOccupied(id1));
     try expect(inst.isDirty(id1));
     try inst.save("temp.db");
     try expect(!inst.isDirty(id1));
     try expect(inst.isOccupied(id1));
 
-    const row2 = makeTestRow(.{ 2, 2, 2 }, 2, 10, 20);
-    const id2 = try inst.put(row2);
+    const id2 = try inst.put(2, 10, 20, .{ 2, 2, 2 });
     try expect(inst.isOccupied(id2));
     try expect(inst.isDirty(id2));
     try inst.rm(id2);
@@ -782,16 +778,15 @@ test "no write dirty" {
 
     var inst = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     defer inst.deinit();
-    const row1_a = makeTestRow(.{ 1, 1, 1 }, 100, 0, 10);
-    const id = try inst.put(row1_a);
+    const vec1_a: TestVecType = .{ 1, 1, 1 };
+    const id = try inst.put(100, 0, 10, vec1_a);
     try inst.save("temp.db");
 
     var inst2 = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     defer inst2.deinit();
     try inst2.load("temp.db");
 
-    const row2 = makeTestRow(.{ 2, 2, 2 }, 200, 10, 20);
-    inst2.putAt(row2, id);
+    inst2.putAt(200, 10, 20, .{ 2, 2, 2 }, id);
     inst2.setDirty(id, false);
     try inst2.save("temp.db");
 
@@ -800,9 +795,9 @@ test "no write dirty" {
     try inst3.load("temp.db");
     const row1_b = inst3.get(id);
     // Vector data respects dirty flag (uses seek-based writes)
-    try expect(@reduce(.And, row1_a.vec == row1_b.vec));
+    try expect(@reduce(.And, vec1_a == inst3.getVec(row1_b.vec_id)));
     // Scalar fields are batch-written, so they get overwritten regardless of dirty flag
-    try expect(row2.note_id == row1_b.note_id);
+    try expect(200 == row1_b.note_id);
 }
 
 test "loaded not dirty" {
@@ -815,7 +810,7 @@ test "loaded not dirty" {
     defer inst.deinit();
     var ids: [10]VectorID = undefined;
     for (0..10) |i| {
-        ids[i] = try inst.put(makeTestRow(.{ 1, 1, 1 }, @intCast(i), 0, 10));
+        ids[i] = try inst.put(@intCast(i), 0, 10, .{ 1, 1, 1 });
         try expect(inst.isDirty(ids[i]));
     }
     try inst.save("temp.db");
@@ -837,9 +832,9 @@ test "search returns VectorRow" {
     var inst = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     defer inst.deinit();
 
-    _ = try inst.put(makeTestRow(.{ 1, 0, 0 }, 10, 0, 5));
-    _ = try inst.put(makeTestRow(.{ 0.9, 0.1, 0 }, 20, 5, 10));
-    _ = try inst.put(makeTestRow(.{ 0, 1, 0 }, 30, 10, 15));
+    _ = try inst.put(10, 0, 5, .{ 1, 0, 0 });
+    _ = try inst.put(20, 5, 10, .{ 0.9, 0.1, 0 });
+    _ = try inst.put(30, 10, 15, .{ 0, 1, 0 });
 
     var results: [10]TestStorage.SearchEntry = undefined;
     const count = try inst.search(.{ 1, 0, 0 }, &results, 0.5);
@@ -848,6 +843,37 @@ test "search returns VectorRow" {
     try expect(results[0].row.note_id == 10);
     try expect(results[1].row.note_id == 20);
     try expect(results[0].similarity > results[1].similarity);
+}
+
+test "search hugebuf" {
+    const HugeN = 1000;
+    const HugeVecType = @Vector(HugeN, f32);
+    const HugeStorage = Storage(HugeN, f32);
+
+    var tmpD = tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    var inst = try HugeStorage.init(arena.allocator(), tmpD.dir, .{ .sz = 2048 });
+    defer inst.deinit();
+
+    // Insert 1000 vectors
+    for (0..1000) |i| {
+        var vec: HugeVecType = @splat(0);
+        vec[i % HugeN] = 1.0; // Each vector has a single 1.0 at position i%N
+        _ = try inst.put(@intCast(i), i * 10, (i + 1) * 10, vec);
+    }
+
+    // Search with a large result buffer (1000 entries)
+    var results: [1000]HugeStorage.SearchEntry = undefined;
+    var query: HugeVecType = @splat(0);
+    query[0] = 1.0; // Query matches first vector perfectly
+
+    const n_results = try inst.search(query, &results, 0.0);
+    try expectEqual(1, n_results);
+    try expect(results[0].row.note_id == 0);
+    try expect(results[0].similarity == 1.0);
 }
 
 // **************************************************************************************** Vectors
@@ -926,9 +952,9 @@ test "rmByNoteId" {
     const note1: NoteID = 1;
     const note2: NoteID = 2;
 
-    _ = try s.put(makeTestRow(.{ 1, 0, 0 }, note1, 0, 5));
-    _ = try s.put(makeTestRow(.{ 0, 1, 0 }, note1, 5, 10));
-    _ = try s.put(makeTestRow(.{ 0, 0, 1 }, note2, 0, 5));
+    _ = try s.put(note1, 0, 5, .{ 1, 0, 0 });
+    _ = try s.put(note1, 5, 10, .{ 0, 1, 0 });
+    _ = try s.put(note2, 0, 5, .{ 0, 0, 1 });
 
     try std.testing.expectEqual(@as(usize, 3), s.meta.vec_n);
 
@@ -949,6 +975,7 @@ const FileReader = std.fs.File.Reader;
 const tmpDir = std.testing.tmpDir;
 const testing_allocator = std.testing.allocator;
 const expect = std.testing.expect;
+const expectEqual = std.testing.expectEqual;
 
 const config = @import("config");
 const tracy = @import("tracy");

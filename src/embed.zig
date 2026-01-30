@@ -122,55 +122,54 @@ pub const JinaEmbedder = struct {
         };
 
         const path_ns = NSString.msgSend(Object, fromUTF8, .{full_path.ptr});
+        defer path_ns.release();
         if (path_ns.value == 0) {
             std.log.err("Failed to create NSString from path\n", .{});
             return error.NSStringCreateFailed;
         }
 
         const model_url = NSURL.msgSend(Object, fileURLWithPath, .{path_ns});
+        defer model_url.release();
         if (model_url.value == 0) {
             std.log.err("Failed to create NSURL from path\n", .{});
             return error.NSURLCreateFailed;
         }
 
-        var compile_error: ?Object = null;
+        var compile_error: ?*anyopaque = null;
         const compiled_url = MLModel.msgSend(Object, compileModelAtURL, .{
             model_url,
             &compile_error,
         });
-
-        if (compile_error) |err| {
+        defer compiled_url.release();
+        if (compile_error) |err_ptr| {
+            const err = Object{ .value = @intFromPtr(err_ptr) };
             const desc_sel = objc.Sel.registerName("localizedDescription");
             const desc = err.msgSend([*:0]const u8, desc_sel, .{});
             std.log.err("Failed to compile CoreML model: {s}\n", .{desc});
             return error.ModelCompileFailed;
         }
-
         if (compiled_url.value == 0) {
             std.log.err("Compiled URL is null\n", .{});
             return error.ModelCompileFailed;
         }
 
-        var load_error: ?Object = null;
+        var load_error: ?*anyopaque = null;
         const model = MLModel.msgSend(Object, modelWithContentsOfURL, .{
             compiled_url,
             &load_error,
         });
-
-        if (load_error) |err| {
+        errdefer model.release();
+        if (load_error) |err_ptr| {
+            const err = Object{ .value = @intFromPtr(err_ptr) };
             const desc_sel = objc.Sel.registerName("localizedDescription");
             const desc = err.msgSend([*:0]const u8, desc_sel, .{});
             std.log.err("Failed to load CoreML model: {s}\n", .{desc});
             return error.ModelLoadFailed;
         }
-
         if (model.value == 0) {
             std.log.err("Model is null\n", .{});
             return error.ModelLoadFailed;
         }
-
-        const retain_sel = objc.Sel.registerName("retain");
-        _ = model.msgSend(Object, retain_sel, .{});
 
         return .{
             .model = model,
@@ -193,8 +192,7 @@ pub const JinaEmbedder = struct {
     }
 
     pub fn deinit(self: *JinaEmbedder) void {
-        const release_sel = objc.Sel.registerName("release");
-        _ = self.model.msgSend(void, release_sel, .{});
+        self.model.release();
         self.tokenizer_alloc.deinit();
     }
 
@@ -217,6 +215,9 @@ pub const JinaEmbedder = struct {
 
         const zone = tracy.beginZone(@src(), .{ .name = "embed.zig:JinaEmbedder.embed" });
         defer zone.end();
+        // Basically an objective-c Arena.
+        const pool = objc.AutoreleasePool.init();
+        defer pool.deinit();
 
         if (str.len == 0) {
             std.log.info("Skipping embed of zero-length string\n", .{});
@@ -325,7 +326,7 @@ pub const JinaEmbedder = struct {
             @as(usize, 2),
         });
 
-        var provider_err: ?Object = null;
+        var provider_err: ?*anyopaque = null;
         const feature_provider = MLDictionaryFeatureProvider.msgSend(
             Object,
             alloc_sel,
@@ -346,7 +347,6 @@ pub const JinaEmbedder = struct {
             predictionFromFeatures,
             .{ feature_provider, &pred_err },
         );
-
         if (pred_err) |err_ptr| {
             const err_obj = Object{ .value = @intFromPtr(err_ptr) };
             const desc_sel = objc.Sel.registerName("localizedDescription");
@@ -356,7 +356,6 @@ pub const JinaEmbedder = struct {
             std.log.err("Prediction failed: {s}\n", .{desc});
             return error.PredictionFailed;
         }
-
         if (prediction.value == 0) {
             std.log.err("Prediction returned null (no error reported)\n", .{});
             return error.PredictionFailed;
@@ -377,7 +376,6 @@ pub const JinaEmbedder = struct {
         }
 
         const data_ptr = output_array.msgSend([*]VEC_TYPE, dataPointer_sel, .{});
-
         var vecs_buf: [MODEL_SEQ_LEN][VEC_SZ]VEC_TYPE = undefined;
         for (0..MODEL_SEQ_LEN) |vec_i| {
             @memcpy(
@@ -420,8 +418,10 @@ fn getModelPath(
     const utf8_sel = objc.Sel.registerName("UTF8String");
 
     const bundle = NSBundle.msgSend(Object, mainBundle_sel, .{});
+    defer bundle.release();
     if (bundle.value != 0) {
         const resource_path_ns = bundle.msgSend(Object, resourcePath_sel, .{});
+        defer resource_path_ns.release();
         if (resource_path_ns.value != 0) {
             const resource_path = resource_path_ns.msgSend([*:0]const u8, utf8_sel, .{});
             const bundle_path = try std.fmt.allocPrintZ(
@@ -486,6 +486,7 @@ pub const NLEmbedder = struct {
         const sentenceEmbeddingForLang = objc.Sel.registerName("sentenceEmbeddingForLanguage:");
         const language = "en";
         const ns_lang = NSString.msgSend(Object, fromUTF8, .{language});
+        defer ns_lang.release();
 
         const embedder_obj = NLEmbedding.msgSend(Object, sentenceEmbeddingForLang, .{ns_lang});
         if (embedder_obj.value == 0) {
@@ -493,10 +494,6 @@ pub const NLEmbedder = struct {
             return error.EmbedderInitFailed;
         }
         assert(embedder_obj.getProperty(c_int, "dimension") == VEC_SZ);
-
-        // Retain the Objective-C object to prevent it from being deallocated
-        const retain_sel = objc.Sel.registerName("retain");
-        _ = embedder_obj.msgSend(Object, retain_sel, .{});
 
         return .{
             .embedder_obj = embedder_obj,
@@ -518,8 +515,7 @@ pub const NLEmbedder = struct {
     }
 
     pub fn deinit(self: *NLEmbedder) void {
-        const release_sel = objc.Sel.registerName("release");
-        _ = self.embedder_obj.msgSend(void, release_sel, .{});
+        self.embedder_obj.release();
     }
 
     fn deinitFn(ptr: *anyopaque) void {
@@ -538,9 +534,10 @@ pub const NLEmbedder = struct {
         str: []const u8,
     ) !?EmbeddingModelOutput {
         const self: *NLEmbedder = @ptrCast(@alignCast(ptr));
-
         const zone = tracy.beginZone(@src(), .{ .name = "embed.zig:embed" });
         defer zone.end();
+        const pool = objc.AutoreleasePool.init();
+        defer pool.deinit();
 
         var NSString = objc.getClass("NSString").?;
         const fromUTF8 = objc.Sel.registerName("stringWithUTF8String:");
@@ -553,6 +550,7 @@ pub const NLEmbedder = struct {
         const c_str = try std.fmt.allocPrintZ(allocator, "{s}", .{str});
         defer allocator.free(c_str);
         const objc_str = NSString.msgSend(Object, fromUTF8, .{c_str.ptr});
+        // defer objc_str.release();
 
         const VecType = @Vector(VEC_SZ, VEC_TYPE);
         const vec_buf: [*]align(@alignOf(VecType)) VEC_TYPE = @ptrCast((try allocator.alignedAlloc(

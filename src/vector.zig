@@ -387,12 +387,7 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
 
             for (embedded_sentences) |sentence| {
                 if (sentence.vec) |v| {
-                    _ = try self.vec_storage.put(.{
-                        .note_id = note_id,
-                        .start_i = sentence.start_i,
-                        .end_i = sentence.end_i,
-                        .vec = v.*,
-                    });
+                    _ = try self.vec_storage.put(note_id, sentence.start_i, sentence.end_i, v.*);
                 }
             }
 
@@ -460,7 +455,7 @@ fn getVectorsForPath(db: *TestVecDB, path: []const u8, buf: []TestVector) !usize
     const vec_rows = try db.vec_storage.vecsForNote(testing_allocator, note_id);
     defer testing_allocator.free(vec_rows);
     for (vec_rows, 0..) |v, i| {
-        buf[i] = v.row.vec;
+        buf[i] = db.vec_storage.getVec(v.row.vec_id);
     }
     return vec_rows.len;
 }
@@ -535,6 +530,29 @@ test "search" {
     const te = try testEmbedder(testing_allocator);
     defer testing_allocator.destroy(te.e);
     var db = try TestVecDB.init(arena.allocator(), tmpD.dir, te.iface);
+    defer db.deinit();
+
+    const path = "test.md";
+    try db.embedText(path, "pizza. pizza. pizza.");
+
+    var buffer: [10]SearchResult = undefined;
+    try expectEqual(3, try db.search("pizza", &buffer));
+    try expectSearchResultsIgnoresimilarity(&[_]SearchResult{
+        .{ .path = path, .start_i = 0, .end_i = 5 },
+        .{ .path = path, .start_i = 6, .end_i = 12 },
+        .{ .path = path, .start_i = 13, .end_i = 19 },
+    }, buffer[0..3]);
+
+    try db.validate();
+}
+
+test "search jina" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var e = try JinaEmbedder.init();
+    var db = try VectorDB(.jina_embedding).init(arena.allocator(), tmpD.dir, e.embedder());
     defer db.deinit();
 
     const path = "test.md";

@@ -1173,6 +1173,7 @@ test "root: get returns real timestamps after file is written" {
     defer arena.deinit();
     var rt = try Runtime.init(arena.allocator(), .{
         .basedir = tmpD.dir,
+        .skipEmbed = true,
     });
     defer rt.deinit();
 
@@ -1191,6 +1192,23 @@ test "root: get returns real timestamps after file is written" {
     const note_after = try rt.get(path);
     try expect(note_after.created > 0);
     try expect(note_after.modified > 0);
+}
+
+test "writeAll with embed no crash" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .basedir = tmpD.dir,
+    });
+    defer rt.deinit();
+
+    var path_buf: [PATH_MAX]u8 = undefined;
+    const path = try rt.create(&path_buf);
+
+    try rt.writeAll(path, "hello world");
+    _ = try rt.get(path);
 }
 
 test "clear empties upon init" {
