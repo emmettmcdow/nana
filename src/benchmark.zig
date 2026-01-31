@@ -10,45 +10,43 @@ test "binary single words" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    var rt = try root.Runtime.init(arena.allocator(), .{
-        .mem = true,
-        .basedir = tmpD.dir,
-    });
-    defer rt.deinit();
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try TestVecDB.init(arena.allocator(), tmpD.dir, te.iface);
+    defer db.deinit();
 
-    var searchBuf: [10]c_int = undefined;
-    @memset(&searchBuf, 0);
+    var searchBuf: [10]SearchResult = undefined;
 
-    const id1 = try rt.create();
-    _ = try rt.writeAll(id1, "night");
-    const id2 = try rt.create();
-    _ = try rt.writeAll(id2, "day");
+    const path1 = "night.md";
+    try db.embedText(path1, "night");
+    const path2 = "day.md";
+    try db.embedText(path2, "day");
 
-    var n_out = try rt.search("moon", &searchBuf, null);
+    var n_out = try db.uniqueSearch("moon", &searchBuf);
     if (n_out > 0) {
-        if (searchBuf[0] == id1) score += 50;
+        if (std.mem.eql(u8, searchBuf[0].path, path1)) score += 50;
         if (n_out == 1) score += 50;
     }
     max_score += 100;
 
-    const id3 = try rt.create();
-    _ = try rt.writeAll(id3, "mouse");
-    const id4 = try rt.create();
-    _ = try rt.writeAll(id4, "dog");
-    n_out = try rt.search("computer", &searchBuf, null);
+    const path3 = "mouse.md";
+    try db.embedText(path3, "mouse");
+    const path4 = "dog.md";
+    try db.embedText(path4, "dog");
+    n_out = try db.uniqueSearch("computer", &searchBuf);
     if (n_out > 0) {
-        if (searchBuf[0] == id3) score += 50;
+        if (std.mem.eql(u8, searchBuf[0].path, path3)) score += 50;
         if (n_out == 1) score += 50;
     }
     max_score += 100;
 
-    const id5 = try rt.create();
-    _ = try rt.writeAll(id5, "soccer");
-    const id6 = try rt.create();
-    _ = try rt.writeAll(id6, "sushi");
-    n_out = try rt.search("sport", &searchBuf, null);
+    const path5 = "soccer.md";
+    try db.embedText(path5, "soccer");
+    const path6 = "sushi.md";
+    try db.embedText(path6, "sushi");
+    n_out = try db.uniqueSearch("sport", &searchBuf);
     if (n_out > 0) {
-        if (searchBuf[0] == id5) score += 50;
+        if (std.mem.eql(u8, searchBuf[0].path, path5)) score += 50;
         if (n_out == 1) score += 50;
     }
     max_score += 100;
@@ -61,60 +59,58 @@ test "grok-generated semantic-similarity" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    var rt = try root.Runtime.init(arena.allocator(), .{
-        .mem = true,
-        .basedir = tmpD.dir,
-    });
-    defer rt.deinit();
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try TestVecDB.init(arena.allocator(), tmpD.dir, te.iface);
+    defer db.deinit();
 
-    var searchBuf: [20]c_int = undefined;
-    @memset(&searchBuf, 0);
+    var searchBuf: [20]SearchResult = undefined;
 
     const query = "Best strategies for learning programming";
 
-    const id1 = try rt.create();
-    _ = try rt.writeAll(id1, "Top techniques for mastering coding skills quickly.");
+    const path1 = "note1.md";
+    try db.embedText(path1, "Top techniques for mastering coding skills quickly.");
 
-    const id2 = try rt.create();
-    _ = try rt.writeAll(id2, "How to improve your skills in software development.");
+    const path2 = "note2.md";
+    try db.embedText(path2, "How to improve your skills in software development.");
 
-    const id3 = try rt.create();
-    _ = try rt.writeAll(id3, "The ultimate guide to becoming a better programmer");
+    const path3 = "note3.md";
+    try db.embedText(path3, "The ultimate guide to becoming a better programmer");
 
-    const id4 = try rt.create();
-    _ = try rt.writeAll(id4, "Why learning to code is easier with these tips");
+    const path4 = "note4.md";
+    try db.embedText(path4, "Why learning to code is easier with these tips");
 
-    const id5 = try rt.create();
-    _ = try rt.writeAll(id5, "Practice your coding skills");
+    const path5 = "note5.md";
+    try db.embedText(path5, "Practice your coding skills");
 
-    const id6 = try rt.create();
-    _ = try rt.writeAll(id6, "What to eat for a healthy breakfast.");
+    const path6 = "note6.md";
+    try db.embedText(path6, "What to eat for a healthy breakfast.");
 
-    const id7 = try rt.create();
-    _ = try rt.writeAll(id7, "She sells sea shells by the sea shore");
+    const path7 = "note7.md";
+    try db.embedText(path7, "She sells sea shells by the sea shore");
 
-    const id8 = try rt.create();
-    _ = try rt.writeAll(id8, "My dog likes to play with dogs");
+    const path8 = "note8.md";
+    try db.embedText(path8, "My dog likes to play with dogs");
 
-    const id9 = try rt.create();
-    _ = try rt.writeAll(id9, "Also sometimes cats");
+    const path9 = "note9.md";
+    try db.embedText(path9, "Also sometimes cats");
 
-    const id10 = try rt.create();
-    _ = try rt.writeAll(id10, "Do you touch type or hunt and peck?");
+    const path10 = "note10.md";
+    try db.embedText(path10, "Do you touch type or hunt and peck?");
 
-    const n_out = try rt.search(query, &searchBuf, null);
+    const n_out = try db.uniqueSearch(query, &searchBuf);
     if (n_out > 0) {
-        if (outputContains(searchBuf[0..n_out], id1)) score += 20;
-        if (outputContains(searchBuf[0..n_out], id2)) score += 20;
-        if (outputContains(searchBuf[0..n_out], id3)) score += 20;
-        if (outputContains(searchBuf[0..n_out], id4)) score += 20;
-        if (outputContains(searchBuf[0..n_out], id5)) score += 20;
+        if (outputContains(searchBuf[0..n_out], path1)) score += 20;
+        if (outputContains(searchBuf[0..n_out], path2)) score += 20;
+        if (outputContains(searchBuf[0..n_out], path3)) score += 20;
+        if (outputContains(searchBuf[0..n_out], path4)) score += 20;
+        if (outputContains(searchBuf[0..n_out], path5)) score += 20;
 
-        if (!outputContains(searchBuf[0..n_out], id6)) score += 20;
-        if (!outputContains(searchBuf[0..n_out], id7)) score += 20;
-        if (!outputContains(searchBuf[0..n_out], id8)) score += 20;
-        if (!outputContains(searchBuf[0..n_out], id9)) score += 20;
-        if (!outputContains(searchBuf[0..n_out], id10)) score += 20;
+        if (!outputContains(searchBuf[0..n_out], path6)) score += 20;
+        if (!outputContains(searchBuf[0..n_out], path7)) score += 20;
+        if (!outputContains(searchBuf[0..n_out], path8)) score += 20;
+        if (!outputContains(searchBuf[0..n_out], path9)) score += 20;
+        if (!outputContains(searchBuf[0..n_out], path10)) score += 20;
     }
 
     max_score += 200;
@@ -127,31 +123,29 @@ test "sentence splitting - 1/3 match" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    var rt = try root.Runtime.init(arena.allocator(), .{
-        .mem = true,
-        .basedir = tmpD.dir,
-    });
-    defer rt.deinit();
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try TestVecDB.init(arena.allocator(), tmpD.dir, te.iface);
+    defer db.deinit();
 
-    var searchBuf: [20]c_int = undefined;
-    @memset(&searchBuf, 0);
+    var searchBuf: [20]SearchResult = undefined;
 
     const query = "Eating food";
 
-    const id1 = try rt.create();
-    _ = try rt.writeAll(id1, "I rode bikes with my friends. We ate hot dogs. Then we went home.");
+    const path1 = "note1.md";
+    try db.embedText(path1, "I rode bikes with my friends. We ate hot dogs. Then we went home.");
 
-    const id2 = try rt.create();
-    _ = try rt.writeAll(id2, "I graduated college last week. Lots of people had a party. My parents took me to dinner.");
+    const path2 = "note2.md";
+    try db.embedText(path2, "I graduated college last week. Lots of people had a party. My parents took me to dinner.");
 
-    const id3 = try rt.create();
-    _ = try rt.writeAll(id3, "I woke up. I brushed my teeth vigorously! I drove to work.");
+    const path3 = "note3.md";
+    try db.embedText(path3, "I woke up. I brushed my teeth vigorously! I drove to work.");
 
-    const n_out = try rt.search(query, &searchBuf, null);
+    const n_out = try db.uniqueSearch(query, &searchBuf);
     if (n_out > 0) {
-        if (outputContains(searchBuf[0..n_out], id1)) score += 34;
-        if (outputContains(searchBuf[0..n_out], id2)) score += 33;
-        if (!outputContains(searchBuf[0..n_out], id3)) score += 33;
+        if (outputContains(searchBuf[0..n_out], path1)) score += 34;
+        if (outputContains(searchBuf[0..n_out], path2)) score += 33;
+        if (!outputContains(searchBuf[0..n_out], path3)) score += 33;
     }
 
     max_score += 100;
@@ -170,19 +164,18 @@ test "debug view embedding splitting" {
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
 
-    var rt = try root.Runtime.init(arena.allocator(), .{
-        .mem = true,
-        .basedir = tmpD.dir,
-    });
-    defer rt.deinit();
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try TestVecDB.init(arena.allocator(), tmpD.dir, te.iface);
+    defer db.deinit();
 
     std.debug.print("--- Embedding Split ---\n", .{});
-    var it = rt.embedder.split(EXAMPLE_NOTE_1);
+    var it = db.embedder.split(EXAMPLE_NOTE_1);
     var n: f32 = 0;
     var n_split: f32 = 0;
     while (it.next()) |chunk| {
         var embedded = chunk.contents.len > 2;
-        const embedding = try rt.embedder.embed(chunk.contents);
+        const embedding = try db.embedder.embed(arena.allocator(), chunk.contents);
         embedded = embedded and (embedding != null);
         n_split += if (embedded) 1.0 else 0.0;
         n += 1.0;
@@ -193,9 +186,9 @@ test "debug view embedding splitting" {
     std.debug.print("-----------------------\n\n", .{});
 }
 
-fn outputContains(output: []c_int, item: NoteID) bool {
+fn outputContains(output: []SearchResult, path: []const u8) bool {
     for (output) |out_item| {
-        if (out_item == item) return true;
+        if (std.mem.eql(u8, out_item.path, path)) return true;
     }
     return false;
 }
@@ -238,7 +231,20 @@ const EXAMPLE_NOTE_1 =
 const std = @import("std");
 const testing_allocator = std.testing.allocator;
 
-const note_id_map = @import("note_id_map.zig");
-const NoteID = note_id_map.NoteID;
-const root = @import("root.zig");
-const Note = root.Note;
+const config = @import("config");
+const embed = @import("embed.zig");
+const vector = @import("vector.zig");
+const SearchResult = vector.SearchResult;
+const embedding_model: embed.EmbeddingModel = @enumFromInt(@intFromEnum(config.embedding_model));
+const TestVecDB = vector.VectorDB(embedding_model);
+
+const Embedder = switch (embedding_model) {
+    .apple_nlembedding => embed.NLEmbedder,
+    .jina_embedding => embed.JinaEmbedder,
+};
+
+fn testEmbedder(allocator: std.mem.Allocator) !struct { e: *Embedder, iface: embed.Embedder } {
+    const e = try allocator.create(Embedder);
+    e.* = try Embedder.init();
+    return .{ .e = e, .iface = e.embedder() };
+}

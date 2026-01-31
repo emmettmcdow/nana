@@ -678,7 +678,7 @@ fn expectSearchResultsIgnoresimilarity(expected: []const SearchResult, actual: [
     }
 }
 
-fn testEmbedder(allocator: std.mem.Allocator) !struct { e: *NLEmbedder, iface: embed.Embedder } {
+pub fn testEmbedder(allocator: std.mem.Allocator) !struct { e: *NLEmbedder, iface: embed.Embedder } {
     const e = try allocator.create(NLEmbedder);
     e.* = try NLEmbedder.init();
     return .{ .e = e, .iface = e.embedder() };
