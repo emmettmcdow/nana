@@ -1,64 +1,53 @@
-// // Each test in the benchmark has a top score of 100. Each test will add 100 to this variable.
 var max_score: usize = 0;
-// Each test will add to the score depending on how close to 'correct' it is.
 var score: usize = 0;
 
-test "binary single words" {
+const t1 = "binary single words";
+test t1 {
+    var curr_max_score: usize = 0;
+    var curr_score: usize = 0;
+    defer reportTest(t1, curr_score, curr_max_score);
+
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
-
     const te = try testEmbedder(testing_allocator);
     defer testing_allocator.destroy(te.e);
     var db = try TestVecDB.init(arena.allocator(), tmpD.dir, te.iface);
     defer db.deinit();
 
-    var searchBuf: [10]SearchResult = undefined;
-
-    const path1 = "night.md";
-    try db.embedText(path1, "night");
-    const path2 = "day.md";
-    try db.embedText(path2, "day");
-
-    var n_out = try db.uniqueSearch("moon", &searchBuf);
-    if (n_out > 0) {
-        if (std.mem.eql(u8, searchBuf[0].path, path1)) score += 50;
-        if (n_out == 1) score += 50;
+    const BiCase = struct { a: []const u8, b: []const u8, query: []const u8, want: []const u8 };
+    const binary_cases = [_]BiCase{
+        .{ .a = "night", .b = "day", .query = "moon", .want = "a" },
+        .{ .a = "mouse", .b = "dog", .query = "computer", .want = "a" },
+        .{ .a = "soccer", .b = "sushi", .query = "sport", .want = "a" },
+        .{ .a = "peasant", .b = "queen", .query = "royalty", .want = "b" },
+    };
+    inline for (binary_cases) |case| {
+        curr_max_score += 100;
+        try db.embedText("a", case.a);
+        defer db.removePath("a") catch unreachable;
+        try db.embedText("b", case.b);
+        defer db.removePath("b") catch unreachable;
+        var searchBuf: [10]SearchResult = undefined;
+        const n_out = try db.uniqueSearch("computer", &searchBuf);
+        if (n_out > 0) {
+            if (std.mem.eql(u8, searchBuf[0].path, case.want)) curr_score += 50;
+            if (n_out == 1) curr_score += 50;
+        }
     }
-    max_score += 100;
-
-    const path3 = "mouse.md";
-    try db.embedText(path3, "mouse");
-    const path4 = "dog.md";
-    try db.embedText(path4, "dog");
-    n_out = try db.uniqueSearch("computer", &searchBuf);
-    if (n_out > 0) {
-        if (std.mem.eql(u8, searchBuf[0].path, path3)) score += 50;
-        if (n_out == 1) score += 50;
-    }
-    max_score += 100;
-
-    const path5 = "soccer.md";
-    try db.embedText(path5, "soccer");
-    const path6 = "sushi.md";
-    try db.embedText(path6, "sushi");
-    n_out = try db.uniqueSearch("sport", &searchBuf);
-    if (n_out > 0) {
-        if (std.mem.eql(u8, searchBuf[0].path, path5)) score += 50;
-        if (n_out == 1) score += 50;
-    }
-    max_score += 100;
 }
 
-test "grok-generated semantic-similarity" {
+const t2 = "sentence similarity";
+test t2 {
+    var curr_max_score: usize = 0;
+    var curr_score: usize = 0;
+    defer reportTest(t2, curr_score, curr_max_score);
+
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
-
     const te = try testEmbedder(testing_allocator);
     defer testing_allocator.destroy(te.e);
     var db = try TestVecDB.init(arena.allocator(), tmpD.dir, te.iface);
@@ -66,63 +55,45 @@ test "grok-generated semantic-similarity" {
 
     var searchBuf: [20]SearchResult = undefined;
 
+    const to_include = [_]struct { path: []const u8, contents: []const u8 }{
+        .{ .path = "1", .contents = "Top techniques for mastering coding skills quickly." },
+        .{ .path = "2", .contents = "How to improve your skills in software development." },
+        .{ .path = "3", .contents = "The ultimate guide to becoming a better programmer" },
+        .{ .path = "4", .contents = "Why learning to code is easier with these tips" },
+        .{ .path = "5", .contents = "Practice your coding skills" },
+    };
+    for (to_include) |case| try db.embedText(case.path, case.contents);
+    const no_include = [_]struct { path: []const u8, contents: []const u8 }{
+        .{ .path = "6", .contents = "What to eat for a healthy breakfast." },
+        .{ .path = "7", .contents = "She sells sea shells by the sea shore" },
+        .{ .path = "8", .contents = "My dog likes to play with dogs" },
+        .{ .path = "9", .contents = "Also sometimes cats" },
+        .{ .path = "10", .contents = "Do you touch type or hunt and peck?" },
+    };
+    for (no_include) |case| try db.embedText(case.path, case.contents);
+
+    const case_weight: usize = 20;
     const query = "Best strategies for learning programming";
-
-    const path1 = "note1.md";
-    try db.embedText(path1, "Top techniques for mastering coding skills quickly.");
-
-    const path2 = "note2.md";
-    try db.embedText(path2, "How to improve your skills in software development.");
-
-    const path3 = "note3.md";
-    try db.embedText(path3, "The ultimate guide to becoming a better programmer");
-
-    const path4 = "note4.md";
-    try db.embedText(path4, "Why learning to code is easier with these tips");
-
-    const path5 = "note5.md";
-    try db.embedText(path5, "Practice your coding skills");
-
-    const path6 = "note6.md";
-    try db.embedText(path6, "What to eat for a healthy breakfast.");
-
-    const path7 = "note7.md";
-    try db.embedText(path7, "She sells sea shells by the sea shore");
-
-    const path8 = "note8.md";
-    try db.embedText(path8, "My dog likes to play with dogs");
-
-    const path9 = "note9.md";
-    try db.embedText(path9, "Also sometimes cats");
-
-    const path10 = "note10.md";
-    try db.embedText(path10, "Do you touch type or hunt and peck?");
-
     const n_out = try db.uniqueSearch(query, &searchBuf);
-    if (n_out > 0) {
-        if (outputContains(searchBuf[0..n_out], path1)) score += 20;
-        if (outputContains(searchBuf[0..n_out], path2)) score += 20;
-        if (outputContains(searchBuf[0..n_out], path3)) score += 20;
-        if (outputContains(searchBuf[0..n_out], path4)) score += 20;
-        if (outputContains(searchBuf[0..n_out], path5)) score += 20;
-
-        if (!outputContains(searchBuf[0..n_out], path6)) score += 20;
-        if (!outputContains(searchBuf[0..n_out], path7)) score += 20;
-        if (!outputContains(searchBuf[0..n_out], path8)) score += 20;
-        if (!outputContains(searchBuf[0..n_out], path9)) score += 20;
-        if (!outputContains(searchBuf[0..n_out], path10)) score += 20;
+    for (to_include) |case| {
+        if (outputContains(searchBuf[0..n_out], case.path)) curr_score += case_weight;
     }
-
-    max_score += 200;
+    for (no_include) |case| {
+        if (!outputContains(searchBuf[0..n_out], case.path)) curr_score += case_weight;
+    }
+    curr_max_score += (to_include.len + no_include.len) * case_weight;
 }
 
-test "sentence splitting - 1/3 match" {
+const t3 = "sentence split - 1/3 match";
+test t3 {
+    var curr_max_score: usize = 0;
+    var curr_score: usize = 0;
+    defer reportTest(t3, curr_score, curr_max_score);
+
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
-
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
-
     const te = try testEmbedder(testing_allocator);
     defer testing_allocator.destroy(te.e);
     var db = try TestVecDB.init(arena.allocator(), tmpD.dir, te.iface);
@@ -130,34 +101,38 @@ test "sentence splitting - 1/3 match" {
 
     var searchBuf: [20]SearchResult = undefined;
 
+    const to_include = [_]struct { path: []const u8, contents: []const u8 }{
+        .{ .path = "1", .contents = "I rode bikes with my friends. We ate hot dogs. Then we went home." },
+        .{ .path = "2", .contents = "I graduated college last week. Lots of people had a party. My parents took me to dinner." },
+    };
+    for (to_include) |case| try db.embedText(case.path, case.contents);
+    const no_include = [_]struct { path: []const u8, contents: []const u8 }{
+        .{ .path = "3", .contents = "I woke up. I brushed my teeth vigorously! I drove to work." },
+    };
+    for (no_include) |case| try db.embedText(case.path, case.contents);
+
+    const case_weight: usize = 33;
     const query = "Eating food";
-
-    const path1 = "note1.md";
-    try db.embedText(path1, "I rode bikes with my friends. We ate hot dogs. Then we went home.");
-
-    const path2 = "note2.md";
-    try db.embedText(path2, "I graduated college last week. Lots of people had a party. My parents took me to dinner.");
-
-    const path3 = "note3.md";
-    try db.embedText(path3, "I woke up. I brushed my teeth vigorously! I drove to work.");
-
     const n_out = try db.uniqueSearch(query, &searchBuf);
     if (n_out > 0) {
-        if (outputContains(searchBuf[0..n_out], path1)) score += 34;
-        if (outputContains(searchBuf[0..n_out], path2)) score += 33;
-        if (!outputContains(searchBuf[0..n_out], path3)) score += 33;
+        for (to_include) |case| {
+            if (outputContains(searchBuf[0..n_out], case.path)) curr_score += case_weight;
+        }
+        for (no_include) |case| {
+            if (!outputContains(searchBuf[0..n_out], case.path)) curr_score += case_weight;
+        }
+    } else {
+        curr_score += case_weight * no_include.len;
     }
-
-    max_score += 100;
+    curr_max_score += (to_include.len + no_include.len) * case_weight;
 }
 
 test "show results" {
-    std.debug.print("---- Search Scores ----\n", .{});
-    std.debug.print("Got {d} points out of a max of {d}.\n", .{ score, max_score });
-    std.debug.print("-----------------------\n\n", .{});
+    reportTest("all", score, max_score);
 }
 
 test "debug view embedding splitting" {
+    if (true) return error.SkipZigTest; // Skipping as this is not something we need always
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
 
@@ -228,16 +203,6 @@ const EXAMPLE_NOTE_1 =
     \\```
 ;
 
-const std = @import("std");
-const testing_allocator = std.testing.allocator;
-
-const config = @import("config");
-const embed = @import("embed.zig");
-const vector = @import("vector.zig");
-const SearchResult = vector.SearchResult;
-const embedding_model: embed.EmbeddingModel = @enumFromInt(@intFromEnum(config.embedding_model));
-const TestVecDB = vector.VectorDB(embedding_model);
-
 const Embedder = switch (embedding_model) {
     .apple_nlembedding => embed.NLEmbedder,
     .jina_embedding => embed.JinaEmbedder,
@@ -248,3 +213,25 @@ fn testEmbedder(allocator: std.mem.Allocator) !struct { e: *Embedder, iface: emb
     e.* = try Embedder.init();
     return .{ .e = e, .iface = e.embedder() };
 }
+
+fn reportTest(label: []const u8, got: usize, total: usize) void {
+    var buf: [50]u8 = undefined;
+    const frac = std.fmt.bufPrint(&buf, "{d} / {d}", .{ got, total }) catch @panic("don't care");
+    std.debug.print("{s:<26} | {s:^9} | {d:.1}% \n", .{
+        label,
+        frac,
+        (@as(f32, @floatFromInt(got)) / @as(f32, @floatFromInt(total))) * 100,
+    });
+    score += got;
+    max_score += total;
+}
+
+const std = @import("std");
+const testing_allocator = std.testing.allocator;
+
+const config = @import("config");
+const embed = @import("embed.zig");
+const vector = @import("vector.zig");
+const SearchResult = vector.SearchResult;
+const embedding_model: embed.EmbeddingModel = @enumFromInt(@intFromEnum(config.embedding_model));
+const TestVecDB = vector.VectorDB(embedding_model);
