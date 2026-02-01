@@ -1,6 +1,8 @@
 var max_score: usize = 0;
 var score: usize = 0;
 
+const TextEntry = struct { path: []const u8, contents: []const u8 };
+
 const t1 = "binary single words";
 test t1 {
     var curr_max_score: usize = 0;
@@ -101,19 +103,19 @@ test t3 {
 
     var searchBuf: [20]SearchResult = undefined;
 
-    const to_include = [_]struct { path: []const u8, contents: []const u8 }{
+    const to_include = [_]TextEntry{
         .{ .path = "1", .contents = "I rode bikes with my friends. We ate hot dogs. Then we went home." },
         .{ .path = "2", .contents = "I graduated college last week. Lots of people had a party. My parents took me to dinner." },
     };
     for (to_include) |case| try db.embedText(case.path, case.contents);
-    const no_include = [_]struct { path: []const u8, contents: []const u8 }{
+    const no_include = [_]TextEntry{
         .{ .path = "3", .contents = "I woke up. I brushed my teeth vigorously! I drove to work." },
     };
     for (no_include) |case| try db.embedText(case.path, case.contents);
 
     const case_weight: usize = 33;
     const query = "Eating food";
-    const n_out = try db.uniqueSearch(query, &searchBuf);
+    const n_out = try db.search(query, &searchBuf);
     if (n_out > 0) {
         for (to_include) |case| {
             if (outputContains(searchBuf[0..n_out], case.path)) curr_score += case_weight;
@@ -124,6 +126,7 @@ test t3 {
     } else {
         curr_score += case_weight * no_include.len;
     }
+    // displaySearchResults(searchBuf[0..n_out], query, &to_include ++ &no_include);
     curr_max_score += (to_include.len + no_include.len) * case_weight;
 }
 
@@ -166,6 +169,45 @@ fn outputContains(output: []SearchResult, path: []const u8) bool {
         if (std.mem.eql(u8, out_item.path, path)) return true;
     }
     return false;
+}
+
+// zlinter-disable
+fn displaySearchResults(
+    results: []SearchResult,
+    query: []const u8,
+    sources: []const TextEntry,
+) void {
+    std.debug.print("\n---\n", .{});
+    std.debug.print("Query: \"{s}\"\n", .{query});
+    std.debug.print("---\n", .{});
+
+    if (results.len == 0) {
+        std.debug.print("No results found.\n", .{});
+    } else {
+        for (results, 0..) |result, i| {
+            const similarity_pct = result.similarity * 100.0;
+            const text = getTextForResult(result, sources);
+            std.debug.print("[{d}] Path: {s}\n", .{ i + 1, result.path });
+            std.debug.print("    Similarity: {d:.2}%\n", .{similarity_pct});
+            std.debug.print("    Text: \"{s}\"\n", .{text});
+            if (i < results.len - 1) {
+                std.debug.print("---", .{});
+            }
+        }
+    }
+    std.debug.print("---\n\n", .{});
+}
+// zlinter-enable
+
+fn getTextForResult(result: SearchResult, sources: []const TextEntry) []const u8 {
+    for (sources) |entry| {
+        if (std.mem.eql(u8, entry.path, result.path)) {
+            if (result.end_i <= entry.contents.len) {
+                return entry.contents[result.start_i..result.end_i];
+            }
+        }
+    }
+    return "<not found>";
 }
 
 const EXAMPLE_NOTE_1 =
