@@ -20,10 +20,11 @@ test t1 {
 
     const BiCase = struct { a: []const u8, b: []const u8, query: []const u8, want: []const u8 };
     const binary_cases = [_]BiCase{
+        .{ .a = "peasant", .b = "queen", .query = "royalty", .want = "b" },
+        .{ .a = "soccer", .b = "sushi", .query = "sport", .want = "a" },
+        .{ .a = "world", .b = "calculator", .query = "earth", .want = "a" },
         .{ .a = "night", .b = "day", .query = "moon", .want = "a" },
         .{ .a = "mouse", .b = "dog", .query = "computer", .want = "a" },
-        .{ .a = "soccer", .b = "sushi", .query = "sport", .want = "a" },
-        .{ .a = "peasant", .b = "queen", .query = "royalty", .want = "b" },
     };
     inline for (binary_cases) |case| {
         curr_max_score += 100;
@@ -32,10 +33,13 @@ test t1 {
         try db.embedText("b", case.b);
         defer db.removePath("b") catch unreachable;
         var searchBuf: [10]SearchResult = undefined;
-        const n_out = try db.uniqueSearch("computer", &searchBuf);
+        const n_out = try db.uniqueSearch(case.query, &searchBuf);
+        std.debug.print("Case: ({s}, {s}), results: {any}\n", .{ case.a, case.b, searchBuf[0..n_out] });
         if (n_out > 0) {
-            if (std.mem.eql(u8, searchBuf[0].path, case.want)) curr_score += 50;
-            if (n_out == 1) curr_score += 50;
+            if (std.mem.eql(u8, searchBuf[0].path, case.want)) {
+                curr_score += 50;
+                if (n_out == 1) curr_score += 50;
+            }
         }
     }
 }
@@ -247,7 +251,7 @@ const EXAMPLE_NOTE_1 =
 
 const Embedder = switch (embedding_model) {
     .apple_nlembedding => embed.NLEmbedder,
-    .jina_embedding => embed.JinaEmbedder,
+    .mpnet_embedding => embed.MpnetEmbedder,
 };
 
 fn testEmbedder(allocator: std.mem.Allocator) !struct { e: *Embedder, iface: embed.Embedder } {

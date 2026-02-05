@@ -9,8 +9,8 @@ pub fn main() !void {
     var cwd = try tmp_cwd.openDir(".", .{ .iterate = true });
     defer cwd.close();
 
-    const Embedder = if (embedding_model == .jina_embedding)
-        embed.JinaEmbedder
+    const Embedder = if (embedding_model == .mpnet_embedding)
+        embed.MpnetEmbedder
     else
         embed.NLEmbedder;
 

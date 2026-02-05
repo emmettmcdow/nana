@@ -27,8 +27,8 @@ pub const Runtime = struct {
     embedder: *Embedder,
     next_id: u64 = 1,
 
-    const Embedder = if (embedding_model == .jina_embedding)
-        embed.JinaEmbedder
+    const Embedder = if (embedding_model == .mpnet_embedding)
+        embed.MpnetEmbedder
     else
         embed.NLEmbedder;
 

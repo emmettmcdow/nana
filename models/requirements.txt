@@ -1,3 +1,7 @@
 torch
 transformers
+optimum[onnxruntime]
 coremltools
+sentence-transformers
+numpy<2
+black

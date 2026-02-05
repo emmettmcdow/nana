@@ -90,11 +90,11 @@ pub const SearchResult = struct {
 pub fn VectorDB(embedding_model: EmbeddingModel) type {
     const VEC_SZ = switch (embedding_model) {
         .apple_nlembedding => NLEmbedder.VEC_SZ,
-        .jina_embedding => JinaEmbedder.VEC_SZ,
+        .mpnet_embedding => MpnetEmbedder.VEC_SZ,
     };
     const VEC_TYPE = switch (embedding_model) {
         .apple_nlembedding => NLEmbedder.VEC_TYPE,
-        .jina_embedding => JinaEmbedder.VEC_TYPE,
+        .mpnet_embedding => MpnetEmbedder.VEC_TYPE,
     };
 
     const EmbedJob = struct {
@@ -546,13 +546,13 @@ test "search" {
     try db.validate();
 }
 
-test "search jina" {
+test "search mpnet" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
-    var e = try JinaEmbedder.init();
-    var db = try VectorDB(.jina_embedding).init(arena.allocator(), tmpD.dir, e.embedder());
+    var e = try MpnetEmbedder.init();
+    var db = try VectorDB(.mpnet_embedding).init(arena.allocator(), tmpD.dir, e.embedder());
     defer db.deinit();
 
     const path = "test.md";
@@ -822,8 +822,8 @@ test "embed skip low-value" {
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
-    var e = try JinaEmbedder.init();
-    var db = try VectorDB(.jina_embedding).init(arena.allocator(), tmpD.dir, e.embedder());
+    var e = try MpnetEmbedder.init();
+    var db = try VectorDB(.mpnet_embedding).init(arena.allocator(), tmpD.dir, e.embedder());
     defer db.deinit();
 
     {
@@ -1006,7 +1006,7 @@ const note_id_map_mod = @import("note_id_map.zig");
 const NoteID = note_id_map_mod.NoteID;
 const NoteIdMap = note_id_map_mod.NoteIdMap;
 const NLEmbedder = embed.NLEmbedder;
-const JinaEmbedder = embed.JinaEmbedder;
+const MpnetEmbedder = embed.MpnetEmbedder;
 const spawn = Thread.spawn;
 const Thread = std.Thread;
 const types = @import("types.zig");

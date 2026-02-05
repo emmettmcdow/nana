@@ -51,12 +51,12 @@ test "parallel nlembed" {
     }
 }
 
-test "consecutive jinaembed" {
+test "consecutive mpnetembed" {
     var dbg_alloc = DebugAllocator(.{ .thread_safe = true, .never_unmap = true }).init;
 
-    const jina_embedder = try dbg_alloc.allocator().create(embed.JinaEmbedder);
-    jina_embedder.* = try embed.JinaEmbedder.init();
-    var embedder = jina_embedder.embedder();
+    const mpnet_embedder = try dbg_alloc.allocator().create(embed.MpnetEmbedder);
+    mpnet_embedder.* = try embed.MpnetEmbedder.init();
+    var embedder = mpnet_embedder.embedder();
 
     var lock = Mutex{};
     for (sentences) |sentence| {
@@ -64,12 +64,12 @@ test "consecutive jinaembed" {
     }
 }
 
-test "parallel jinaembed" {
+test "parallel mpnetembed" {
     var dbg_alloc = DebugAllocator(.{ .thread_safe = true, .never_unmap = true }).init;
 
-    const jina_embedder = try dbg_alloc.allocator().create(embed.JinaEmbedder);
-    jina_embedder.* = try embed.JinaEmbedder.init();
-    var embedder = jina_embedder.embedder();
+    const mpnet_embedder = try dbg_alloc.allocator().create(embed.MpnetEmbedder);
+    mpnet_embedder.* = try embed.MpnetEmbedder.init();
+    var embedder = mpnet_embedder.embedder();
 
     var threads: [10]Thread = undefined;
 

@@ -7,7 +7,7 @@ This directory contains the following helper scripts:
 - `coreml-info.py` - this extracts the information about a CoreML model.
 - `reference-model-output.py` - this runs a model over sample inputs to get expected outputs for
 reference.
-- `convert-to-coreml.py` - this converts a model from whatever its source is to the CoreML format.
+- `gen-coreml.py` - this converts a model from whatever its source is to the CoreML format.
 
 To run these helper scripts, make sure you are using Python 3.12 or lower. And run
 ```bash

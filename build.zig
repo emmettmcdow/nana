@@ -7,7 +7,7 @@ pub fn build(b: *std.Build) !void {
     const embedding_model = b.option(
         EmbeddingModel,
         "embedding-model",
-        "Embedding model to use (apple_nlembedding or jina_embedding)",
+        "Embedding model to use (apple_nlembedding or mpnet_embedding)",
     ) orelse .apple_nlembedding;
     const test_filter: ?[]const u8 = b.option(
         []const u8,
@@ -84,23 +84,23 @@ pub fn build(b: *std.Build) !void {
     signedFW.step.dependOn(xcframework.step);
     install_step.dependOn(signedFW.step);
 
-    //////////////////////
-    // Jina Model Fetch //
-    //////////////////////
-    const jina_model = JinaModel.create(b);
-    const fetch_jina_step = b.step(
-        "fetch-jina-model",
-        "Download Jina embeddings model from HuggingFace",
+    ///////////////////////
+    // Mpnet Model Fetch //
+    ///////////////////////
+    const mpnet_model = MpnetModel.create(b);
+    const fetch_mpnet_step = b.step(
+        "fetch-mpnet-model",
+        "Generate MPNet embeddings model for CoreML",
     );
-    fetch_jina_step.dependOn(jina_model.step);
+    fetch_mpnet_step.dependOn(mpnet_model.step);
 
     // Copy model to mac app Resources for bundling
-    const copy_model_to_mac = RunStep.create(b, "copy jina model to mac app");
+    const copy_model_to_mac = RunStep.create(b, "copy mpnet model to mac app");
     copy_model_to_mac.addArgs(&.{
-        "cp",                "-R",
-        JinaModel.MODEL_DIR, "mac/nana/Resources/",
+        "cp",                   "-R",
+        MpnetModel.MODEL_PATH, "mac/nana/Resources/",
     });
-    copy_model_to_mac.step.dependOn(jina_model.step);
+    copy_model_to_mac.step.dependOn(mpnet_model.step);
 
     const mkdir_mac_resources = RunStep.create(b, "create mac resources dir");
     mkdir_mac_resources.addArgs(&.{ "mkdir", "-p", "mac/nana/Resources" });
@@ -127,11 +127,10 @@ pub fn build(b: *std.Build) !void {
     b.installArtifact(exe);
 
     // Install model files to share directory
-    const model_dir = "models/jina-embeddings-v2-base-en";
     b.installDirectory(.{
-        .source_dir = .{ .cwd_relative = model_dir },
+        .source_dir = .{ .cwd_relative = MpnetModel.MODEL_PATH },
         .install_dir = .{ .custom = "share/nana" },
-        .install_subdir = "jina-embeddings-v2-base-en",
+        .install_subdir = "all_mpnet_base_v2.mlpackage",
     });
 
     const run_exe = b.addRunArtifact(exe);
@@ -206,11 +205,11 @@ pub fn build(b: *std.Build) !void {
         addObjC(depOpts(x86_deps, t));
         addTracy(depOpts(x86_deps, t));
         const install_models = b.addInstallDirectory(.{
-            .source_dir = .{ .cwd_relative = JinaModel.MODEL_DIR },
+            .source_dir = .{ .cwd_relative = MpnetModel.MODEL_PATH },
             .install_dir = .{ .custom = "share/nana" },
-            .install_subdir = "jina-embeddings-v2-base-en",
+            .install_subdir = "all_mpnet_base_v2.mlpackage",
         });
-        install_models.step.dependOn(jina_model.step);
+        install_models.step.dependOn(mpnet_model.step);
         const run = runTest(b, t, use_lldb);
         run.step.dependOn(&install_models.step);
         test_embed.dependOn(&run.step);
@@ -304,7 +303,7 @@ pub fn build(b: *std.Build) !void {
         addObjC(depOpts(x86_deps, t));
         addTracy(depOpts(x86_deps, t));
         const run = runTest(b, t, use_lldb);
-        run.step.dependOn(jina_model.step);
+        run.step.dependOn(mpnet_model.step);
         test_perf.dependOn(&run.step);
     }
 
@@ -385,7 +384,7 @@ pub fn build(b: *std.Build) !void {
 
 const EmbeddingModel = enum {
     apple_nlembedding,
-    jina_embedding,
+    mpnet_embedding,
 };
 
 const GlobalOptions = struct {
@@ -658,78 +657,36 @@ const Codesign = struct {
     }
 };
 
-const JinaModel = struct {
-    const HF_BASE = "https://huggingface.co/jinaai/jina-embeddings-v2-base-en/resolve/main";
-    const MODEL_DIR = "models/jina-embeddings-v2-base-en";
+const MpnetModel = struct {
+    const MODEL_PATH = "models/all_mpnet_base_v2.mlpackage";
 
     step: *Step,
     tokenizer_path: LazyPath,
     model_path: LazyPath,
 
-    pub fn create(b: *std.Build) JinaModel {
-        const mkdir_step = RunStep.create(b, "jina: create directories");
-        if (hasDir(MODEL_DIR)) {
+    pub fn create(b: *std.Build) MpnetModel {
+        if (hasDir(MODEL_PATH)) {
             const noop_step = b.allocator.create(Step) catch @panic("OOM");
             noop_step.* = Step.init(.{
                 .id = .custom,
-                .name = "jina: directories already exist",
+                .name = "mpnet: model already exists",
                 .owner = b,
             });
             return .{
                 .step = noop_step,
-                .tokenizer_path = .{ .cwd_relative = MODEL_DIR ++ "/tokenizer.json" },
-                .model_path = .{ .cwd_relative = MODEL_DIR ++ "/float32_model.mlpackage" },
+                .tokenizer_path = .{ .cwd_relative = MODEL_PATH ++ "/tokenizer.json" },
+                .model_path = .{ .cwd_relative = MODEL_PATH },
             };
         }
-        mkdir_step.addArgs(&.{
-            "mkdir",                                                               "-p",
-            MODEL_DIR ++ "/float32_model.mlpackage/Data/com.apple.CoreML/weights",
-        });
 
-        const dl_tokenizer = RunStep.create(b, "jina: download tokenizer.json");
-        dl_tokenizer.addArgs(&.{
-            "curl",                       "-fsSL", "-o", MODEL_DIR ++ "/tokenizer.json",
-            HF_BASE ++ "/tokenizer.json",
-        });
-        dl_tokenizer.step.dependOn(&mkdir_step.step);
-
-        const dl_manifest = RunStep.create(b, "jina: download Manifest.json");
-        dl_manifest.addArgs(&.{
-            "curl",                                                     "-fsSL", "-o", MODEL_DIR ++ "/float32_model.mlpackage/Manifest.json",
-            HF_BASE ++ "/coreml/float32_model.mlpackage/Manifest.json",
-        });
-        dl_manifest.step.dependOn(&mkdir_step.step);
-
-        const dl_mlmodel = RunStep.create(b, "jina: download model.mlmodel");
-        dl_mlmodel.addArgs(&.{
-            "curl",                                                                      "-fsSL",                                                                          "-o",
-            MODEL_DIR ++ "/float32_model.mlpackage/Data/com.apple.CoreML/model.mlmodel", HF_BASE ++ "/coreml/float32_model.mlpackage/Data/com.apple.CoreML/model.mlmodel",
-        });
-        dl_mlmodel.step.dependOn(&mkdir_step.step);
-
-        const dl_weights = RunStep.create(b, "jina: download weight.bin");
-        dl_weights.addArgs(&.{
-            "curl",                                                                                "-fsSL",
-            "-o",                                                                                  MODEL_DIR ++ "/float32_model.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
-            HF_BASE ++ "/coreml/float32_model.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
-        });
-        dl_weights.step.dependOn(&mkdir_step.step);
-
-        const final_step = b.allocator.create(Step) catch @panic("OOM");
-        final_step.* = Step.init(.{
-            .id = .custom,
-            .name = "jina: download complete",
-            .owner = b,
-        });
-        final_step.dependOn(&dl_tokenizer.step);
-        final_step.dependOn(&dl_manifest.step);
-        final_step.dependOn(&dl_mlmodel.step);
-        final_step.dependOn(&dl_weights.step);
+        const gen_coreml = RunStep.create(b, "mpnet: generate CoreML model");
+        gen_coreml.setCwd(.{ .cwd_relative = "models" });
+        gen_coreml.addArgs(&.{ "./venv/bin/python", "gen-coreml.py", "sentence-transformers/all-mpnet-base-v2" });
 
         return .{
-            .step = final_step,
-            .tokenizer_path = .{ .cwd_relative = MODEL_DIR ++ "/tokenizer.json" },
-            .model_path = .{ .cwd_relative = MODEL_DIR ++ "/float32_model.mlpackage" },
+            .step = &gen_coreml.step,
+            .tokenizer_path = .{ .cwd_relative = MODEL_PATH ++ "/tokenizer.json" },
+            .model_path = .{ .cwd_relative = MODEL_PATH },
         };
     }
 };

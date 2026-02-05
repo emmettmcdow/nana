@@ -1,9 +1,14 @@
 #! /usr/bin/env python3
-"""This script will give info about a particular CoreML package. Navigate to directory which
-contains the `float32_model.mlpackage` file and run this."""
+"""This script will give info about a particular CoreML package."""
+
+import argparse
 import coremltools as ct
 
-# TODO: generalize this to handle different models
-model = ct.models.MLModel("float32_model.mlpackage")
-spec = model.get_spec()
-print(spec.description)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Get info about a CoreML model")
+    parser.add_argument("path", help="Path to the .mlpackage or .mlmodel file")
+    args = parser.parse_args()
+
+    model = ct.models.MLModel(args.path)
+    spec = model.get_spec()
+    print(spec.description)

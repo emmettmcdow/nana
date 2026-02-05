@@ -10,12 +10,12 @@
 // from some parent object which we release. The release cascades down to children.
 pub const EmbeddingModel = enum {
     apple_nlembedding,
-    jina_embedding,
+    mpnet_embedding,
 };
 
 pub const EmbeddingModelOutput = union(EmbeddingModel) {
     apple_nlembedding: *const @Vector(NLEmbedder.VEC_SZ, NLEmbedder.VEC_TYPE),
-    jina_embedding: *const @Vector(JinaEmbedder.VEC_SZ, JinaEmbedder.VEC_TYPE),
+    mpnet_embedding: *const @Vector(MpnetEmbedder.VEC_SZ, MpnetEmbedder.VEC_TYPE),
 };
 
 pub const Embedder = struct {
@@ -51,25 +51,25 @@ pub const Embedder = struct {
 };
 
 //**************************************************************************************** Embedder
-pub const JinaEmbedder = struct {
+pub const MpnetEmbedder = struct {
     model: Object,
     tokenizer: tokenizer_mod.WordPieceTokenizer,
     tokenizer_alloc: std.heap.ArenaAllocator,
 
     pub const VEC_SZ = 768;
     pub const VEC_TYPE = f32;
-    pub const ID = EmbeddingModel.jina_embedding;
-    pub const THRESHOLD = 0.8;
+    pub const ID = EmbeddingModel.mpnet_embedding;
+    pub const THRESHOLD = 0.36;
     pub const STRICT_THRESHOLD = THRESHOLD + 0.1;
     pub const PATH = @tagName(ID) ++ ".db";
-    pub const MODEL_PATH = "share/nana/jina-embeddings-v2-base-en/float32_model.mlpackage";
-    pub const TOKENIZER_PATH = "share/nana/jina-embeddings-v2-base-en/tokenizer.json";
-    pub const BUNDLE_MODEL_PATH = "jina-embeddings-v2-base-en/float32_model.mlpackage";
-    pub const BUNDLE_TOKENIZER_PATH = "jina-embeddings-v2-base-en/tokenizer.json";
+    pub const MODEL_PATH = "share/nana/all_mpnet_base_v2.mlpackage";
+    pub const TOKENIZER_PATH = "share/nana/all_mpnet_base_v2.mlpackage/tokenizer.json";
+    pub const BUNDLE_MODEL_PATH = "all_mpnet_base_v2.mlpackage";
+    pub const BUNDLE_TOKENIZER_PATH = "all_mpnet_base_v2.mlpackage/tokenizer.json";
     const MAX_SEQ_LEN = 512;
 
-    pub fn init() !JinaEmbedder {
-        const init_zone = tracy.beginZone(@src(), .{ .name = "embed.zig:JinaEmbedder.init" });
+    pub fn init() !MpnetEmbedder {
+        const init_zone = tracy.beginZone(@src(), .{ .name = "embed.zig:MpnetEmbedder.init" });
         defer init_zone.end();
 
         var tokenizer_alloc = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -188,7 +188,7 @@ pub const JinaEmbedder = struct {
         };
     }
 
-    pub fn embedder(self: *JinaEmbedder) Embedder {
+    pub fn embedder(self: *MpnetEmbedder) Embedder {
         return .{
             .ptr = self,
             .splitFn = split,
@@ -201,13 +201,13 @@ pub const JinaEmbedder = struct {
         };
     }
 
-    pub fn deinit(self: *JinaEmbedder) void {
+    pub fn deinit(self: *MpnetEmbedder) void {
         self.model.release();
         self.tokenizer_alloc.deinit();
     }
 
     fn deinitFn(ptr: *anyopaque) void {
-        const self: *JinaEmbedder = @ptrCast(@alignCast(ptr));
+        const self: *MpnetEmbedder = @ptrCast(@alignCast(ptr));
         self.deinit();
     }
 
@@ -221,9 +221,9 @@ pub const JinaEmbedder = struct {
         allocator: Allocator,
         str: []const u8,
     ) !?EmbeddingModelOutput {
-        const self: *JinaEmbedder = @ptrCast(@alignCast(ptr));
+        const self: *MpnetEmbedder = @ptrCast(@alignCast(ptr));
 
-        const zone = tracy.beginZone(@src(), .{ .name = "embed.zig:JinaEmbedder.embed" });
+        const zone = tracy.beginZone(@src(), .{ .name = "embed.zig:MpnetEmbedder.embed" });
         defer zone.end();
         // Basically an objective-c Arena.
         const pool = objc.AutoreleasePool.init();
@@ -296,7 +296,6 @@ pub const JinaEmbedder = struct {
         const zero_val = NSNumber.msgSend(Object, numberWithInt, .{@as(i32, 0)});
         const one_val = NSNumber.msgSend(Object, numberWithInt, .{@as(i32, 1)});
 
-        var attn_mask_bool: [MODEL_SEQ_LEN]bool = @splat(false);
         for (0..MODEL_SEQ_LEN) |i| {
             if (i < seq_len) {
                 const token_val = NSNumber.msgSend(
@@ -306,7 +305,6 @@ pub const JinaEmbedder = struct {
                 );
                 input_ids_array.msgSend(void, setObject, .{ token_val, i });
                 attention_mask_array.msgSend(void, setObject, .{ one_val, i });
-                attn_mask_bool[i] = true;
             } else {
                 input_ids_array.msgSend(void, setObject, .{ zero_val, i });
                 attention_mask_array.msgSend(void, setObject, .{ zero_val, i });
@@ -372,7 +370,7 @@ pub const JinaEmbedder = struct {
         }
         // End of the prediction block
 
-        const output_key = NSString.msgSend(Object, fromUTF8, .{"last_hidden_state"});
+        const output_key = NSString.msgSend(Object, fromUTF8, .{"embeddings"});
         const output_fv = prediction.msgSend(Object, featureValueForName, .{output_key});
         if (output_fv.value == 0) {
             std.log.err("Output feature value is null\n", .{});
@@ -386,33 +384,16 @@ pub const JinaEmbedder = struct {
         }
 
         const data_ptr = output_array.msgSend([*]VEC_TYPE, dataPointer_sel, .{});
-        var vecs_buf: [MODEL_SEQ_LEN][VEC_SZ]VEC_TYPE = undefined;
-        for (0..MODEL_SEQ_LEN) |vec_i| {
-            @memcpy(
-                vecs_buf[vec_i][0..VEC_SZ],
-                data_ptr[(vec_i * VEC_SZ)..((vec_i + 1) * VEC_SZ)],
-            );
-        }
-
-        var output_vec: @Vector(VEC_SZ, VEC_TYPE) = @splat(0.0);
-        var used_vecs: usize = 0;
-        for (attn_mask_bool, 0..) |in_use, i| {
-            if (!in_use) continue;
-            used_vecs += 1;
-            output_vec += vecs_buf[i];
-        }
-        const divisor: @Vector(VEC_SZ, VEC_TYPE) = @splat(@floatFromInt(used_vecs));
-        output_vec /= divisor;
 
         const output_slice = try allocator.alignedAlloc(
             VEC_TYPE,
             @alignOf(@Vector(VEC_SZ, VEC_TYPE)),
             VEC_SZ,
         );
-        output_slice[0..VEC_SZ].* = output_vec;
+        @memcpy(output_slice[0..VEC_SZ], data_ptr[0..VEC_SZ]);
 
         return EmbeddingModelOutput{
-            .jina_embedding = @as(*const @Vector(VEC_SZ, VEC_TYPE), @ptrCast(output_slice)),
+            .mpnet_embedding = @as(*const @Vector(VEC_SZ, VEC_TYPE), @ptrCast(output_slice)),
         };
     }
 };
@@ -655,34 +636,30 @@ test "embed - nlembed" {
     try expectEqual(7.870239, sum);
 }
 
-test "embed - jinaembed" {
+test "embed - mpnetembed" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var jina = try JinaEmbedder.init();
-    defer jina.deinit();
+    var mpnet = try MpnetEmbedder.init();
+    defer mpnet.deinit();
 
-    var e = jina.embedder();
+    var e = mpnet.embedder();
 
     const output = try e.embed(allocator, "Hello world");
     try std.testing.expect(output != null);
 
-    const vec = output.?.jina_embedding.*;
+    const vec = output.?.mpnet_embedding.*;
     const vec_array: [768]f32 = vec;
     try expectEqualSlices(
         f32,
-        &.{
-            -4.8317093e-1,
-            -7.411002e-1,
-            4.181612e-1,
-        },
+        &.{ -1.0877479e-2, 5.3974453e-2, -3.3752674e-3 },
         vec_array[0..3],
     );
 
     // From the Python reference implementation
     const sum = @reduce(.Add, vec);
-    try expectEqual(-9.251854e-1, sum);
+    try expectEqual(-1.0041979e-1, sum);
 }
 
 test "embed skip empty" {
