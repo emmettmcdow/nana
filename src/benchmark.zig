@@ -25,24 +25,35 @@ test t1 {
         .{ .a = "world", .b = "calculator", .query = "earth", .want = "a" },
         .{ .a = "night", .b = "day", .query = "moon", .want = "a" },
         .{ .a = "mouse", .b = "dog", .query = "computer", .want = "a" },
+        // Additional cases
+        .{ .a = "hammer", .b = "paintbrush", .query = "construction", .want = "a" },
+        .{ .a = "violin", .b = "trumpet", .query = "strings", .want = "a" },
+        .{ .a = "ocean", .b = "desert", .query = "water", .want = "a" },
+        .{ .a = "winter", .b = "summer", .query = "cold", .want = "a" },
+        .{ .a = "doctor", .b = "lawyer", .query = "medicine", .want = "a" },
     };
     inline for (binary_cases) |case| {
-        curr_max_score += 100;
+        curr_max_score += 40;
         try db.embedText("a", case.a);
         defer db.removePath("a") catch unreachable;
         try db.embedText("b", case.b);
         defer db.removePath("b") catch unreachable;
         var searchBuf: [10]SearchResult = undefined;
         const n_out = try db.uniqueSearch(case.query, &searchBuf);
-        std.debug.print("Case: ({s}, {s}), results: {any}\n", .{ case.a, case.b, searchBuf[0..n_out] });
         if (n_out > 0) {
             if (std.mem.eql(u8, searchBuf[0].path, case.want)) {
-                curr_score += 50;
-                if (n_out == 1) curr_score += 50;
+                curr_score += 20;
+                if (n_out == 1) curr_score += 20;
             }
         }
     }
 }
+
+const SentenceCase = struct {
+    query: []const u8,
+    to_include: []const []const u8,
+    no_include: []const []const u8,
+};
 
 const t2 = "sentence similarity";
 test t2 {
@@ -61,33 +72,58 @@ test t2 {
 
     var searchBuf: [20]SearchResult = undefined;
 
-    const to_include = [_]struct { path: []const u8, contents: []const u8 }{
+    const all_docs = [_]TextEntry{
+        // Programming-related
         .{ .path = "1", .contents = "Top techniques for mastering coding skills quickly." },
         .{ .path = "2", .contents = "How to improve your skills in software development." },
         .{ .path = "3", .contents = "The ultimate guide to becoming a better programmer" },
         .{ .path = "4", .contents = "Why learning to code is easier with these tips" },
         .{ .path = "5", .contents = "Practice your coding skills" },
-    };
-    for (to_include) |case| try db.embedText(case.path, case.contents);
-    const no_include = [_]struct { path: []const u8, contents: []const u8 }{
+        // Food-related
         .{ .path = "6", .contents = "What to eat for a healthy breakfast." },
-        .{ .path = "7", .contents = "She sells sea shells by the sea shore" },
-        .{ .path = "8", .contents = "My dog likes to play with dogs" },
-        .{ .path = "9", .contents = "Also sometimes cats" },
-        .{ .path = "10", .contents = "Do you touch type or hunt and peck?" },
+        .{ .path = "7", .contents = "The best recipes for homemade pasta dishes" },
+        .{ .path = "8", .contents = "Nutrition tips for athletes and fitness enthusiasts" },
+        // Misc unrelated
+        .{ .path = "9", .contents = "She sells sea shells by the sea shore" },
+        .{ .path = "10", .contents = "My dog likes to play with other dogs" },
+        .{ .path = "11", .contents = "Do you touch type or hunt and peck?" },
+        // Travel-related
+        .{ .path = "12", .contents = "Best destinations for a summer vacation in Europe" },
+        .{ .path = "13", .contents = "How to pack light for international travel" },
+        .{ .path = "14", .contents = "Budget tips for backpacking through Asia" },
     };
-    for (no_include) |case| try db.embedText(case.path, case.contents);
+    for (all_docs) |doc| try db.embedText(doc.path, doc.contents);
 
-    const case_weight: usize = 20;
-    const query = "Best strategies for learning programming";
-    const n_out = try db.uniqueSearch(query, &searchBuf);
-    for (to_include) |case| {
-        if (outputContains(searchBuf[0..n_out], case.path)) curr_score += case_weight;
+    const cases = [_]SentenceCase{
+        .{
+            .query = "Best strategies for learning programming",
+            .to_include = &.{ "1", "2", "3", "4", "5" },
+            .no_include = &.{ "6", "7", "8", "9", "10", "11", "12", "13", "14" },
+        },
+        .{
+            .query = "Cooking and meal preparation",
+            .to_include = &.{ "6", "7" },
+            .no_include = &.{ "1", "2", "3", "4", "5", "9", "10", "11", "12", "13", "14" },
+        },
+        .{
+            .query = "Planning a trip abroad",
+            .to_include = &.{ "12", "13", "14" },
+            .no_include = &.{ "1", "2", "3", "4", "5", "6", "7", "9", "10", "11" },
+        },
+    };
+
+    const case_weight: usize = 10; // 40 items × 10 = 400 max
+    for (cases) |case| {
+        const n_out = try db.uniqueSearch(case.query, &searchBuf);
+        for (case.to_include) |path| {
+            curr_max_score += case_weight;
+            if (outputContains(searchBuf[0..n_out], path)) curr_score += case_weight;
+        }
+        for (case.no_include) |path| {
+            curr_max_score += case_weight;
+            if (!outputContains(searchBuf[0..n_out], path)) curr_score += case_weight;
+        }
     }
-    for (no_include) |case| {
-        if (!outputContains(searchBuf[0..n_out], case.path)) curr_score += case_weight;
-    }
-    curr_max_score += (to_include.len + no_include.len) * case_weight;
 }
 
 const t3 = "sentence split - 1/3 match";
@@ -107,31 +143,98 @@ test t3 {
 
     var searchBuf: [20]SearchResult = undefined;
 
-    const to_include = [_]TextEntry{
+    const all_docs = [_]TextEntry{
         .{ .path = "1", .contents = "I rode bikes with my friends. We ate hot dogs. Then we went home." },
         .{ .path = "2", .contents = "I graduated college last week. Lots of people had a party. My parents took me to dinner." },
-    };
-    for (to_include) |case| try db.embedText(case.path, case.contents);
-    const no_include = [_]TextEntry{
         .{ .path = "3", .contents = "I woke up. I brushed my teeth vigorously! I drove to work." },
+        .{ .path = "4", .contents = "The cat slept all day. It played with yarn. Then it ate its dinner." },
+        .{ .path = "5", .contents = "We hiked up the mountain. The view was incredible. We took many photos." },
+        .{ .path = "6", .contents = "She studied for the exam. Her notes were extensive. The test was difficult." },
     };
-    for (no_include) |case| try db.embedText(case.path, case.contents);
+    for (all_docs) |doc| try db.embedText(doc.path, doc.contents);
 
-    const case_weight: usize = 33;
-    const query = "Eating food";
-    const n_out = try db.search(query, &searchBuf);
-    if (n_out > 0) {
-        for (to_include) |case| {
-            if (outputContains(searchBuf[0..n_out], case.path)) curr_score += case_weight;
+    const cases = [_]SentenceCase{
+        .{
+            .query = "Eating food",
+            .to_include = &.{ "1", "2", "4" },
+            .no_include = &.{ "3", "5", "6" },
+        },
+        .{
+            .query = "Physical outdoor activity",
+            .to_include = &.{ "1", "5" },
+            .no_include = &.{ "3", "6" },
+        },
+        .{
+            .query = "Academic study",
+            .to_include = &.{ "2", "6" },
+            .no_include = &.{ "1", "3", "4", "5" },
+        },
+    };
+
+    const case_weight: usize = 25; // 16 items × 25 = 400 max
+    for (cases) |case| {
+        const n_out = try db.search(case.query, &searchBuf);
+        for (case.to_include) |path| {
+            curr_max_score += case_weight;
+            if (n_out > 0 and outputContains(searchBuf[0..n_out], path)) curr_score += case_weight;
         }
-        for (no_include) |case| {
-            if (!outputContains(searchBuf[0..n_out], case.path)) curr_score += case_weight;
+        for (case.no_include) |path| {
+            curr_max_score += case_weight;
+            if (n_out == 0 or !outputContains(searchBuf[0..n_out], path)) curr_score += case_weight;
         }
-    } else {
-        curr_score += case_weight * no_include.len;
     }
-    // displaySearchResults(searchBuf[0..n_out], query, &to_include ++ &no_include);
-    curr_max_score += (to_include.len + no_include.len) * case_weight;
+}
+
+const t4 = "query length parity";
+test t4 {
+    var curr_max_score: usize = 0;
+    var curr_score: usize = 0;
+    defer reportTest(t4, curr_score, curr_max_score);
+
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try TestVecDB.init(arena.allocator(), tmpD.dir, te.iface);
+    defer db.deinit();
+
+    var searchBuf: [20]SearchResult = undefined;
+
+    const all_docs = [_]TextEntry{
+        .{ .path = "auth", .contents = "User authentication and login system" },
+        .{ .path = "database", .contents = "PostgreSQL database connection and query handling" },
+        .{ .path = "api", .contents = "REST API endpoints for the web application" },
+        .{ .path = "cache", .contents = "Redis caching layer for performance optimization" },
+        .{ .path = "logging", .contents = "Application logging and error tracking system" },
+    };
+    for (all_docs) |doc| try db.embedText(doc.path, doc.contents);
+
+    const QueryCase = struct { query: []const u8, expected: []const u8 };
+    const cases = [_]QueryCase{
+        // Single word queries
+        .{ .query = "authentication", .expected = "auth" },
+        .{ .query = "database", .expected = "database" },
+        .{ .query = "caching", .expected = "cache" },
+        // Short phrase queries (should match same docs as single words)
+        .{ .query = "user login authentication", .expected = "auth" },
+        .{ .query = "database connection", .expected = "database" },
+        .{ .query = "caching performance", .expected = "cache" },
+        // Longer queries (should still match correctly)
+        .{ .query = "how does user authentication work", .expected = "auth" },
+        .{ .query = "setting up database connections and queries", .expected = "database" },
+        .{ .query = "implementing a caching layer for better performance", .expected = "cache" },
+    };
+
+    const case_weight: usize = 44; // 9 cases × 44 = 396 max (≈400)
+    for (cases) |case| {
+        curr_max_score += case_weight;
+        const n_out = try db.uniqueSearch(case.query, &searchBuf);
+        if (n_out > 0 and std.mem.eql(u8, searchBuf[0].path, case.expected)) {
+            curr_score += case_weight;
+        }
+    }
 }
 
 test "show results" {
@@ -263,7 +366,7 @@ fn testEmbedder(allocator: std.mem.Allocator) !struct { e: *Embedder, iface: emb
 fn reportTest(label: []const u8, got: usize, total: usize) void {
     var buf: [50]u8 = undefined;
     const frac = std.fmt.bufPrint(&buf, "{d} / {d}", .{ got, total }) catch @panic("don't care");
-    std.debug.print("{s:<26} | {s:^9} | {d:.1}% \n", .{
+    std.debug.print("{s:<26} | {s:^13} | {d:.1}% \n", .{
         label,
         frac,
         (@as(f32, @floatFromInt(got)) / @as(f32, @floatFromInt(total))) * 100,
