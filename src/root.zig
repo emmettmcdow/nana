@@ -1435,6 +1435,10 @@ test "unicode endpoint checks" {
     });
     defer rt.deinit();
 
+    // Remove the threshold so this doesn't depend on search implementation
+    rt.vectors.embedder.threshold = 0.0;
+    rt.vectors.embedder.strict_threshold = 0.0;
+
     var path_buf: [PATH_MAX]u8 = undefined;
     const path = try rt.create(&path_buf);
     const query = "heart";

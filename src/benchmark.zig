@@ -237,6 +237,86 @@ test t4 {
     }
 }
 
+const t5 = "long complex sentences";
+test t5 {
+    var curr_max_score: usize = 0;
+    var curr_score: usize = 0;
+    defer reportTest(t5, curr_score, curr_max_score);
+
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try TestVecDB.init(arena.allocator(), tmpD.dir, te.iface);
+    defer db.deinit();
+
+    var searchBuf: [20]SearchResult = undefined;
+
+    const all_docs = [_]TextEntry{
+        // Long technical descriptions (~80-120 chars)
+        .{
+            .path = "auth_long",
+            .contents = "The authentication system uses JWT tokens with refresh capabilities and supports OAuth2 integration for third-party providers",
+        },
+        .{
+            .path = "db_long",
+            .contents = "Database connections are pooled using PgBouncer with automatic failover to read replicas when the primary becomes unavailable",
+        },
+        .{
+            .path = "cache_long",
+            .contents = "The caching layer implements a write-through strategy with Redis cluster for horizontal scaling and automatic cache invalidation",
+        },
+        // Short versions of same topics (~30-40 chars)
+        .{ .path = "auth_short", .contents = "JWT authentication with OAuth2" },
+        .{ .path = "db_short", .contents = "PostgreSQL connection pooling" },
+        .{ .path = "cache_short", .contents = "Redis caching with invalidation" },
+        // Unrelated documents
+        .{ .path = "unrelated1", .contents = "The weather forecast predicts sunny skies and warm temperatures throughout the weekend" },
+        .{ .path = "unrelated2", .contents = "Cooking pasta requires boiling water and adding salt before the noodles" },
+    };
+    for (all_docs) |doc| try db.embedText(doc.path, doc.contents);
+
+    const cases = [_]SentenceCase{
+        // Query should match long version (more specific/relevant) over short
+        .{
+            .query = "How do I set up JWT authentication with OAuth2 providers?",
+            .to_include = &.{ "auth_long", "auth_short" },
+            .no_include = &.{ "db_long", "db_short", "cache_long", "cache_short", "unrelated1", "unrelated2" },
+        },
+        .{
+            .query = "Database connection pooling and failover configuration",
+            .to_include = &.{ "db_long", "db_short" },
+            .no_include = &.{ "auth_long", "auth_short", "cache_long", "cache_short", "unrelated1", "unrelated2" },
+        },
+        .{
+            .query = "Redis cache invalidation and scaling strategies",
+            .to_include = &.{ "cache_long", "cache_short" },
+            .no_include = &.{ "auth_long", "auth_short", "db_long", "db_short", "unrelated1", "unrelated2" },
+        },
+        // Broader query should still find relevant docs
+        .{
+            .query = "security and access control",
+            .to_include = &.{"auth_long"},
+            .no_include = &.{ "unrelated1", "unrelated2" },
+        },
+    };
+
+    const case_weight: usize = 13; // 31 items × 13 = 403 max (≈400)
+    for (cases) |case| {
+        const n_out = try db.uniqueSearch(case.query, &searchBuf);
+        for (case.to_include) |path| {
+            curr_max_score += case_weight;
+            if (outputContains(searchBuf[0..n_out], path)) curr_score += case_weight;
+        }
+        for (case.no_include) |path| {
+            curr_max_score += case_weight;
+            if (!outputContains(searchBuf[0..n_out], path)) curr_score += case_weight;
+        }
+    }
+}
+
 test "show results" {
     reportTest("all", score, max_score);
 }

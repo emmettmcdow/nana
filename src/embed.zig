@@ -462,7 +462,7 @@ pub const NLEmbedder = struct {
     pub const VEC_SZ = 512;
     pub const VEC_TYPE = f32;
     pub const ID = EmbeddingModel.apple_nlembedding;
-    pub const THRESHOLD = 0.35;
+    pub const THRESHOLD = 0.40;
     pub const STRICT_THRESHOLD = THRESHOLD * 2;
     pub const PATH = @tagName(ID) ++ ".db";
 
