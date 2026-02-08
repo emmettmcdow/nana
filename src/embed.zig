@@ -63,9 +63,9 @@ pub const MpnetEmbedder = struct {
     pub const STRICT_THRESHOLD = THRESHOLD + 0.1;
     pub const PATH = @tagName(ID) ++ ".db";
     pub const MODEL_PATH = "share/nana/all_mpnet_base_v2.mlpackage";
-    pub const TOKENIZER_PATH = "share/nana/all_mpnet_base_v2.mlpackage/tokenizer.json";
-    pub const BUNDLE_MODEL_PATH = "all_mpnet_base_v2.mlpackage";
-    pub const BUNDLE_TOKENIZER_PATH = "all_mpnet_base_v2.mlpackage/tokenizer.json";
+    pub const TOKENIZER_PATH = "share/nana/tokenizer.json";
+    pub const BUNDLE_MODEL_PATH = "all_mpnet_base_v2.mlmodelc";
+    pub const BUNDLE_TOKENIZER_PATH = "tokenizer.json";
     const MAX_SEQ_LEN = 512;
 
     pub fn init() !MpnetEmbedder {
@@ -146,27 +146,32 @@ pub const MpnetEmbedder = struct {
             return error.NSURLCreateFailed;
         }
 
-        var compile_error: ?*anyopaque = null;
-        const compiled_url = MLModel.msgSend(Object, compileModelAtURL, .{
-            model_url,
-            &compile_error,
-        });
-        defer compiled_url.release();
-        if (compile_error) |err_ptr| {
-            const err = Object{ .value = @intFromPtr(err_ptr) };
-            const desc_sel = objc.Sel.registerName("localizedDescription");
-            const desc = err.msgSend([*:0]const u8, desc_sel, .{});
-            std.log.err("Failed to compile CoreML model: {s}\n", .{desc});
-            return error.ModelCompileFailed;
-        }
-        if (compiled_url.value == 0) {
-            std.log.err("Compiled URL is null\n", .{});
-            return error.ModelCompileFailed;
-        }
+        const is_precompiled = std.mem.endsWith(u8, std.mem.sliceTo(full_path, 0), ".mlmodelc");
+
+        const load_url = if (is_precompiled) model_url else compiled: {
+            var compile_error: ?*anyopaque = null;
+            const compiled_url = MLModel.msgSend(Object, compileModelAtURL, .{
+                model_url,
+                &compile_error,
+            });
+            if (compile_error) |err_ptr| {
+                const err = Object{ .value = @intFromPtr(err_ptr) };
+                const desc_sel = objc.Sel.registerName("localizedDescription");
+                const desc = err.msgSend([*:0]const u8, desc_sel, .{});
+                std.log.err("Failed to compile CoreML model: {s}\n", .{desc});
+                return error.ModelCompileFailed;
+            }
+            if (compiled_url.value == 0) {
+                std.log.err("Compiled URL is null\n", .{});
+                return error.ModelCompileFailed;
+            }
+            break :compiled compiled_url;
+        };
+        defer if (!is_precompiled) load_url.release();
 
         var load_error: ?*anyopaque = null;
         const model = MLModel.msgSend(Object, modelWithContentsOfURL, .{
-            compiled_url,
+            load_url,
             &load_error,
         });
         errdefer model.release();

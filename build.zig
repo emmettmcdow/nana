@@ -94,19 +94,28 @@ pub fn build(b: *std.Build) !void {
     );
     fetch_mpnet_step.dependOn(mpnet_model.step);
 
-    // Copy model to mac app Resources for bundling
+    // Copy model and tokenizer to mac app Resources for bundling
+    const mkdir_mac_resources = RunStep.create(b, "create mac resources dir");
+    mkdir_mac_resources.addArgs(&.{ "mkdir", "-p", "mac/nana/Resources" });
+
     const copy_model_to_mac = RunStep.create(b, "copy mpnet model to mac app");
     copy_model_to_mac.addArgs(&.{
         "cp",                   "-R",
         MpnetModel.MODEL_PATH, "mac/nana/Resources/",
     });
     copy_model_to_mac.step.dependOn(mpnet_model.step);
-
-    const mkdir_mac_resources = RunStep.create(b, "create mac resources dir");
-    mkdir_mac_resources.addArgs(&.{ "mkdir", "-p", "mac/nana/Resources" });
     copy_model_to_mac.step.dependOn(&mkdir_mac_resources.step);
 
+    const copy_tokenizer_to_mac = RunStep.create(b, "copy tokenizer to mac app");
+    copy_tokenizer_to_mac.addArgs(&.{
+        "cp",
+        MpnetModel.TOKENIZER_PATH, "mac/nana/Resources/",
+    });
+    copy_tokenizer_to_mac.step.dependOn(mpnet_model.step);
+    copy_tokenizer_to_mac.step.dependOn(&mkdir_mac_resources.step);
+
     install_step.dependOn(&copy_model_to_mac.step);
+    install_step.dependOn(&copy_tokenizer_to_mac.step);
 
     ////////////////////////
     // Standalone Binary  //
@@ -132,6 +141,10 @@ pub fn build(b: *std.Build) !void {
         .install_dir = .{ .custom = "share/nana" },
         .install_subdir = "all_mpnet_base_v2.mlpackage",
     });
+    b.installFile(
+        MpnetModel.TOKENIZER_PATH,
+        "share/nana/tokenizer.json",
+    );
 
     const run_exe = b.addRunArtifact(exe);
     run_exe.step.dependOn(b.getInstallStep());
@@ -210,8 +223,14 @@ pub fn build(b: *std.Build) !void {
             .install_subdir = "all_mpnet_base_v2.mlpackage",
         });
         install_models.step.dependOn(mpnet_model.step);
+        const install_tokenizer = b.addInstallFile(
+            .{ .cwd_relative = MpnetModel.TOKENIZER_PATH },
+            "share/nana/tokenizer.json",
+        );
+        install_tokenizer.step.dependOn(mpnet_model.step);
         const run = runTest(b, t, use_lldb);
         run.step.dependOn(&install_models.step);
+        run.step.dependOn(&install_tokenizer.step);
         test_embed.dependOn(&run.step);
     }
 
@@ -658,7 +677,9 @@ const Codesign = struct {
 };
 
 const MpnetModel = struct {
-    const MODEL_PATH = "models/all_mpnet_base_v2.mlpackage";
+    const MODEL_DIR = "models/all_mpnet_base_v2";
+    const MODEL_PATH = MODEL_DIR ++ "/all_mpnet_base_v2.mlpackage";
+    const TOKENIZER_PATH = MODEL_DIR ++ "/tokenizer.json";
 
     step: *Step,
     tokenizer_path: LazyPath,
@@ -674,18 +695,18 @@ const MpnetModel = struct {
             });
             return .{
                 .step = noop_step,
-                .tokenizer_path = .{ .cwd_relative = MODEL_PATH ++ "/tokenizer.json" },
+                .tokenizer_path = .{ .cwd_relative = TOKENIZER_PATH },
                 .model_path = .{ .cwd_relative = MODEL_PATH },
             };
         }
 
         const gen_coreml = RunStep.create(b, "mpnet: generate CoreML model");
         gen_coreml.setCwd(.{ .cwd_relative = "models" });
-        gen_coreml.addArgs(&.{ "./venv/bin/python", "gen-coreml.py", "sentence-transformers/all-mpnet-base-v2" });
+        gen_coreml.addArgs(&.{ "./venv/bin/python", "gen-coreml.py", "sentence-transformers/all-mpnet-base-v2", "--output", "all_mpnet_base_v2" });
 
         return .{
             .step = &gen_coreml.step,
-            .tokenizer_path = .{ .cwd_relative = MODEL_PATH ++ "/tokenizer.json" },
+            .tokenizer_path = .{ .cwd_relative = TOKENIZER_PATH },
             .model_path = .{ .cwd_relative = MODEL_PATH },
         };
     }

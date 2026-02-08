@@ -56,12 +56,15 @@ def main():
     model_name = args.model
     hf_base = f"https://huggingface.co/{model_name}/resolve/main"
 
-    # Derive output name from model path
+    # Derive output directory and mlpackage path from model name.
+    # Structure: <model_dir>/<model_name>.mlpackage + <model_dir>/tokenizer.json
     if args.output:
-        output_path = Path(args.output)
+        output_dir = Path(args.output)
     else:
-        output_name = model_name.replace("/", "_").replace("-", "_") + ".mlpackage"
-        output_path = Path(output_name)
+        output_dir = Path(model_name.replace("/", "_").replace("-", "_"))
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / (output_dir.name + ".mlpackage")
 
     print(f"Loading model: {model_name}")
     model = SentenceTransformer(
@@ -104,8 +107,9 @@ def main():
     mlmodel.save(str(output_path))
     print(f"Model saved to {output_path}")
 
-    # Download tokenizer into the mlpackage
-    tokenizer_dst = output_path / "tokenizer.json"
+    # Download tokenizer alongside the mlpackage (not inside it, so Xcode
+    # won't swallow it when compiling the CoreML model).
+    tokenizer_dst = output_dir / "tokenizer.json"
     print("Downloading tokenizer.json...")
     urllib.request.urlretrieve(f"{hf_base}/tokenizer.json", tokenizer_dst)
     print(f"Downloaded tokenizer to {tokenizer_dst}")

@@ -416,7 +416,7 @@ pub const Runtime = struct {
         defer zone.end();
 
         const f = self.basedir.openFile(path, .{}) catch |err| switch (err) {
-            error.FileNotFound => return Error.NotFound,
+            error.FileNotFound => return buf[0..0],
             else => return err,
         };
         defer f.close();
@@ -1462,6 +1462,26 @@ test "unicode endpoint checks" {
         note_content,
         note_content[detail.highlights[0]..detail.highlights[1]],
     );
+}
+
+test "title returns empty for lazily created note" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    var rt = try Runtime.init(arena.allocator(), .{
+        .basedir = tmpD.dir,
+        .skipEmbed = true,
+    });
+    defer rt.deinit();
+
+    var path_buf: [PATH_MAX]u8 = undefined;
+    const path = try rt.create(&path_buf);
+    try expectError(error.FileNotFound, rt.basedir.access(path, .{ .mode = .read_write }));
+
+    var buf: [TITLE_BUF_LEN]u8 = undefined;
+    const result = try rt.title(path, &buf);
+    try expectEqual(@as(usize, 0), result.len);
 }
 
 test "embedder fits in a small thread stack" {
