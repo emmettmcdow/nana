@@ -19,7 +19,16 @@ pub fn build(b: *std.Build) !void {
         "test-file",
         "Run tests only from this file (e.g., -Dtest-file=vector)",
     );
+    const use_objc_leakcheck: bool = b.option(
+        bool,
+        "objc-leakcheck",
+        "(MacOS only) Run the test with `leaks`",
+    ) orelse false;
     const use_lldb = b.option(bool, "lldb", "Run tests under lldb debugger") orelse false;
+    if (use_lldb and use_objc_leakcheck) {
+        std.debug.print("Cannot use `lldb` and `leaks` at the same time. Exiting.\n", .{});
+        return Error.ConflictingOptions;
+    }
     const optimize = b.standardOptimizeOption(.{});
 
     const install_step = b.getInstallStep();
@@ -100,7 +109,7 @@ pub fn build(b: *std.Build) !void {
 
     const copy_model_to_mac = RunStep.create(b, "copy mpnet model to mac app");
     copy_model_to_mac.addArgs(&.{
-        "cp",                   "-R",
+        "cp",                  "-R",
         MpnetModel.MODEL_PATH, "mac/nana/Resources/",
     });
     copy_model_to_mac.step.dependOn(mpnet_model.step);
@@ -109,7 +118,8 @@ pub fn build(b: *std.Build) !void {
     const copy_tokenizer_to_mac = RunStep.create(b, "copy tokenizer to mac app");
     copy_tokenizer_to_mac.addArgs(&.{
         "cp",
-        MpnetModel.TOKENIZER_PATH, "mac/nana/Resources/",
+        MpnetModel.TOKENIZER_PATH,
+        "mac/nana/Resources/",
     });
     copy_tokenizer_to_mac.step.dependOn(mpnet_model.step);
     copy_tokenizer_to_mac.step.dependOn(&mkdir_mac_resources.step);
@@ -169,12 +179,18 @@ pub fn build(b: *std.Build) !void {
 
     // Helper to create a run step, optionally wrapping with lldb
     const runTest = struct {
-        fn run(builder: *std.Build, test_artifact: *std.Build.Step.Compile, lldb: bool) *RunStep {
+        fn run(builder: *std.Build, test_artifact: *std.Build.Step.Compile, lldb: bool, leaks: bool) *RunStep {
             if (lldb) {
                 const lldb_run = RunStep.create(builder, "lldb test");
                 lldb_run.addArgs(&.{ "lldb", "--" });
                 lldb_run.addArtifactArg(test_artifact);
                 return lldb_run;
+            } else if (leaks) {
+                const leaks_run = RunStep.create(builder, "leaks test");
+                leaks_run.setEnvironmentVariable("MallocStackLogging", "1");
+                leaks_run.addArgs(&.{ "leaks", "--atExit", "-quiet", "--" });
+                leaks_run.addArtifactArg(test_artifact);
+                return leaks_run;
             } else {
                 return builder.addRunArtifact(test_artifact);
             }
@@ -191,7 +207,7 @@ pub fn build(b: *std.Build) !void {
         });
         real_vec_cfg.install(b, t, debug, embedding_model);
         addAllDeps(depOpts(x86_deps, t));
-        test_root.dependOn(&runTest(b, t, use_lldb).step);
+        test_root.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
     }
 
     const test_note_id_map = b.step("test-note_id_map", "run the tests for src/note_id_map.zig");
@@ -203,7 +219,7 @@ pub fn build(b: *std.Build) !void {
             .filters = if (test_filter != null) filters else &.{"note_id_map"},
         });
         addTracy(depOpts(x86_deps, t));
-        test_note_id_map.dependOn(&runTest(b, t, use_lldb).step);
+        test_note_id_map.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
     }
 
     const test_embed = b.step("test-embed", "run the tests for src/embed.zig");
@@ -228,7 +244,7 @@ pub fn build(b: *std.Build) !void {
             "share/nana/tokenizer.json",
         );
         install_tokenizer.step.dependOn(mpnet_model.step);
-        const run = runTest(b, t, use_lldb);
+        const run = runTest(b, t, use_lldb, use_objc_leakcheck);
         run.step.dependOn(&install_models.step);
         run.step.dependOn(&install_tokenizer.step);
         test_embed.dependOn(&run.step);
@@ -244,7 +260,7 @@ pub fn build(b: *std.Build) !void {
         });
         fake_vec_cfg.install(b, t, debug, embedding_model);
         addTracy(depOpts(x86_deps, t));
-        test_vec_storage.dependOn(&runTest(b, t, use_lldb).step);
+        test_vec_storage.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
     }
 
     const test_markdown = b.step("test-markdown", "run the tests for src/markdown.zig");
@@ -257,7 +273,7 @@ pub fn build(b: *std.Build) !void {
         });
         fake_vec_cfg.install(b, t, debug, embedding_model);
         addTracy(depOpts(x86_deps, t));
-        test_markdown.dependOn(&runTest(b, t, use_lldb).step);
+        test_markdown.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
     }
 
     const test_vector = b.step("test-vector", "run the tests for src/vector.zig");
@@ -270,7 +286,7 @@ pub fn build(b: *std.Build) !void {
         });
         real_vec_cfg.install(b, t, debug, embedding_model);
         addAllDeps(depOpts(x86_deps, t));
-        test_vector.dependOn(&runTest(b, t, use_lldb).step);
+        test_vector.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
     }
 
     const test_diff = b.step("test-diff", "run the tests for src/diff.zig");
@@ -282,7 +298,7 @@ pub fn build(b: *std.Build) !void {
             .filters = if (test_filter != null) filters else &.{"diff"},
         });
         fake_vec_cfg.install(b, t, debug, embedding_model);
-        test_diff.dependOn(&runTest(b, t, use_lldb).step);
+        test_diff.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
     }
 
     const test_util = b.step("test-util", "run the tests for src/util.zig");
@@ -294,7 +310,7 @@ pub fn build(b: *std.Build) !void {
             .filters = if (test_filter != null) filters else &.{"util"},
         });
         fake_vec_cfg.install(b, t, debug, embedding_model);
-        test_util.dependOn(&runTest(b, t, use_lldb).step);
+        test_util.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
     }
 
     const test_benchmark = b.step("test-benchmark", "run the tests for src/benchmark.zig");
@@ -307,7 +323,7 @@ pub fn build(b: *std.Build) !void {
         });
         real_vec_cfg.install(b, t, debug, embedding_model);
         addAllDeps(depOpts(x86_deps, t));
-        test_benchmark.dependOn(&runTest(b, t, use_lldb).step);
+        test_benchmark.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
     }
 
     const test_perf = b.step("perf", "Run performance benchmark tests");
@@ -321,7 +337,7 @@ pub fn build(b: *std.Build) !void {
         real_vec_cfg.install(b, t, debug, embedding_model);
         addObjC(depOpts(x86_deps, t));
         addTracy(depOpts(x86_deps, t));
-        const run = runTest(b, t, use_lldb);
+        const run = runTest(b, t, use_lldb, use_objc_leakcheck);
         run.step.dependOn(mpnet_model.step);
         test_perf.dependOn(&run.step);
     }
@@ -730,6 +746,8 @@ fn hasDir(dir_path: []const u8) bool {
     };
     return true;
 }
+
+pub const Error = error{ConflictingOptions};
 
 const std = @import("std");
 const assert = std.debug.assert;

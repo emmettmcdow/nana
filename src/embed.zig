@@ -231,6 +231,7 @@ pub const MpnetEmbedder = struct {
 
         const zone = tracy.beginZone(@src(), .{ .name = "embed.zig:MpnetEmbedder.embed" });
         defer zone.end();
+
         // Basically an objective-c Arena.
         const pool = objc.AutoreleasePool.init();
         defer pool.deinit();
@@ -692,6 +693,51 @@ test "embed skip failures" {
     var e = nl.embedder();
 
     _ = (try e.embed(allocator, "(*^(*&(# 4327897493287498*&)(FKJDHDHLKDJHL")).?;
+}
+
+test "embed - nlembed thread safety" {
+    var nl = try NLEmbedder.init();
+    defer nl.deinit();
+    var e = nl.embedder();
+    try threadSafetyTest(&e);
+}
+
+test "embed - mpnetembed thread safety" {
+    var mpnet = try MpnetEmbedder.init();
+    defer mpnet.deinit();
+    var e = mpnet.embedder();
+    try threadSafetyTest(&e);
+}
+
+fn threadSafetyTest(e: *Embedder) !void {
+    const n_threads = 4;
+    const n_iters = 50;
+    const inputs = [_][]const u8{
+        "Hello world",
+        "The quick brown fox jumps over the lazy dog",
+        "Machine learning is fascinating",
+        "Zig is a systems programming language",
+    };
+
+    var barrier = std.Thread.ResetEvent{};
+    var threads: [n_threads]std.Thread = undefined;
+    for (&threads, 0..) |*t, i| {
+        t.* = try std.Thread.spawn(.{}, struct {
+            fn run(embedder: *Embedder, input: []const u8, b: *std.Thread.ResetEvent) void {
+                b.wait();
+                for (0..n_iters) |_| {
+                    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                    defer arena.deinit();
+                    const result = embedder.embed(arena.allocator(), input) catch |err| {
+                        std.debug.panic("embed failed: {}", .{err});
+                    };
+                    std.debug.assert(result != null);
+                }
+            }
+        }.run, .{ e, inputs[i], &barrier });
+    }
+    barrier.set();
+    for (&threads) |*t| t.join();
 }
 
 const std = @import("std");
