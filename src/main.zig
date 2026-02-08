@@ -35,7 +35,7 @@ pub fn main() !void {
             const f = try cwd.openFile(file.path, .{});
             defer f.close();
             const contents = try f.readToEndAlloc(embed_arena.allocator(), MAX_FILESIZE_BYTES);
-            try db.embedTextAsync(file.path, contents);
+            try db.embedText(file.path, contents);
         }
     }
 
