@@ -12,7 +12,8 @@ pub const WordPieceTokenizer = struct {
     vocab: std.StringHashMap(u32),
     fba: std.heap.FixedBufferAllocator,
     allocator: Allocator,
-    buf: [BUFSIZE]u8 = undefined,
+    buf: []u8,
+    backing_allocator: Allocator,
 
     pub const CLS_TOKEN = "[CLS]";
     pub const SEP_TOKEN = "[SEP]";
@@ -22,8 +23,10 @@ pub const WordPieceTokenizer = struct {
 
     const MAX_INPUT_CHARS_PER_WORD = 100;
 
-    pub fn init(self: *WordPieceTokenizer, vocab_json: []const u8) !void {
-        self.fba = std.heap.FixedBufferAllocator.init(&self.buf);
+    pub fn init(self: *WordPieceTokenizer, backing_allocator: Allocator, vocab_json: []const u8) !void {
+        self.backing_allocator = backing_allocator;
+        self.buf = try backing_allocator.alloc(u8, BUFSIZE);
+        self.fba = std.heap.FixedBufferAllocator.init(self.buf);
         self.allocator = self.fba.allocator();
         self.vocab = std.StringHashMap(u32).init(self.allocator);
 
@@ -44,6 +47,7 @@ pub const WordPieceTokenizer = struct {
 
     pub fn deinit(self: *WordPieceTokenizer) void {
         self.vocab.deinit();
+        self.backing_allocator.free(self.buf);
     }
 
     pub fn tokenize(self: *WordPieceTokenizer, allocator: Allocator, text: []const u8) ![]u32 {
@@ -169,7 +173,7 @@ test "tokenizer - basic" {
     ;
 
     var tokenizer: WordPieceTokenizer = undefined;
-    try tokenizer.init(test_vocab);
+    try tokenizer.init(std.testing.allocator, test_vocab);
     defer tokenizer.deinit();
 
     const tokens = try tokenizer.tokenize(std.testing.allocator, "hello world");

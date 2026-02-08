@@ -1464,6 +1464,13 @@ test "unicode endpoint checks" {
     );
 }
 
+test "embedder fits in a small thread stack" {
+    const max_stack_safe_size = 512 * 1024;
+    try expect(@sizeOf(Runtime) < max_stack_safe_size);
+    try expect(@sizeOf(embed.MpnetEmbedder) < max_stack_safe_size);
+    try expect(@sizeOf(embed.NLEmbedder) < max_stack_safe_size);
+}
+
 const std = @import("std");
 const assert = std.debug.assert;
 const expect = std.testing.expect;

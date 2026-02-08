@@ -99,6 +99,7 @@ pub const MpnetEmbedder = struct {
 
         var tok: WordPieceTokenizer = undefined;
         tok.init(
+            tokenizer_alloc.allocator(),
             tokenizer_json,
         ) catch |err| {
             std.log.err("Failed to parse tokenizer.json: {}\n", .{err});
