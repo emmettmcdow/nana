@@ -475,6 +475,8 @@ pub const NLEmbedder = struct {
     pub fn init() !NLEmbedder {
         const init_zone = tracy.beginZone(@src(), .{ .name = "embed.zig:init" });
         defer init_zone.end();
+        const pool = objc.AutoreleasePool.init();
+        defer pool.deinit();
 
         var NSString = objc.getClass("NSString").?;
         var NLEmbedding = objc.getClass("NLEmbedding").?;
@@ -483,7 +485,6 @@ pub const NLEmbedder = struct {
         const sentenceEmbeddingForLang = objc.Sel.registerName("sentenceEmbeddingForLanguage:");
         const language = "en";
         const ns_lang = NSString.msgSend(Object, fromUTF8, .{language});
-        defer ns_lang.release();
 
         const embedder_obj = NLEmbedding.msgSend(Object, sentenceEmbeddingForLang, .{ns_lang});
         if (embedder_obj.value == 0) {
@@ -493,7 +494,7 @@ pub const NLEmbedder = struct {
         assert(embedder_obj.getProperty(c_int, "dimension") == VEC_SZ);
 
         return .{
-            .embedder_obj = embedder_obj,
+            .embedder_obj = embedder_obj.retain(),
             .mutex = Mutex{},
         };
     }
@@ -613,10 +614,6 @@ pub const WordSpliterator = Spliterator(WORD_SPLIT_DELIMITERS);
 const SENTENCE_SPLIT_DELIMITERS = ".!?\n";
 pub const SentenceSpliterator = Spliterator(SENTENCE_SPLIT_DELIMITERS);
 
-test "embed - init" {
-    _ = try NLEmbedder.init();
-}
-
 test "embed - nlembed solo" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -654,6 +651,22 @@ test "embed - mpnetembed init with autorelease pool (simulates Swift caller)" {
     defer arena.deinit();
 
     var e = mpnet.embedder();
+    const output = try e.embed(arena.allocator(), "Hello world");
+    try std.testing.expect(output != null);
+}
+
+test "embed - nlembedder init with autorelease pool (simulates Swift caller)" {
+    // Swift has an autorelease pool on the calling thread. If init() over-releases
+    // autoreleased objects, the pool drain will crash with EXC_BAD_ACCESS.
+    const pool = objc.AutoreleasePool.init();
+    var nlembed = try NLEmbedder.init();
+    pool.deinit(); // drains the pool — crashes here if double-release
+    defer nlembed.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var e = nlembed.embedder();
     const output = try e.embed(arena.allocator(), "Hello world");
     try std.testing.expect(output != null);
 }
