@@ -178,32 +178,34 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
         pub fn search(self: *Self, query: []const u8, buf: []SearchResult) !usize {
             const zone = tracy.beginZone(@src(), .{ .name = "vector.zig:search" });
             defer zone.end();
-
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             defer arena.deinit();
 
-            const query_vec_union = (try self.embedder.embed(arena.allocator(), query)) orelse return 0;
-            const query_vec = @field(query_vec_union, @tagName(embedding_model)).*;
+            const max_results = buf.len;
 
-            var search_results: [1000]VecStorage.SearchEntry = undefined;
+            const query_vec_union = (try self.embedder.embed(arena.allocator(), query)) orelse {
+                return 0;
+            };
+            const query_vec = @field(query_vec_union, @tagName(embedding_model)).*;
+            const vec_res = try arena.allocator().alloc(VecStorage.SearchEntry, max_results);
 
             debugSearchHeader(query);
             const found_n = try self.vec_storage.search(
                 query_vec,
-                &search_results,
+                vec_res,
                 self.embedder.threshold,
             );
-            for (0..@min(found_n, buf.len)) |i| {
-                const p = self.note_id_map.getPath(search_results[i].row.note_id) orelse continue;
+            for (0..found_n) |i| {
+                const p = self.note_id_map.getPath(vec_res[i].row.note_id) orelse continue;
                 buf[i] = SearchResult{
                     .path = p,
-                    .start_i = search_results[i].row.start_i,
-                    .end_i = search_results[i].row.end_i,
-                    .similarity = search_results[i].similarity,
+                    .start_i = vec_res[i].row.start_i,
+                    .end_i = vec_res[i].row.end_i,
+                    .similarity = vec_res[i].similarity,
                 };
             }
 
-            std.log.info("Found {d} results searching with {s}\n", .{ found_n, query });
+            std.log.info("Found {d} results searching with `{s}`", .{ found_n, query });
             return found_n;
         }
 
@@ -664,6 +666,25 @@ test "uniqueSearch returns results with similarity" {
     try db.validate();
 }
 
+test "search cap results" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try TestVecDB.init(arena.allocator(), tmpD.dir, te.iface);
+    defer db.deinit();
+
+    for (0..150) |i| {
+        var buf: [10]u8 = undefined;
+        try db.embedText(try bufPrint(&buf, "{d}", .{i}), "brick");
+    }
+    var results: [100]SearchResult = undefined;
+    try expectEqual(100, try db.search("brick", &results));
+    try expectEqual(100, try db.uniqueSearch("brick", &results));
+}
+
 fn expectSearchResultsIgnoresimilarity(expected: []const SearchResult, actual: []const SearchResult) !void {
     if (expected.len != actual.len) {
         std.debug.print(
@@ -910,7 +931,7 @@ test "embedTextAsync drains queue on shutdown" {
 
     for (0..N) |i| {
         var path_buf: [16]u8 = undefined;
-        const path = std.fmt.bufPrint(&path_buf, "test{d}.md", .{i + 1}) catch unreachable;
+        const path = bufPrint(&path_buf, "test{d}.md", .{i + 1}) catch unreachable;
         try db.embedTextAsync(path, "pizza");
     }
     db.shutdown();
@@ -1016,6 +1037,7 @@ const assert = std.debug.assert;
 const config = @import("config");
 const tracy = @import("tracy");
 
+const bufPrint = std.fmt.bufPrint;
 const embed = @import("embed.zig");
 const expect = std.testing.expect;
 const EmbeddingModel = embed.EmbeddingModel;

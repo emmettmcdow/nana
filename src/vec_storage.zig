@@ -292,7 +292,10 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
 
             var i: usize = 0;
             while (pq.removeOrNull()) |pair| : (i += 1) {
-                if (i >= buf.len) break;
+                if (i >= buf.len) {
+                    std.log.debug("Results capped", .{});
+                    break;
+                }
                 buf[i] = .{ .row = self.get(pair.id), .similarity = pair.sim };
             }
 
