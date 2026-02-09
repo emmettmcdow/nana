@@ -73,7 +73,7 @@ pub const Runtime = struct {
         self.allocator.destroy(self.embedder);
 
         // Call vector.doctor to delete db files and re-embed all notes
-        try vector.doctor(self.allocator, self.basedir);
+        try vector.doctor(embedding_model, self.allocator, self.basedir);
 
         // Create new embedder and vectordb
         const embedder_ptr = try self.allocator.create(Embedder);
@@ -467,10 +467,6 @@ pub const CSearchDetail = extern struct {
     content: [*]u8,
     highlights: [N_SEARCH_HIGHLIGHTS * 2]c_uint,
 };
-
-pub fn doctor(allocator: std.mem.Allocator, basedir: std.fs.Dir) !void {
-    return vector.doctor(allocator, basedir);
-}
 
 const IGNORED_FILES = [_][]const u8{".DS_Store"};
 fn shouldIgnoreFile(path: []const u8) bool {

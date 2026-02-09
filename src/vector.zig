@@ -4,16 +4,21 @@ const PATH_MAX = std.posix.PATH_MAX;
 pub const Error = error{NotQueuedShuttingDown};
 
 /// Runs the doctor routine: deletes the database and re-embeds all notes.
-pub fn doctor(allocator: std.mem.Allocator, basedir: std.fs.Dir) !void {
+pub fn doctor(
+    comptime model: EmbeddingModel,
+    allocator: std.mem.Allocator,
+    basedir: std.fs.Dir,
+) !void {
     // 1. Delete all db files and note id map
     try deleteAllMeta(basedir);
 
     // 2. Create embedder and fresh vector db
-    const embedder_ptr = try allocator.create(NLEmbedder);
+    const Embedder = if (model == .mpnet_embedding) MpnetEmbedder else NLEmbedder;
+    const embedder_ptr = try allocator.create(Embedder);
     errdefer allocator.destroy(embedder_ptr);
-    embedder_ptr.* = try NLEmbedder.init();
+    embedder_ptr.* = try Embedder.init();
 
-    var db = try VectorDB(.apple_nlembedding).init(allocator, basedir, embedder_ptr.embedder());
+    var db = try VectorDB(model).init(allocator, basedir, embedder_ptr.embedder());
     defer db.deinit();
 
     // 3. Iterate over all note files and re-embed them
@@ -945,7 +950,7 @@ test "doctor deletes db files" {
     (try tmpD.dir.createFile("note1.md", .{})).close();
     (try tmpD.dir.createFile("note2.txt", .{})).close();
 
-    try doctor(arena.allocator(), tmpD.dir);
+    try doctor(.apple_nlembedding, arena.allocator(), tmpD.dir);
 
     // DB files should be deleted
     try std.testing.expectError(error.FileNotFound, tmpD.dir.access("vectors.db", .{}));
@@ -953,6 +958,21 @@ test "doctor deletes db files" {
     // Note files should still exist
     try tmpD.dir.access("note1.md", .{});
     try tmpD.dir.access("note2.txt", .{});
+}
+
+test "doctor with mpnet" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    {
+        const f1 = try tmpD.dir.createFile("note1.md", .{});
+        defer f1.close();
+        try f1.writeAll("apple banana");
+    }
+
+    try doctor(.mpnet_embedding, arena.allocator(), tmpD.dir);
 }
 
 test "doctor re-embeds all notes" {
@@ -973,7 +993,7 @@ test "doctor re-embeds all notes" {
         try f2.writeAll("cherry dragonfruit");
     }
 
-    try doctor(arena.allocator(), tmpD.dir);
+    try doctor(.apple_nlembedding, arena.allocator(), tmpD.dir);
 
     // After doctor, we should be able to search and find the notes
     const te = try testEmbedder(testing_allocator);
