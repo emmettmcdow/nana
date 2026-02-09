@@ -814,10 +814,6 @@ test "populateHighlights" {
 }
 
 test "embed skip low-value" {
-    // Disabled due to CoreML crash on cleanup (signal 4 - SIGILL)
-    // The test logic passes but cleanup crashes on some architectures
-    if (true) return error.SkipZigTest;
-
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
@@ -825,6 +821,7 @@ test "embed skip low-value" {
     var e = try MpnetEmbedder.init();
     var db = try VectorDB(.mpnet_embedding).init(arena.allocator(), tmpD.dir, e.embedder());
     defer db.deinit();
+    db.embedder.threshold = 0;
 
     {
         const query = " ";
