@@ -8,6 +8,7 @@
 // Most allocated objects start with a reference counter of 1, so there is no need to `retain` an
 // object most of the time. The only time we need to explicitly retain is when we get an object
 // from some parent object which we release. The release cascades down to children.
+// AutoreleasePools don't work for explicit allocations.
 pub const EmbeddingModel = enum {
     apple_nlembedding,
     mpnet_embedding,
@@ -231,7 +232,6 @@ pub const MpnetEmbedder = struct {
 
         const zone = tracy.beginZone(@src(), .{ .name = "embed.zig:MpnetEmbedder.embed" });
         defer zone.end();
-
         // Basically an objective-c Arena.
         const pool = objc.AutoreleasePool.init();
         defer pool.deinit();
@@ -289,6 +289,7 @@ pub const MpnetEmbedder = struct {
             initWithShape,
             .{ shape, MLMultiArrayDataTypeInt32, &input_err },
         );
+        defer input_ids_array.release();
         if (input_err != null) return error.MLMultiArrayInitFailed;
         if (input_ids_array.value == 0) return error.MLMultiArrayInitFailed;
 
@@ -297,6 +298,7 @@ pub const MpnetEmbedder = struct {
             initWithShape,
             .{ shape, MLMultiArrayDataTypeInt32, &input_err },
         );
+        defer attention_mask_array.release();
         if (input_err != null) return error.MLMultiArrayInitFailed;
         if (attention_mask_array.value == 0) return error.MLMultiArrayInitFailed;
 
@@ -351,6 +353,7 @@ pub const MpnetEmbedder = struct {
             initWithDictionary,
             .{ features_dict, &provider_err },
         );
+        defer feature_provider.release();
         if (provider_err != null) return error.FeatureProviderInitFailed;
         if (feature_provider.value == 0) return error.FeatureProviderInitFailed;
 
@@ -618,7 +621,7 @@ test "embed - init" {
     _ = try NLEmbedder.init();
 }
 
-test "embed - nlembed" {
+test "embed - nlembed solo" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -643,7 +646,7 @@ test "embed - nlembed" {
     try expectEqual(7.870239, sum);
 }
 
-test "embed - mpnetembed" {
+test "embed - mpnetembed solo" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
