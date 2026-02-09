@@ -69,10 +69,13 @@ pub const MpnetEmbedder = struct {
     pub const BUNDLE_TOKENIZER_PATH = "tokenizer.json";
     const MAX_SEQ_LEN = 512;
 
+    // The calling Swift thread wraps this in an AutoreleasePool, so we do not need to release
+    // anything here. We only need to retain the model and the rest will be cleaned up.
     pub fn init() !MpnetEmbedder {
         const init_zone = tracy.beginZone(@src(), .{ .name = "embed.zig:MpnetEmbedder.init" });
         defer init_zone.end();
-
+        const pool = objc.AutoreleasePool.init();
+        defer pool.deinit();
         var tokenizer_alloc = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         errdefer tokenizer_alloc.deinit();
 
@@ -134,14 +137,12 @@ pub const MpnetEmbedder = struct {
         };
 
         const path_ns = NSString.msgSend(Object, fromUTF8, .{full_path.ptr});
-        defer path_ns.release();
         if (path_ns.value == 0) {
             std.log.err("Failed to create NSString from path\n", .{});
             return error.NSStringCreateFailed;
         }
 
         const model_url = NSURL.msgSend(Object, fileURLWithPath, .{path_ns});
-        defer model_url.release();
         if (model_url.value == 0) {
             std.log.err("Failed to create NSURL from path\n", .{});
             return error.NSURLCreateFailed;
@@ -168,7 +169,6 @@ pub const MpnetEmbedder = struct {
             }
             break :compiled compiled_url;
         };
-        defer if (!is_precompiled) load_url.release();
 
         var load_error: ?*anyopaque = null;
         const model = MLModel.msgSend(Object, modelWithContentsOfURL, .{
@@ -189,7 +189,7 @@ pub const MpnetEmbedder = struct {
         }
 
         return .{
-            .model = model,
+            .model = model.retain(),
             .tokenizer = tok,
             .tokenizer_alloc = tokenizer_alloc,
         };
@@ -229,10 +229,8 @@ pub const MpnetEmbedder = struct {
         str: []const u8,
     ) !?EmbeddingModelOutput {
         const self: *MpnetEmbedder = @ptrCast(@alignCast(ptr));
-
         const zone = tracy.beginZone(@src(), .{ .name = "embed.zig:MpnetEmbedder.embed" });
         defer zone.end();
-        // Basically an objective-c Arena.
         const pool = objc.AutoreleasePool.init();
         defer pool.deinit();
 
@@ -419,10 +417,8 @@ fn getModelPath(
     const utf8_sel = objc.Sel.registerName("UTF8String");
 
     const bundle = NSBundle.msgSend(Object, mainBundle_sel, .{});
-    defer bundle.release();
     if (bundle.value != 0) {
         const resource_path_ns = bundle.msgSend(Object, resourcePath_sel, .{});
-        defer resource_path_ns.release();
         if (resource_path_ns.value != 0) {
             const resource_path = resource_path_ns.msgSend([*:0]const u8, utf8_sel, .{});
             const bundle_path = try std.fmt.allocPrintZ(
@@ -644,6 +640,22 @@ test "embed - nlembed solo" {
     vec = output.?.apple_nlembedding.*;
     sum = @reduce(.Add, vec);
     try expectEqual(7.870239, sum);
+}
+
+test "embed - mpnetembed init with autorelease pool (simulates Swift caller)" {
+    // Swift has an autorelease pool on the calling thread. If init() over-releases
+    // autoreleased objects, the pool drain will crash with EXC_BAD_ACCESS.
+    const pool = objc.AutoreleasePool.init();
+    var mpnet = try MpnetEmbedder.init();
+    pool.deinit(); // drains the pool — crashes here if double-release
+    defer mpnet.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var e = mpnet.embedder();
+    const output = try e.embed(arena.allocator(), "Hello world");
+    try std.testing.expect(output != null);
 }
 
 test "embed - mpnetembed solo" {
