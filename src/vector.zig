@@ -666,6 +666,35 @@ test "uniqueSearch returns results with similarity" {
     try db.validate();
 }
 
+test "embed chunk cleanup" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try TestVecDB.init(arena.allocator(), tmpD.dir, te.iface);
+    defer db.deinit();
+
+    // Make the threshold strict, results should be exact matches.
+    db.embedder.threshold = 0.9;
+
+    const cases = [_]struct { name: []const u8, query: []const u8, entry: []const u8 }{
+        .{
+            .name = "link-removal",
+            .query = "dogs",
+            .entry = "dogs https://en.wikipedia.org/wiki/Dog",
+        },
+    };
+    for (cases) |case| {
+        try db.embedText(case.name, case.entry);
+        defer db.removePath(case.name) catch @panic("this should not happen!");
+        var result: [1]SearchResult = undefined;
+        try expectEqual(1, try db.search(case.query, &result));
+        try expectEqual(1, try db.uniqueSearch(case.query, &result));
+    }
+}
+
 test "search cap results" {
     var tmpD = std.testing.tmpDir(.{ .iterate = true });
     defer tmpD.cleanup();

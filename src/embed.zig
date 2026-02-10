@@ -573,38 +573,103 @@ pub const Chunk = struct {
     contents: []const u8,
     start_i: u32,
     end_i: u32,
+    type: Type,
+
+    pub const Type = enum { string, url };
 };
 
 pub fn Spliterator(comptime delimiters: []const u8) type {
     return struct {
-        splitter: std.mem.SplitIterator(u8, .any),
+        buffer: []const u8,
+        index: usize,
         curr_i: u32,
 
         const Self = @This();
+        const url_prefixes = [_][]const u8{ "https://", "http://" };
+
+        fn isDelimiter(c: u8) bool {
+            for (delimiters) |d| {
+                if (c == d) return true;
+            }
+            return false;
+        }
+
+        fn isUrlEnd(c: u8) bool {
+            return c == ' ' or c == '\n' or c == '\t';
+        }
+
+        fn findUrlPrefix(buf: []const u8) ?usize {
+            for (url_prefixes) |prefix| {
+                if (std.mem.startsWith(u8, buf, prefix)) return prefix.len;
+            }
+            return null;
+        }
 
         pub fn init(buffer: []const u8) Self {
             return .{
-                .splitter = std.mem.SplitIterator(u8, .any){
-                    .index = 0,
-                    .buffer = buffer,
-                    .delimiter = delimiters,
-                },
+                .buffer = buffer,
+                .index = 0,
                 .curr_i = 0,
             };
         }
 
         pub fn next(self: *Self) ?Chunk {
-            if (self.splitter.next()) |sentence| {
-                const out = Chunk{
-                    .contents = sentence,
-                    .start_i = self.curr_i,
-                    .end_i = self.curr_i + @as(u32, @intCast(sentence.len)),
-                };
-                self.curr_i += @intCast(sentence.len + 1);
-                return out;
-            } else {
-                return null;
+            if (self.index >= self.buffer.len) return null;
+
+            while (self.index < self.buffer.len and isDelimiter(self.buffer[self.index])) {
+                self.index += 1;
+                self.curr_i += 1;
             }
+
+            if (self.index >= self.buffer.len) return null;
+
+            if (findUrlPrefix(self.buffer[self.index..])) |_| {
+                const start = self.index;
+                while (self.index < self.buffer.len and !isUrlEnd(self.buffer[self.index])) {
+                    self.index += 1;
+                }
+                const contents = self.buffer[start..self.index];
+                const out = Chunk{
+                    .contents = contents,
+                    .start_i = self.curr_i,
+                    .end_i = self.curr_i + @as(u32, @intCast(contents.len)),
+                    .type = .url,
+                };
+                self.curr_i += @intCast(contents.len);
+                return out;
+            }
+
+            const start = self.index;
+            while (self.index < self.buffer.len and !isDelimiter(self.buffer[self.index])) {
+                if (findUrlPrefix(self.buffer[self.index..])) |_| break;
+                self.index += 1;
+            }
+
+            var end = self.index;
+            while (end > start and self.buffer[end - 1] == ' ') {
+                end -= 1;
+            }
+
+            if (end == start) return self.next();
+
+            const contents = self.buffer[start..end];
+            const out = Chunk{
+                .contents = contents,
+                .start_i = self.curr_i,
+                .end_i = self.curr_i + @as(u32, @intCast(contents.len)),
+                .type = .string,
+            };
+            self.curr_i += @intCast(self.index - start);
+            return out;
+        }
+
+        pub fn collectAll(self: *Self, allocator: Allocator) ![]Chunk {
+            var list = std.ArrayList(Chunk).init(allocator);
+            errdefer list.deinit();
+            while (self.next()) |chunk| {
+                try list.append(chunk);
+            }
+            return list.toOwnedSlice();
         }
     };
 }
@@ -613,6 +678,56 @@ const WORD_SPLIT_DELIMITERS = ".!?\n, ();\":";
 pub const WordSpliterator = Spliterator(WORD_SPLIT_DELIMITERS);
 const SENTENCE_SPLIT_DELIMITERS = ".!?\n";
 pub const SentenceSpliterator = Spliterator(SENTENCE_SPLIT_DELIMITERS);
+
+test "spliterator - does not split on delimiters inside URLs" {
+    const ResultType = struct { contents: []const u8, type: Chunk.Type };
+    const cases = [_]struct {
+        input: []const u8,
+        expected: []const ResultType,
+    }{
+        .{
+            .input = "foo https://google.com",
+            .expected = &[_]ResultType{
+                .{ .contents = "foo", .type = .string },
+                .{ .contents = "https://google.com", .type = .url },
+            },
+        },
+        .{
+            .input = "foo http://foobar.net",
+            .expected = &[_]ResultType{
+                .{ .contents = "foo", .type = .string },
+                .{ .contents = "http://foobar.net", .type = .url },
+            },
+        },
+        .{
+            .input = "foo https://en.wikipedia.org/wiki/Dog",
+            .expected = &[_]ResultType{
+                .{ .contents = "foo", .type = .string },
+                .{ .contents = "https://en.wikipedia.org/wiki/Dog", .type = .url },
+            },
+        },
+        .{
+            .input = "one https://en.wikipedia.org/wiki/Dog\n2 https://en.wikipedia.org/wiki/Cat",
+            .expected = &[_]ResultType{
+                .{ .contents = "one", .type = .string },
+                .{ .contents = "https://en.wikipedia.org/wiki/Dog", .type = .url },
+                .{ .contents = "2", .type = .string },
+                .{ .contents = "https://en.wikipedia.org/wiki/Cat", .type = .url },
+            },
+        },
+    };
+
+    for (cases) |case| {
+        var splitter = SentenceSpliterator.init(case.input);
+        const chunks = try splitter.collectAll(std.testing.allocator);
+        defer std.testing.allocator.free(chunks);
+
+        for (case.expected, chunks) |expected, chunk| {
+            try expectEqualStrings(expected.contents, chunk.contents);
+            try expectEqual(expected.type, chunk.type);
+        }
+    }
+}
 
 test "embed - nlembed solo" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
