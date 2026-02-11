@@ -1447,7 +1447,7 @@ test "unicode endpoint checks" {
     const n_results = try rt.search(query, &results);
     try expectEqual(1, n_results);
     const result = results[0];
-    try expectEqlStrings(note_content, note_content[result.start_i..result.end_i]);
+    try expectEqlStrings(query, note_content[result.start_i..result.end_i]);
 
     const content_buf = try arena.allocator().alloc(u8, (result.end_i - result.start_i) + 1);
     var detail: SearchDetail = .{
@@ -1455,7 +1455,7 @@ test "unicode endpoint checks" {
     };
     try rt.searchDetail(result, query, &detail, .{});
     try expectEqlStrings(
-        note_content,
+        query,
         note_content[detail.highlights[0]..detail.highlights[1]],
     );
 }

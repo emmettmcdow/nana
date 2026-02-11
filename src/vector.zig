@@ -546,8 +546,8 @@ test "search" {
     try expectEqual(3, try db.search("pizza", &buffer));
     try expectSearchResultsIgnoresimilarity(&[_]SearchResult{
         .{ .path = path, .start_i = 0, .end_i = 5 },
-        .{ .path = path, .start_i = 6, .end_i = 12 },
-        .{ .path = path, .start_i = 13, .end_i = 19 },
+        .{ .path = path, .start_i = 7, .end_i = 12 },
+        .{ .path = path, .start_i = 14, .end_i = 19 },
     }, buffer[0..3]);
 
     try db.validate();
@@ -569,8 +569,8 @@ test "search mpnet" {
     try expectEqual(3, try db.search("pizza", &buffer));
     try expectSearchResultsIgnoresimilarity(&[_]SearchResult{
         .{ .path = path, .start_i = 0, .end_i = 5 },
-        .{ .path = path, .start_i = 6, .end_i = 12 },
-        .{ .path = path, .start_i = 13, .end_i = 19 },
+        .{ .path = path, .start_i = 7, .end_i = 12 },
+        .{ .path = path, .start_i = 14, .end_i = 19 },
     }, buffer[0..3]);
 
     try db.validate();
@@ -616,8 +616,8 @@ test "search returns results with similarity" {
     try expectEqual(3, try db.search("pizza", &buffer));
 
     try expectSearchResultsIgnoresimilarity(&[_]SearchResult{
-        .{ .path = path, .start_i = 13, .end_i = 19 },
-        .{ .path = path, .start_i = 6, .end_i = 12 },
+        .{ .path = path, .start_i = 14, .end_i = 19 },
+        .{ .path = path, .start_i = 7, .end_i = 12 },
         .{ .path = path, .start_i = 0, .end_i = 5 },
     }, buffer[0..3]);
 
@@ -677,7 +677,7 @@ test "embed chunk cleanup" {
     defer db.deinit();
 
     // Make the threshold strict, results should be exact matches.
-    db.embedder.threshold = 0.9;
+    db.embedder.threshold = 0.95;
 
     const cases = [_]struct { name: []const u8, query: []const u8, entry: []const u8 }{
         .{
@@ -685,14 +685,41 @@ test "embed chunk cleanup" {
             .query = "dogs",
             .entry = "dogs https://en.wikipedia.org/wiki/Dog",
         },
+        .{
+            .name = "space-removal",
+            .query = "dogs",
+            .entry = "        dogs          ",
+        },
+        .{
+            .name = "h1-removal",
+            .query = "dogs",
+            .entry = "# dogs",
+        },
+        .{
+            .name = "hN-removal",
+            .query = "dogs",
+            .entry = "###### dogs",
+        },
+        .{
+            .name = "garbage-removal",
+            .query = "dogs",
+            .entry = "@ #$%^&*()_+<>:\"{}|,/;'[]\\dogs@ #$%^&*()_+<>:\"{}|,/;'[]\\",
+        },
     };
     for (cases) |case| {
         try db.embedText(case.name, case.entry);
         defer db.removePath(case.name) catch @panic("this should not happen!");
         var result: [1]SearchResult = undefined;
-        try expectEqual(1, try db.search(case.query, &result));
-        try expectEqual(1, try db.uniqueSearch(case.query, &result));
+        try expectEqualCase(1, try db.search(case.query, &result), case.name);
+        try expectEqualCase(1, try db.uniqueSearch(case.query, &result), case.name);
     }
+}
+
+fn expectEqualCase(a: anytype, b: anytype, case: []const u8) !void {
+    expectEqual(a, b) catch |e| {
+        std.debug.print("... on case: {s}\n", .{case});
+        return e;
+    };
 }
 
 test "search cap results" {

@@ -576,6 +576,31 @@ pub const Chunk = struct {
     type: Type,
 
     pub const Type = enum { string, url };
+
+    pub fn strip(self: *Chunk) void {
+        for (self.contents, 0..) |c, i| {
+            if (isAlphanumeric(c)) {
+                self.contents = self.contents[i..];
+                break;
+            }
+            self.start_i += 1;
+        }
+        for (1..self.contents.len + 1) |neg_i| {
+            const i = self.contents.len - neg_i;
+            const c = self.contents[i];
+            if (isAlphanumeric(c)) {
+                self.contents = self.contents[0 .. i + 1];
+                break;
+            }
+            if (self.end_i <= self.start_i) {
+                self.contents = self.contents[0..0];
+                return;
+            }
+            self.end_i -= 1;
+        }
+        assert(self.end_i >= self.start_i);
+        assert(self.end_i - self.start_i == self.contents.len);
+    }
 };
 
 pub fn Spliterator(comptime delimiters: []const u8) type {
@@ -614,53 +639,65 @@ pub fn Spliterator(comptime delimiters: []const u8) type {
         }
 
         pub fn next(self: *Self) ?Chunk {
-            if (self.index >= self.buffer.len) return null;
+            while (true) {
+                // We are done
+                if (self.index >= self.buffer.len) return null;
 
-            while (self.index < self.buffer.len and isDelimiter(self.buffer[self.index])) {
-                self.index += 1;
-                self.curr_i += 1;
-            }
+                // Skip past garbage characters
+                while (self.index < self.buffer.len and isDelimiter(self.buffer[self.index])) {
+                    self.index += 1;
+                    self.curr_i += 1;
+                }
 
-            if (self.index >= self.buffer.len) return null;
+                // We are done
+                if (self.index >= self.buffer.len) return null;
 
-            if (findUrlPrefix(self.buffer[self.index..])) |_| {
+                if (findUrlPrefix(self.buffer[self.index..])) |_| {
+                    // There is a URL ahead
+                    const start = self.index;
+                    while (self.index < self.buffer.len and !isUrlEnd(self.buffer[self.index])) {
+                        self.index += 1;
+                    }
+                    const contents = self.buffer[start..self.index];
+                    var out = Chunk{
+                        .contents = contents,
+                        .start_i = self.curr_i,
+                        .end_i = self.curr_i + @as(u32, @intCast(contents.len)),
+                        .type = .url,
+                    };
+                    out.strip();
+                    if (out.contents.len == 0) continue; // The contents are junk, skip this block
+                    self.curr_i += @intCast(contents.len);
+                    return out;
+                }
+
+                // We are at the first non-garbage character
                 const start = self.index;
-                while (self.index < self.buffer.len and !isUrlEnd(self.buffer[self.index])) {
+                while (self.index < self.buffer.len and !isDelimiter(self.buffer[self.index])) {
+                    if (findUrlPrefix(self.buffer[self.index..])) |_| break;
                     self.index += 1;
                 }
-                const contents = self.buffer[start..self.index];
-                const out = Chunk{
+
+                // We found a delimiter or the start of a URL
+                var end = self.index;
+                while (end > start and self.buffer[end - 1] == ' ') {
+                    end -= 1;
+                }
+
+                if (end == start) return self.next();
+
+                const contents = self.buffer[start..end];
+                var out = Chunk{
                     .contents = contents,
                     .start_i = self.curr_i,
                     .end_i = self.curr_i + @as(u32, @intCast(contents.len)),
-                    .type = .url,
+                    .type = .string,
                 };
-                self.curr_i += @intCast(contents.len);
+                out.strip();
+                if (out.contents.len == 0) continue; // The contents are junk, skip this block
+                self.curr_i += @intCast(self.index - start);
                 return out;
             }
-
-            const start = self.index;
-            while (self.index < self.buffer.len and !isDelimiter(self.buffer[self.index])) {
-                if (findUrlPrefix(self.buffer[self.index..])) |_| break;
-                self.index += 1;
-            }
-
-            var end = self.index;
-            while (end > start and self.buffer[end - 1] == ' ') {
-                end -= 1;
-            }
-
-            if (end == start) return self.next();
-
-            const contents = self.buffer[start..end];
-            const out = Chunk{
-                .contents = contents,
-                .start_i = self.curr_i,
-                .end_i = self.curr_i + @as(u32, @intCast(contents.len)),
-                .type = .string,
-            };
-            self.curr_i += @intCast(self.index - start);
-            return out;
         }
 
         pub fn collectAll(self: *Self, allocator: Allocator) ![]Chunk {
@@ -678,6 +715,47 @@ const WORD_SPLIT_DELIMITERS = ".!?\n, ();\":";
 pub const WordSpliterator = Spliterator(WORD_SPLIT_DELIMITERS);
 const SENTENCE_SPLIT_DELIMITERS = ".!?\n";
 pub const SentenceSpliterator = Spliterator(SENTENCE_SPLIT_DELIMITERS);
+
+test "spliterator - strip" {
+    const ResultType = struct { contents: []const u8, type: Chunk.Type };
+    const cases = [_]struct {
+        input: []const u8,
+        expected: []const ResultType,
+    }{
+        .{
+            .input = " foo       bar\t\t. baz .",
+            .expected = &[_]ResultType{
+                .{ .contents = "foo       bar", .type = .string },
+                .{ .contents = "baz", .type = .string },
+            },
+        },
+        .{
+            .input = "@ #$%^&*()_+<>:\"{}|,/;'[]\\foo@ #$%^&*()_+<>:\"{}|,/;'[]\\",
+            .expected = &[_]ResultType{
+                .{ .contents = "foo", .type = .string },
+            },
+        },
+        .{
+            .input = "skip.******.garbage.",
+            .expected = &[_]ResultType{
+                .{ .contents = "skip", .type = .string },
+                .{ .contents = "garbage", .type = .string },
+            },
+        },
+    };
+
+    for (cases) |case| {
+        var splitter = SentenceSpliterator.init(case.input);
+        const chunks = try splitter.collectAll(std.testing.allocator);
+        defer std.testing.allocator.free(chunks);
+
+        try expectEqual(case.expected.len, chunks.len);
+        for (case.expected, chunks) |expected, chunk| {
+            try expectEqualStrings(expected.contents, chunk.contents);
+            try expectEqual(expected.type, chunk.type);
+        }
+    }
+}
 
 test "spliterator - does not split on delimiters inside URLs" {
     const ResultType = struct { contents: []const u8, type: Chunk.Type };
@@ -889,6 +967,7 @@ const assert = std.debug.assert;
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const expectEqualSlices = std.testing.expectEqualSlices;
+const isAlphanumeric = std.ascii.isAlphanumeric;
 const parseFromSliceLeaky = std.json.parseFromSliceLeaky;
 const tokenizer_mod = @import("tokenizer.zig");
 const WordPieceTokenizer = tokenizer_mod.WordPieceTokenizer;
