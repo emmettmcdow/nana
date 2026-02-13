@@ -40,14 +40,6 @@ pub inline fn readSlice(
     }
 }
 
-pub inline fn end_i(s: []u8) usize {
-    for (1..s.len + 1) |rev_i| {
-        const i = s.len - rev_i;
-        if (s[i] != 0) return i + 1;
-    }
-    return 0;
-}
-
 pub inline fn readVec(N: usize, T: type, v: *@Vector(N, T), r: *FileReader, endian: std.builtin.Endian) !void {
     for (0..N) |j| {
         const elem = r.readInt(BinaryTypeRepresentation.to_binary(T).stored_as(), endian) catch |err| {
@@ -117,8 +109,8 @@ pub const StorageMetadata = packed struct {
     vec_type: BinaryTypeRepresentation,
     /// Type of the elements in the index. Binary representation of a Zig type
     idx_type: BinaryTypeRepresentation,
-    /// Number of vectors
-    vec_n: usize,
+    /// Total number of slots (occupied + unoccupied)
+    capacity: usize,
 
     const Self = @This();
 
@@ -158,14 +150,14 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
             .vec_sz = vec_sz,
             .vec_type = BinaryTypeRepresentation.to_binary(vec_type),
             .idx_type = BinaryTypeRepresentation.to_binary(u8),
-            .vec_n = 0,
+            .capacity = 0,
         },
         index: []IndexEntry,
         vectors: []Vector,
         note_ids: []NoteID,
         start_is: []usize,
         end_is: []usize,
-        capacity: usize,
+        vec_n: usize,
         allocator: std.mem.Allocator,
         dir: std.fs.Dir,
 
@@ -187,12 +179,19 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
             const end_is = try allocator.alloc(usize, opts.sz);
             @memset(end_is, 0);
             return Self{
+                .meta = .{
+                    .fmt_v = LATEST_META_FORMAT_VERSION,
+                    .vec_sz = vec_sz,
+                    .vec_type = BinaryTypeRepresentation.to_binary(vec_type),
+                    .idx_type = BinaryTypeRepresentation.to_binary(u8),
+                    .capacity = opts.sz,
+                },
                 .vectors = vecs,
                 .index = idx,
                 .note_ids = note_ids,
                 .start_is = start_is,
                 .end_is = end_is,
-                .capacity = opts.sz,
+                .vec_n = 0,
                 .allocator = allocator,
                 .dir = dir,
             };
@@ -224,7 +223,7 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
         pub fn put(self: *Self, note_id: NoteID, start_idx: usize, end_idx: usize, vec: Vector) !VectorID {
             const new_id = self.nextIndex();
             assert(!self.isOccupied(new_id));
-            self.meta.vec_n += 1;
+            self.vec_n += 1;
 
             try self.grow();
 
@@ -245,10 +244,10 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
         pub fn rm(self: *Self, id: VectorID) Error!void {
             if (id == self.nullVec()) return;
             if (!self.isOccupied(id)) return Error.MultipleRemove;
-            assert(self.meta.vec_n > 0);
+            assert(self.vec_n > 0);
             self.setOccupied(id, false);
             self.setDirty(id, false);
-            self.meta.vec_n -= 1;
+            self.vec_n -= 1;
         }
 
         const LENGTH_REFERENCE: f32 = 20.0;
@@ -316,12 +315,12 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
                 else => return err,
             };
             defer f.close();
-
             var writer = f.writer();
+
             const endian = self.meta.endianness();
             try writer.writeStructEndian(self.meta, endian);
-
-            var index_copy = try self.allocator.alloc(u8, self.index.len);
+            const cap = self.meta.capacity;
+            var index_copy = try self.allocator.alloc(u8, cap);
             defer self.allocator.free(index_copy);
             for (self.index, 0..) |idx_entry, i| {
                 var clean_entry = idx_entry;
@@ -329,25 +328,12 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
                 index_copy[i] = clean_entry.toByte();
             }
             try writeSlice(&writer, index_copy);
+            for (0..cap) |i| try writeVec(vec_sz, vec_type, &writer, self.vectors[i], endian);
+            try writer.writeAll(std.mem.sliceAsBytes(self.note_ids));
+            try writer.writeAll(std.mem.sliceAsBytes(self.start_is));
+            try writer.writeAll(std.mem.sliceAsBytes(self.end_is));
 
-            const len = end_i(index_copy);
-            const vec_width: i64 = @intCast(vec_sz * @sizeOf(vec_type));
-
-            for (0..len) |i| {
-                if (self.isDirty(i)) {
-                    try writeVec(vec_sz, vec_type, &writer, self.vectors[i], endian);
-                } else {
-                    try f.seekBy(vec_width);
-                }
-            }
-
-            try writer.writeAll(std.mem.sliceAsBytes(self.note_ids[0..len]));
-            try writer.writeAll(std.mem.sliceAsBytes(self.start_is[0..len]));
-            try writer.writeAll(std.mem.sliceAsBytes(self.end_is[0..len]));
-
-            for (0..len) |i| {
-                self.setDirty(i, false);
-            }
+            for (0..cap) |i| self.setDirty(i, false);
 
             return;
         }
@@ -361,6 +347,9 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
             var reader = f.reader();
 
             const endian = self.meta.endianness();
+            // Save this capacity because when we read the struct, the cap gets set to a value
+            // which is not in line with the size of the DS.
+            const old_capacity = self.meta.capacity;
             self.meta = try reader.readStructEndian(StorageMetadata, endian);
             if (self.meta.fmt_v != LATEST_META_FORMAT_VERSION or
                 self.meta.vec_sz != vec_sz or
@@ -376,17 +365,20 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
                 return Error.IncompatibleDatabase;
             }
 
-            try self.grow();
-            const index_bytes = try self.allocator.alloc(u8, self.index.len);
+            const required_capacity = self.meta.capacity;
+            self.meta.capacity = old_capacity;
+            // After this, the size of our DSs should be in line with the capacity set in meta.
+            try self.growTo(required_capacity);
+            assert(self.meta.capacity == required_capacity);
+
+            const index_bytes = try self.allocator.alloc(u8, self.meta.capacity);
             defer self.allocator.free(index_bytes);
             try readSlice(&reader, index_bytes);
             for (index_bytes, 0..) |byte, i| {
                 self.index[i] = IndexEntry.fromByte(byte);
             }
 
-            const len = end_i(index_bytes);
-
-            for (0..len) |i| {
+            for (0..self.meta.capacity) |i| {
                 if (self.isOccupied(i)) {
                     try readVec(vec_sz, vec_type, &self.vectors[i], &reader, endian);
                 } else {
@@ -394,12 +386,17 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
                 }
             }
 
-            const bytes_read = try reader.readAll(std.mem.sliceAsBytes(self.note_ids[0..len]));
-            assert(bytes_read == len * @sizeOf(NoteID));
-            const bytes_read2 = try reader.readAll(std.mem.sliceAsBytes(self.start_is[0..len]));
-            assert(bytes_read2 == len * @sizeOf(usize));
-            const bytes_read3 = try reader.readAll(std.mem.sliceAsBytes(self.end_is[0..len]));
-            assert(bytes_read3 == len * @sizeOf(usize));
+            const bytes_read = try reader.readAll(std.mem.sliceAsBytes(self.note_ids));
+            assert(bytes_read == self.meta.capacity * @sizeOf(NoteID));
+            const bytes_read2 = try reader.readAll(std.mem.sliceAsBytes(self.start_is));
+            assert(bytes_read2 == self.meta.capacity * @sizeOf(usize));
+            const bytes_read3 = try reader.readAll(std.mem.sliceAsBytes(self.end_is));
+            assert(bytes_read3 == self.meta.capacity * @sizeOf(usize));
+
+            self.vec_n = 0;
+            for (self.index) |idx_entry| {
+                if (idx_entry.occupied) self.vec_n += 1;
+            }
         }
 
         /// Generates a new ID for an existing VectorRow
@@ -407,7 +404,7 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
             if (id == self.nullVec()) return self.nullVec();
             const new_id = self.nextIndex();
             assert(!self.isOccupied(new_id));
-            self.meta.vec_n += 1;
+            self.vec_n += 1;
 
             try self.grow();
 
@@ -431,25 +428,29 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
             unreachable;
         }
 
-        /// Grows the backing data structure to fit the `self.meta.vec_n`.
+        /// Grows the backing data structure to fit `self.vec_n`.
         fn grow(self: *Self) !void {
-            var sz = self.capacity;
-            while (self.meta.vec_n >= sz) {
+            var sz = self.meta.capacity;
+            while (self.vec_n >= sz) {
                 sz *= 2;
             }
-            if (sz == self.capacity) return;
+            try self.growTo(sz);
+        }
+
+        fn growTo(self: *Self, sz: usize) !void {
+            if (sz <= self.meta.capacity) return;
 
             self.index = try self.allocator.realloc(self.index, sz);
-            @memset(self.index[self.capacity..], .{});
+            @memset(self.index[self.meta.capacity..], .{});
             self.vectors = try self.allocator.realloc(self.vectors, sz);
-            @memset(self.vectors[self.capacity..], std.mem.zeroes(Vector));
+            @memset(self.vectors[self.meta.capacity..], std.mem.zeroes(Vector));
             self.note_ids = try self.allocator.realloc(self.note_ids, sz);
-            @memset(self.note_ids[self.capacity..], 0);
+            @memset(self.note_ids[self.meta.capacity..], 0);
             self.start_is = try self.allocator.realloc(self.start_is, sz);
-            @memset(self.start_is[self.capacity..], 0);
+            @memset(self.start_is[self.meta.capacity..], 0);
             self.end_is = try self.allocator.realloc(self.end_is, sz);
-            @memset(self.end_is[self.capacity..], 0);
-            self.capacity = sz;
+            @memset(self.end_is[self.meta.capacity..], 0);
+            self.meta.capacity = sz;
         }
 
         pub fn isDirty(self: Self, i: usize) bool {
@@ -550,10 +551,10 @@ test "test put / get" {
     var inst = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     defer inst.deinit();
 
-    try expect(inst.meta.vec_n == 0);
+    try expect(inst.vec_n == 0);
     const vec1: TestVecType = .{ 1, 1, 1 };
     const id = try inst.put(42, 0, 10, vec1);
-    try expect(inst.meta.vec_n == 1);
+    try expect(inst.vec_n == 1);
     const row2 = inst.get(id);
 
     try expect(@reduce(.And, vec1 == inst.getVec(row2.vec_id)));
@@ -570,17 +571,17 @@ test "re Storage" {
     var inst = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     defer inst.deinit();
 
-    try expect(inst.meta.vec_n == 0);
+    try expect(inst.vec_n == 0);
     const vec1: TestVecType = .{ 1, 1, 1 };
     const id = try inst.put(100, 5, 15, vec1);
-    try expect(inst.meta.vec_n == 1);
+    try expect(inst.vec_n == 1);
     try inst.save("temp.db");
     inst.deinit();
 
     var inst2 = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     defer inst2.deinit();
     try inst2.load("temp.db");
-    try expect(inst2.meta.vec_n == 1);
+    try expect(inst2.vec_n == 1);
     const row2 = inst2.get(id);
     try expect(@reduce(.And, vec1 == inst2.getVec(row2.vec_id)));
     try expect(row2.note_id == 100);
@@ -603,18 +604,18 @@ test "re Storage multiple" {
     };
 
     var inst = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
-    try expect(inst.meta.vec_n == 0);
+    try expect(inst.vec_n == 0);
     for (rows) |row| {
         _ = try inst.put(row.note_id, row.start_i, row.end_i, row.vec);
     }
-    try expect(inst.meta.vec_n == rows.len);
+    try expect(inst.vec_n == rows.len);
     try inst.save("temp.db");
     inst.deinit();
 
     var inst2 = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     defer inst2.deinit();
     try inst2.load("temp.db");
-    try expect(inst2.meta.vec_n == rows.len);
+    try expect(inst2.vec_n == rows.len);
     for (rows, 0..) |row, i| {
         const loaded = inst2.get(i);
         try expect(@reduce(.And, row.vec == inst2.getVec(loaded.vec_id)));
@@ -640,7 +641,7 @@ test "re Storage index" {
     var ids: [4]VectorID = undefined;
 
     var inst = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
-    try expect(inst.meta.vec_n == 0);
+    try expect(inst.vec_n == 0);
     for (rows, 0..) |row, i| {
         ids[i] = try inst.put(row.note_id, row.start_i, row.end_i, row.vec);
     }
@@ -654,14 +655,14 @@ test "re Storage index" {
     try expect(inst.isOccupied(1));
     try expect(!inst.isOccupied(2));
     try expect(inst.isOccupied(3));
-    try expect(inst.meta.vec_n == rows.len - 2);
+    try expect(inst.vec_n == rows.len - 2);
     try inst.save("temp.db");
     inst.deinit();
 
     var inst2 = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     defer inst2.deinit();
     try inst2.load("temp.db");
-    try expect(inst2.meta.vec_n == rows.len - 2);
+    try expect(inst2.vec_n == rows.len - 2);
     try expect(!inst2.isOccupied(0));
     try expect(inst2.isOccupied(1));
     try expect(!inst2.isOccupied(2));
@@ -676,18 +677,18 @@ test "test put resize" {
 
     var inst = try TestStorage.init(arena.allocator(), tmpD.dir, .{});
     defer inst.deinit();
-    try expect(inst.meta.vec_n == 0);
-    try expect(inst.capacity == 32);
+    try expect(inst.vec_n == 0);
+    try expect(inst.meta.capacity == 32);
 
     const vec1: TestVecType = .{ 1, 1, 1 };
     for (0..31) |_| {
         _ = try inst.put(1, 0, 10, vec1);
     }
-    try expect(inst.meta.vec_n == 31);
-    try expect(inst.capacity == 32);
+    try expect(inst.vec_n == 31);
+    try expect(inst.meta.capacity == 32);
     _ = try inst.put(1, 0, 10, vec1);
-    try expect(inst.meta.vec_n == 32);
-    try expect(inst.capacity == 64);
+    try expect(inst.vec_n == 32);
+    try expect(inst.meta.capacity == 64);
 }
 
 test "no failure on loading non-existent db" {
@@ -710,7 +711,7 @@ test "grow" {
     var inst = try TestStorage.init(arena.allocator(), tmpD.dir, .{ .sz = 1 });
     defer inst.deinit();
     try inst.grow();
-    try expect(inst.capacity == 1);
+    try expect(inst.meta.capacity == 1);
     try expect(inst.vectors.len == 1);
     try expect(inst.index.len == 1);
     try expect(inst.note_ids.len == 1);
@@ -718,17 +719,17 @@ test "grow" {
     try expect(inst.end_is.len == 1);
 
     _ = try inst.put(1, 0, 0, std.mem.zeroes(TestVecType));
-    try expect(inst.capacity == 2);
+    try expect(inst.meta.capacity == 2);
     try expect(inst.vectors.len == 2);
     try expect(inst.index.len == 2);
 
     _ = try inst.put(2, 0, 0, std.mem.zeroes(TestVecType));
-    try expect(inst.capacity == 4);
+    try expect(inst.meta.capacity == 4);
     try expect(inst.vectors.len == 4);
     try expect(inst.index.len == 4);
 
     _ = try inst.put(3, 0, 0, std.mem.zeroes(TestVecType));
-    try expect(inst.capacity == 4);
+    try expect(inst.meta.capacity == 4);
     try expect(inst.vectors.len == 4);
     try expect(inst.index.len == 4);
     try expect(inst.isOccupied(0));
@@ -807,9 +808,7 @@ test "no write dirty" {
     defer inst3.deinit();
     try inst3.load("temp.db");
     const row1_b = inst3.get(id);
-    // Vector data respects dirty flag (uses seek-based writes)
-    try expect(@reduce(.And, vec1_a == inst3.getVec(row1_b.vec_id)));
-    // Scalar fields are batch-written, so they get overwritten regardless of dirty flag
+    try expect(@reduce(.And, @as(TestVecType, .{ 2, 2, 2 }) == inst3.getVec(row1_b.vec_id)));
     try expect(200 == row1_b.note_id);
 }
 
@@ -969,16 +968,265 @@ test "rmByNoteId" {
     _ = try s.put(note1, 5, 10, .{ 0, 1, 0 });
     _ = try s.put(note2, 0, 5, .{ 0, 0, 1 });
 
-    try std.testing.expectEqual(@as(usize, 3), s.meta.vec_n);
+    try std.testing.expectEqual(@as(usize, 3), s.vec_n);
 
     s.rmByNoteId(note1);
 
-    try std.testing.expectEqual(@as(usize, 1), s.meta.vec_n);
+    try std.testing.expectEqual(@as(usize, 1), s.vec_n);
 
     const entries = try s.vecsForNote(testing_allocator, note2);
     defer testing_allocator.free(entries);
     try std.testing.expectEqual(@as(usize, 1), entries.len);
     try std.testing.expectEqual(note2, entries[0].row.note_id);
+}
+
+test "re Storage capacity mismatch with scattered deletes" {
+    var tmpD = tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+
+    const N = 8;
+
+    {
+        // Start small, grow by inserting 8 entries (sz=2 → capacity 16)
+        var inst = try TestStorage.init(testing_allocator, tmpD.dir, .{ .sz = 2 });
+        defer inst.deinit();
+        for (0..N) |i| {
+            const note_id: NoteID = @intCast(i + 1);
+            const vec_start_i = i * 100;
+            const vec_end_i = (i + 1) * 100;
+            const vec = .{ @as(f32, @floatFromInt(i)), 0, 0 };
+            const vec_id = try inst.put(note_id, vec_start_i, vec_end_i, vec);
+            // We don't actually care what the ID is, but the test relies on the fact that IDs are
+            // created sequentially.
+            try expectEqual(vec_id, i);
+        }
+        for (0..N) |i| if (i % 2 == 0) try inst.rm(i); // Delete evens
+        try expectEqual(4, inst.vec_n);
+        try expectEqual(16, inst.meta.capacity);
+        try inst.save("temp.db");
+    }
+
+    {
+        // Load into a fresh instance (starts at sz=2, must grow to fit)
+        var inst2 = try TestStorage.init(testing_allocator, tmpD.dir, .{ .sz = 2 });
+        defer inst2.deinit();
+        try inst2.load("temp.db");
+
+        try expectEqual(4, inst2.vec_n);
+        try expectEqual(16, inst2.meta.capacity);
+        for (0..N) |vec_id| {
+            if (vec_id % 2 == 0) continue; // Only check odds
+            try expect(inst2.isOccupied(vec_id));
+            const row = inst2.get(vec_id);
+            try expectEqual(@as(NoteID, @intCast(vec_id + 1)), row.note_id);
+            try expectEqual(vec_id * 100, row.start_i);
+            try expectEqual((vec_id + 1) * 100, row.end_i);
+        }
+    }
+}
+
+test "re Storage stale file data after trailing delete" {
+    var tmpD = tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+
+    // Cycle 1: insert 4 entries, save (writes len=4 worth of scalars)
+    var inst = try TestStorage.init(testing_allocator, tmpD.dir, .{ .sz = 8 });
+    _ = try inst.put(10, 0, 100, .{ 1, 0, 0 });
+    _ = try inst.put(20, 100, 200, .{ 0, 1, 0 });
+    _ = try inst.put(30, 200, 300, .{ 0, 0, 1 });
+    const id3 = try inst.put(40, 300, 400, .{ 1, 1, 0 });
+    try inst.save("temp.db");
+
+    // File is not truncated, so stale scalar data remains after the new shorter write
+    try inst.rm(id3);
+    try inst.save("temp.db");
+    inst.deinit();
+
+    // Cycle 2: load, add 2 new entries (one reuses slot 3, one goes to slot 4)
+    var inst2 = try TestStorage.init(testing_allocator, tmpD.dir, .{ .sz = 8 });
+    try inst2.load("temp.db");
+    try expectEqual(@as(usize, 3), inst2.vec_n);
+
+    _ = try inst2.put(50, 400, 500, .{ 0.5, 0.5, 0.5 });
+    _ = try inst2.put(60, 500, 600, .{ -1, 0, 0 });
+    try inst2.save("temp.db");
+    inst2.deinit();
+
+    // Cycle 3: load and verify all 5 entries have correct scalars
+    var inst3 = try TestStorage.init(testing_allocator, tmpD.dir, .{ .sz = 8 });
+    defer inst3.deinit();
+    try inst3.load("temp.db");
+
+    try expectEqual(@as(usize, 5), inst3.vec_n);
+
+    const row0 = inst3.get(0);
+    try expectEqual(@as(NoteID, 10), row0.note_id);
+    try expectEqual(@as(usize, 0), row0.start_i);
+    try expectEqual(@as(usize, 100), row0.end_i);
+
+    const row3 = inst3.get(3);
+    try expectEqual(@as(NoteID, 50), row3.note_id);
+    try expectEqual(@as(usize, 400), row3.start_i);
+    try expectEqual(@as(usize, 500), row3.end_i);
+
+    const row4 = inst3.get(4);
+    try expectEqual(@as(NoteID, 60), row4.note_id);
+    try expectEqual(@as(usize, 500), row4.start_i);
+    try expectEqual(@as(usize, 600), row4.end_i);
+}
+
+const ChurnRow = struct {
+    note_id: NoteID,
+    start_i: usize,
+    end_i: usize,
+    vec: TestVecType,
+};
+
+test "churn: multi-cycle save/load with interleaved insert, delete, and slot reuse" {
+    var tmpD = tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var inst = try TestStorage.init(testing_allocator, tmpD.dir, .{ .sz = 2 });
+
+    // --- Cycle 1: fill past initial capacity, forcing multiple grows ---
+    var live = std.AutoHashMap(VectorID, ChurnRow).init(testing_allocator);
+    defer live.deinit();
+
+    const cycle1 = [_]ChurnRow{
+        .{ .note_id = 1, .start_i = 0, .end_i = 100, .vec = .{ 1.0, 0.0, 0.0 } },
+        .{ .note_id = 1, .start_i = 100, .end_i = 250, .vec = .{ 0.0, 1.0, 0.0 } },
+        .{ .note_id = 2, .start_i = 0, .end_i = 50, .vec = .{ 0.0, 0.0, 1.0 } },
+        .{ .note_id = 2, .start_i = 50, .end_i = 300, .vec = .{ 0.5, 0.5, 0.0 } },
+        .{ .note_id = 3, .start_i = 0, .end_i = 1000, .vec = .{ -1.0, 0.0, 0.5 } },
+        .{ .note_id = 3, .start_i = 1000, .end_i = 5000, .vec = .{ 0.1, 0.2, 0.3 } },
+        .{ .note_id = 4, .start_i = 0, .end_i = 10, .vec = .{ -0.5, -0.5, -0.5 } },
+        .{ .note_id = 5, .start_i = 0, .end_i = 99999, .vec = .{ 0.9, -0.1, 0.4 } },
+    };
+    for (cycle1) |row| {
+        const id = try inst.put(row.note_id, row.start_i, row.end_i, row.vec);
+        try live.put(id, row);
+    }
+
+    try inst.save("temp.db");
+    inst.deinit();
+
+    // --- Cycle 2: load, verify, delete scattered entries, save ---
+    var inst2 = try TestStorage.init(testing_allocator, tmpD.dir, .{ .sz = 2 });
+    try inst2.load("temp.db");
+
+    try verifyAll(&inst2, &live);
+
+    const delete_ids = [_]VectorID{ 0, 2, 4, 6 };
+    for (delete_ids) |id| {
+        try inst2.rm(id);
+        _ = live.remove(id);
+    }
+
+    try verifyAll(&inst2, &live);
+    try inst2.save("temp.db");
+    inst2.deinit();
+
+    // --- Cycle 3: load, verify holes, insert into reused slots, save ---
+    var inst3 = try TestStorage.init(testing_allocator, tmpD.dir, .{ .sz = 2 });
+    try inst3.load("temp.db");
+
+    try verifyAll(&inst3, &live);
+
+    for (delete_ids) |expected_hole| {
+        try expect(!inst3.isOccupied(expected_hole));
+    }
+
+    const cycle3 = [_]ChurnRow{
+        .{ .note_id = 10, .start_i = 500, .end_i = 600, .vec = .{ 0.3, 0.3, 0.3 } },
+        .{ .note_id = 11, .start_i = 0, .end_i = 42, .vec = .{ -1.0, 1.0, 0.0 } },
+        .{ .note_id = 12, .start_i = 42, .end_i = 12345, .vec = .{ 0.7, -0.7, 0.1 } },
+        .{ .note_id = 13, .start_i = 0, .end_i = 1, .vec = .{ 0.0, 0.0, -1.0 } },
+    };
+    for (cycle3) |row| {
+        const id = try inst3.put(row.note_id, row.start_i, row.end_i, row.vec);
+        try live.put(id, row);
+    }
+
+    try verifyAll(&inst3, &live);
+    try inst3.save("temp.db");
+    inst3.deinit();
+
+    // --- Cycle 4: load, verify everything survived, delete all of one note, save ---
+    var inst4 = try TestStorage.init(testing_allocator, tmpD.dir, .{ .sz = 2 });
+    try inst4.load("temp.db");
+
+    try verifyAll(&inst4, &live);
+
+    inst4.rmByNoteId(1);
+    var remove_buf: [8]VectorID = undefined;
+    var remove_n: usize = 0;
+    var it = live.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.note_id == 1) {
+            remove_buf[remove_n] = entry.key_ptr.*;
+            remove_n += 1;
+        }
+    }
+    for (remove_buf[0..remove_n]) |id| {
+        _ = live.remove(id);
+    }
+
+    try verifyAll(&inst4, &live);
+    try inst4.save("temp.db");
+    inst4.deinit();
+
+    // --- Cycle 5: load, add a large batch forcing another grow, verify ---
+    var inst5 = try TestStorage.init(testing_allocator, tmpD.dir, .{ .sz = 2 });
+    try inst5.load("temp.db");
+
+    try verifyAll(&inst5, &live);
+
+    for (0..50) |i| {
+        const row = ChurnRow{
+            .note_id = @intCast(100 + i),
+            .start_i = i * 200,
+            .end_i = (i + 1) * 200,
+            .vec = .{
+                @as(f32, @floatFromInt(i % 7)) / 7.0,
+                @as(f32, @floatFromInt(i % 11)) / 11.0,
+                @as(f32, @floatFromInt(i % 13)) / 13.0,
+            },
+        };
+        const id = try inst5.put(row.note_id, row.start_i, row.end_i, row.vec);
+        try live.put(id, row);
+    }
+
+    try verifyAll(&inst5, &live);
+    try inst5.save("temp.db");
+    inst5.deinit();
+
+    // --- Final: load one more time and verify nothing was lost ---
+    var inst6 = try TestStorage.init(testing_allocator, tmpD.dir, .{ .sz = 2 });
+    defer inst6.deinit();
+    try inst6.load("temp.db");
+
+    try verifyAll(&inst6, &live);
+}
+
+fn verifyAll(inst: *TestStorage, live: *const std.AutoHashMap(VectorID, ChurnRow)) !void {
+    try expectEqual(live.count(), inst.vec_n);
+
+    var it = live.iterator();
+    while (it.next()) |entry| {
+        const id = entry.key_ptr.*;
+        const expected = entry.value_ptr.*;
+
+        try expect(inst.isOccupied(id));
+        const row = inst.get(id);
+        try expectEqual(expected.note_id, row.note_id);
+        try expectEqual(expected.start_i, row.start_i);
+        try expectEqual(expected.end_i, row.end_i);
+        try expect(@reduce(.And, expected.vec == inst.getVec(row.vec_id)));
+    }
+
+    for (inst.index, 0..) |idx_entry, i| {
+        if (!idx_entry.occupied) continue;
+        try expect(live.contains(i));
+    }
 }
 
 const std = @import("std");
