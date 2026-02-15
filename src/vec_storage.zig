@@ -251,12 +251,6 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
         }
 
         const LENGTH_REFERENCE: f32 = 20.0;
-        const LENGTH_BOOST_MAX: f32 = 2.0;
-
-        fn lengthBoost(char_len: usize) f32 {
-            const len_f: f32 = @floatFromInt(char_len);
-            return @min(LENGTH_BOOST_MAX, @max(1.0, len_f / LENGTH_REFERENCE));
-        }
 
         pub fn search(self: Self, query: Vector, buf: []SearchEntry, threshold: f32) !usize {
             const zone = tracy.beginZone(@src(), .{ .name = "vec_storage.zig:search" });
@@ -281,11 +275,8 @@ pub fn Storage(vec_sz: usize, vec_type: type) type {
             for (self.index, 0..) |idx_entry, id| {
                 if (!idx_entry.occupied) continue;
                 const raw_similar = cosine_similarity(vec_sz, vec_type, self.vectors[id], query);
-                const char_len = self.end_is[id] - self.start_is[id];
-                const similar = raw_similar * lengthBoost(char_len);
-                debugSearchSimilar(id, similar);
-                if (similar > threshold) {
-                    try pq.add(.{ .id = id, .sim = similar });
+                if (raw_similar > threshold) {
+                    try pq.add(.{ .id = id, .sim = raw_similar });
                 }
             }
 

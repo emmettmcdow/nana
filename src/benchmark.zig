@@ -351,6 +351,30 @@ test "debug view embedding splitting" {
     std.debug.print("-----------------------\n\n", .{});
 }
 
+test "debug search example 2" {
+    if (true) return error.SkipZigTest; // Skipping as this is not something we need always
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try TestVecDB.init(arena.allocator(), tmpD.dir, te.iface);
+    defer db.deinit();
+
+    try db.embedText("test_path", EXAMPLE_NOTE_2);
+
+    var buf: [100]SearchResult = undefined;
+    const n = try db.search("china", &buf);
+    for (buf[0..n]) |res| {
+        const snippet = EXAMPLE_NOTE_2[res.start_i..res.end_i];
+        std.debug.print(
+            "path: {s}, start_i: {d}, end_i: {d}, similarity: {d:.4}\n  snippet: \"{s}\"\n",
+            .{ res.path, res.start_i, res.end_i, res.similarity, snippet },
+        );
+    }
+}
+
 fn outputContains(output: []SearchResult, path: []const u8) bool {
     for (output) |out_item| {
         if (std.mem.eql(u8, out_item.path, path)) return true;
@@ -430,6 +454,21 @@ const EXAMPLE_NOTE_1 =
     \\# Within the client
     \\curl nginx-server:8082
     \\```
+;
+
+const EXAMPLE_NOTE_2 =
+    \\ # Address Locations
+    \\ - Robins Financial
+    \\ - ✅ Amex
+    \\ - ✅ Capital One Silver
+    \\ - ✅ Capital One Journey
+    \\ - ✅ Janice Lee
+    \\ - Double check work
+    \\ - ✅ Apollo
+    \\ - ✅ Dentist
+    \\ - ✅ Car insurance
+    \\ - ✅ DMV (registration)
+    \\ - ✅ Drivers License(Emmett)
 ;
 
 const Embedder = switch (embedding_model) {
