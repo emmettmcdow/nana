@@ -333,13 +333,6 @@ struct ContentView: View {
                 highlightRange: $notesManager.highlightRange,
                 palette: palette,
                 font: NSFont.systemFont(ofSize: fontSize)
-            ).mask(
-                LinearGradient(gradient: Gradient(stops: [
-                    .init(color: .clear, location: 0), // Top fade
-                    .init(color: .black, location: 0.05), // Start opaque
-                    .init(color: .black, location: 0.95), // End opaque
-                    .init(color: .clear, location: 1), // Bottom fade
-                ]), startPoint: .top, endPoint: .bottom)
             )
             FileList(visible: $notesManager.searchVisible, results: $notesManager.queriedNotes,
                      onSelect: { (selected: SearchResult) in
