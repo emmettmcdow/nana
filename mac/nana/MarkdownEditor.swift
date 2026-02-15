@@ -3,6 +3,7 @@ import SwiftUI
 
 struct MarkdownEditor: NSViewRepresentable {
     @Binding var text: String
+    @Binding var highlightRange: NSRange?
 
     // Optional configuration
     var palette: Palette
@@ -85,6 +86,38 @@ struct MarkdownEditor: NSViewRepresentable {
             textView.updateBaseFontSize(font.pointSize)
             textView.setPalette(palette: palette)
             textView.refreshMarkdownFormatting()
+        }
+
+        // Scroll to and highlight search result
+        if let range = highlightRange {
+            let safeRange = NSIntersectionRange(range, NSRange(location: 0, length: textView.string.unicodeScalars.count))
+            if safeRange.length > 0 {
+                textView.scrollRangeToVisible(safeRange)
+
+                let highlightColor = palette.NStert()
+
+                // Flash to full opacity, then fade out over ~1 second
+                textView.textStorage?.addAttribute(.backgroundColor, value: highlightColor.withAlphaComponent(1.0), range: safeRange)
+
+                let flashDuration = 0.1
+                let fadeDuration = 0.9
+                let fadeSteps = 30
+                let fadeInterval = fadeDuration / Double(fadeSteps)
+                for step in 0...fadeSteps {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + flashDuration + fadeInterval * Double(step)) {
+                        let alpha = 0.8 * (1.0 - Double(step) / Double(fadeSteps))
+                        if alpha > 0 {
+                            textView.textStorage?.addAttribute(.backgroundColor, value: highlightColor.withAlphaComponent(alpha), range: safeRange)
+                        } else {
+                            textView.textStorage?.removeAttribute(.backgroundColor, range: safeRange)
+                            textView.refreshMarkdownFormatting()
+                        }
+                    }
+                }
+            }
+            DispatchQueue.main.async {
+                self.highlightRange = nil
+            }
         }
     }
 

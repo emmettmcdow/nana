@@ -134,6 +134,8 @@ struct SearchResult: Identifiable, Equatable {
     var preview: String
     var highlights: [Int] = Array(repeating: 0, count: Int(N_SEARCH_HIGHLIGHTS) * 2)
     var similarity: Float = 0.0
+    var contentStartIndex: Int = 0
+    var contentEndIndex: Int = 0
     let id = UUID()
     static func == (lhs: SearchResult, rhs: SearchResult) -> Bool {
         lhs.id == rhs.id
@@ -148,6 +150,7 @@ class NotesManager: ObservableObject {
     @Published var currentNote: Note
     @Published var queriedNotes: [SearchResult] = []
     @Published var searchVisible = false
+    @Published var highlightRange: NSRange? = nil
 
     private var cancellables = Set<AnyCancellable>()
     private var modified: Date = .now
@@ -264,7 +267,9 @@ class NotesManager: ObservableObject {
                 queriedNotes.append(SearchResult(note: note,
                                                  preview: preview,
                                                  highlights: highlights,
-                                                 similarity: result.similarity))
+                                                 similarity: result.similarity,
+                                                 contentStartIndex: Int(result.start_i),
+                                                 contentEndIndex: Int(result.end_i)))
             }
         }
     }
@@ -326,6 +331,7 @@ struct ContentView: View {
         ZStack {
             MarkdownEditor(
                 text: $notesManager.currentNote.content,
+                highlightRange: $notesManager.highlightRange,
                 palette: palette,
                 font: NSFont.systemFont(ofSize: fontSize)
             ).mask(
@@ -339,6 +345,14 @@ struct ContentView: View {
             FileList(visible: $notesManager.searchVisible, results: $notesManager.queriedNotes,
                      onSelect: { (selected: SearchResult) in
                          notesManager.currentNote = selected.note
+                         if selected.contentEndIndex > selected.contentStartIndex {
+                             notesManager.highlightRange = NSRange(
+                                 location: selected.contentStartIndex,
+                                 length: selected.contentEndIndex - selected.contentStartIndex
+                             )
+                         } else {
+                             notesManager.highlightRange = nil
+                         }
                          withAnimation(.spring) {
                              notesManager.searchVisible.toggle()
                          }
