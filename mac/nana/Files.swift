@@ -166,10 +166,12 @@ struct ResultRow: View {
                             .italic()
                     }
                 }
-                Text(hilightedText(str: result.preview, highlights: result.highlights, palette: palette))
-                    .lineLimit(3)
-                    .foregroundStyle(palette.tertiary)
-                    .italic()
+                if !result.preview.isEmpty {
+                    Text(hilightedText(str: result.preview, highlights: result.highlights, palette: palette))
+                        .lineLimit(3)
+                        .foregroundStyle(palette.tertiary)
+                        .italic()
+                }
             }
             .padding(.horizontal)
             .padding(.vertical, ROW_SPACE)

@@ -211,8 +211,7 @@ class NotesManager: ObservableObject {
             let paths = parseDoubleNullTerminatedPaths(outbuf)
             for path in paths {
                 let note = Note(path: path)
-                let preview = note.content
-                queriedNotes.append(SearchResult(note: note, preview: preview))
+                queriedNotes.append(SearchResult(note: note, preview: ""))
             }
         } else {
             var results = [CSearchResult](repeating: CSearchResult(), count: MAX_ITEMS)
