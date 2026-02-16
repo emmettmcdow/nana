@@ -547,6 +547,9 @@ pub const NLEmbedder = struct {
             std.log.info("Skipping embed of zero-length string\n", .{});
             return null;
         }
+        // We only embed natural language for now, we should never get a chunk with punctuation.
+        assert(isAlphanumeric(str[0]) and isAlphanumeric(str[str.len - 1]));
+
         const c_str = try std.fmt.allocPrintZ(allocator, "{s}", .{str});
         defer allocator.free(c_str);
         const objc_str = NSString.msgSend(Object, fromUTF8, .{c_str.ptr});
@@ -609,7 +612,6 @@ pub fn Spliterator(comptime delimiters: []const u8) type {
     return struct {
         buffer: []const u8,
         index: usize,
-        curr_i: u32,
 
         const Self = @This();
         const url_prefixes = [_][]const u8{ "https://", "http://" };
@@ -636,7 +638,6 @@ pub fn Spliterator(comptime delimiters: []const u8) type {
             return .{
                 .buffer = buffer,
                 .index = 0,
-                .curr_i = 0,
             };
         }
 
@@ -648,7 +649,6 @@ pub fn Spliterator(comptime delimiters: []const u8) type {
                 // Skip past garbage characters
                 while (self.index < self.buffer.len and isDelimiter(self.buffer[self.index])) {
                     self.index += 1;
-                    self.curr_i += 1;
                 }
 
                 // We are done
@@ -663,13 +663,12 @@ pub fn Spliterator(comptime delimiters: []const u8) type {
                     const contents = self.buffer[start..self.index];
                     var out = Chunk{
                         .contents = contents,
-                        .start_i = self.curr_i,
-                        .end_i = self.curr_i + @as(u32, @intCast(contents.len)),
+                        .start_i = @intCast(start),
+                        .end_i = @intCast(self.index),
                         .type = .url,
                     };
                     out.strip();
                     if (out.contents.len == 0) continue; // The contents are junk, skip this block
-                    self.curr_i += @intCast(contents.len);
                     return out;
                 }
 
@@ -691,13 +690,12 @@ pub fn Spliterator(comptime delimiters: []const u8) type {
                 const contents = self.buffer[start..end];
                 var out = Chunk{
                     .contents = contents,
-                    .start_i = self.curr_i,
-                    .end_i = self.curr_i + @as(u32, @intCast(contents.len)),
+                    .start_i = @intCast(start),
+                    .end_i = @intCast(end),
                     .type = .string,
                 };
                 out.strip();
                 if (out.contents.len == 0) continue; // The contents are junk, skip this block
-                self.curr_i += @intCast(self.index - start);
                 return out;
             }
         }
@@ -753,6 +751,7 @@ test "spliterator - strip" {
 
         try expectEqual(case.expected.len, chunks.len);
         for (case.expected, chunks) |expected, chunk| {
+            try expectEqualStrings(expected.contents, case.input[chunk.start_i..chunk.end_i]);
             try expectEqualStrings(expected.contents, chunk.contents);
             try expectEqual(expected.type, chunk.type);
         }
@@ -915,7 +914,7 @@ test "embed skip failures" {
 
     var e = nl.embedder();
 
-    _ = (try e.embed(allocator, "(*^(*&(# 4327897493287498*&)(FKJDHDHLKDJHL")).?;
+    _ = (try e.embed(allocator, "4327897493287498(*^(*&(# FKJDHDHLKDJHL")).?;
 }
 
 test "embed - nlembed thread safety" {
