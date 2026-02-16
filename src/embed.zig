@@ -238,6 +238,8 @@ pub const MpnetEmbedder = struct {
             std.log.info("Skipping embed of zero-length string\n", .{});
             return null;
         }
+        // We only embed natural language for now, we should never get a chunk with punctuation.
+        assert(isAlphanumeric(str[0]) and isAlphanumeric(str[str.len - 1]));
 
         const token_ids = try self.tokenizer.tokenize(allocator, str);
         defer allocator.free(token_ids);

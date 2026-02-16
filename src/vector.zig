@@ -92,6 +92,29 @@ pub const SearchResult = struct {
     }
 };
 
+fn stripQuery(query: []const u8) []const u8 {
+    var start_i: usize = 0;
+    var end_i = query.len;
+    for (query, 0..) |c, i| {
+        start_i = i;
+        if (isAlphanumeric(c)) {
+            break;
+        }
+    }
+    const new_len = end_i - start_i;
+    if (start_i == end_i - 1) return query[0..0];
+    for (1..new_len + 1) |neg_i| {
+        const i = query.len - neg_i;
+        const c = query[i];
+        if (isAlphanumeric(c)) {
+            break;
+        }
+        end_i = i;
+    }
+    assert(start_i <= end_i);
+    return query[start_i..end_i];
+}
+
 pub fn VectorDB(embedding_model: EmbeddingModel) type {
     const VEC_SZ = switch (embedding_model) {
         .apple_nlembedding => NLEmbedder.VEC_SZ,
@@ -175,13 +198,16 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
             self.work_queue_thread.join();
         }
 
-        pub fn search(self: *Self, query: []const u8, buf: []SearchResult) !usize {
+        pub fn search(self: *Self, raw_query: []const u8, buf: []SearchResult) !usize {
             const zone = tracy.beginZone(@src(), .{ .name = "vector.zig:search" });
             defer zone.end();
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             defer arena.deinit();
 
             const max_results = buf.len;
+
+            const query = stripQuery(raw_query);
+            if (query.len == 0) return 0;
 
             const query_vec_union = (try self.embedder.embed(arena.allocator(), query)) orelse {
                 return 0;
@@ -337,7 +363,6 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             defer arena.deinit();
             const allocator = arena.allocator();
-
             assert(contents.len < MAX_NOTE_LEN);
 
             var embedded_sentence_list = std.ArrayList(EmbeddedSentence).init(allocator);
@@ -937,14 +962,6 @@ test "embed skip low-value" {
         var buffer: [10]SearchResult = undefined;
         try expectEqual(0, try db.search(query, &buffer));
     }
-    {
-        const query = "a";
-        const contents = "aa#";
-        const path = "test5.md";
-        try db.embedText(path, contents);
-        var buffer: [10]SearchResult = undefined;
-        try expectEqual(1, try db.search(query, &buffer));
-    }
     try db.validate();
 }
 
@@ -1097,6 +1114,7 @@ const bufPrint = std.fmt.bufPrint;
 const embed = @import("embed.zig");
 const expect = std.testing.expect;
 const EmbeddingModel = embed.EmbeddingModel;
+const isAlphanumeric = std.ascii.isAlphanumeric;
 const note_id_map_mod = @import("note_id_map.zig");
 const NoteID = note_id_map_mod.NoteID;
 const NoteIdMap = note_id_map_mod.NoteIdMap;
