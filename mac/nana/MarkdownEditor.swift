@@ -89,34 +89,30 @@ struct MarkdownEditor: NSViewRepresentable {
         }
 
         // Scroll to and highlight search result
-        if let range = highlightRange {
-            let safeRange = NSIntersectionRange(range, NSRange(location: 0, length: textView.string.unicodeScalars.count))
-            if safeRange.length > 0 {
-                textView.scrollRangeToVisible(safeRange)
+        guard let range = highlightRange else { return }
+        DispatchQueue.main.async { self.highlightRange = nil }
+        let safeRange = NSIntersectionRange(range, NSRange(location: 0, length: textView.string.unicodeScalars.count))
+        guard safeRange.length > 0 else { return }
+        textView.scrollRangeToVisible(safeRange)
 
-                let highlightColor = palette.NStert()
+        let highlightColor = palette.NStert()
 
-                // Flash to full opacity, then fade out over ~1 second
-                textView.textStorage?.addAttribute(.backgroundColor, value: highlightColor.withAlphaComponent(1.0), range: safeRange)
+        // Flash to full opacity, then fade out over ~1 second
+        textView.textStorage?.addAttribute(.backgroundColor, value: highlightColor.withAlphaComponent(1.0), range: safeRange)
 
-                let flashDuration = 0.1
-                let fadeDuration = 0.9
-                let fadeSteps = 30
-                let fadeInterval = fadeDuration / Double(fadeSteps)
-                for step in 0...fadeSteps {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + flashDuration + fadeInterval * Double(step)) {
-                        let alpha = 0.8 * (1.0 - Double(step) / Double(fadeSteps))
-                        if alpha > 0 {
-                            textView.textStorage?.addAttribute(.backgroundColor, value: highlightColor.withAlphaComponent(alpha), range: safeRange)
-                        } else {
-                            textView.textStorage?.removeAttribute(.backgroundColor, range: safeRange)
-                            textView.refreshMarkdownFormatting()
-                        }
-                    }
+        let flashDuration = 0.1
+        let fadeDuration = 0.9
+        let fadeSteps = 30
+        let fadeInterval = fadeDuration / Double(fadeSteps)
+        for step in 0 ... fadeSteps {
+            DispatchQueue.main.asyncAfter(deadline: .now() + flashDuration + fadeInterval * Double(step)) {
+                let alpha = 0.8 * (1.0 - Double(step) / Double(fadeSteps))
+                if alpha > 0 {
+                    textView.textStorage?.addAttribute(.backgroundColor, value: highlightColor.withAlphaComponent(alpha), range: safeRange)
+                } else {
+                    textView.textStorage?.removeAttribute(.backgroundColor, range: safeRange)
+                    textView.refreshMarkdownFormatting()
                 }
-            }
-            DispatchQueue.main.async {
-                self.highlightRange = nil
             }
         }
     }
@@ -172,41 +168,38 @@ struct MarkdownEditor: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
-
-            // Auto-scroll if cursor is near the bottom of the visible area
-            if let scrollView = textView.enclosingScrollView,
-               let layoutManager = textView.layoutManager
-            {
-                let insertionPoint = textView.selectedRange().location
-                let glyphIndex = layoutManager.glyphIndexForCharacter(at: min(insertionPoint, textView.string.count - 1))
-                var lineRect = layoutManager.lineFragmentRect(forGlyphAt: max(0, glyphIndex), effectiveRange: nil)
-
-                // Account for text container inset
-                lineRect.origin.y += textView.textContainerInset.height
-
-                let visibleRect = scrollView.contentView.bounds
-                let bottomMargin: CGFloat = 160
-
-                let cursorBottom = lineRect.origin.y + lineRect.height
-                let visibleBottom = visibleRect.origin.y + visibleRect.height
-
-                if cursorBottom > visibleBottom - bottomMargin {
-                    let scrollPoint = NSPoint(
-                        x: visibleRect.origin.x,
-                        y: cursorBottom - visibleRect.height + bottomMargin
-                    )
-                    NSAnimationContext.runAnimationGroup { context in
-                        context.duration = 0.3
-                        context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                        scrollView.contentView.animator().setBoundsOrigin(scrollPoint)
-                    }
-                    scrollView.reflectScrolledClipView(scrollView.contentView)
-                }
-            }
-
             // Update the binding
             DispatchQueue.main.async {
                 self.parent.text = textView.string
+            }
+            guard let scrollView = textView.enclosingScrollView else { return }
+            guard let layoutManager = textView.layoutManager else { return }
+
+            // Auto-scroll if cursor is near the bottom of the visible area
+            let insertionPoint = textView.selectedRange().location
+            let glyphIndex = layoutManager.glyphIndexForCharacter(at: min(insertionPoint, textView.string.count - 1))
+            var lineRect = layoutManager.lineFragmentRect(forGlyphAt: max(0, glyphIndex), effectiveRange: nil)
+
+            // Account for text container inset
+            lineRect.origin.y += textView.textContainerInset.height
+
+            let visibleRect = scrollView.contentView.bounds
+            let bottomMargin: CGFloat = 160
+
+            let cursorBottom = lineRect.origin.y + lineRect.height
+            let visibleBottom = visibleRect.origin.y + visibleRect.height
+
+            if cursorBottom > visibleBottom - bottomMargin {
+                let scrollPoint = NSPoint(
+                    x: visibleRect.origin.x,
+                    y: cursorBottom - visibleRect.height + bottomMargin
+                )
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.3
+                    context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                    scrollView.contentView.animator().setBoundsOrigin(scrollPoint)
+                }
+                scrollView.reflectScrolledClipView(scrollView.contentView)
             }
         }
 
