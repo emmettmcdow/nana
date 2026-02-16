@@ -52,15 +52,6 @@ class MarkdownTextView: NSTextView {
         }
     }
 
-    override var frame: NSRect {
-        didSet {
-            // Update text container width when frame changes
-            if let container = textContainer {
-                container.containerSize = NSSize(width: frame.width, height: CGFloat.greatestFiniteMagnitude)
-            }
-        }
-    }
-
     override var acceptsFirstResponder: Bool {
         return true
     }
