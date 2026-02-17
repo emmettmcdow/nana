@@ -7,6 +7,7 @@ class MarkdownTextView: NSTextView {
     private var paletteTextColor: NSColor?
     private var paletteBackgroundColor: NSColor?
     private var currFormatting: MarkdownFormatting = .init(tokens: [])
+    var onTextChange: ((String) -> Void)?
 
     override func awakeFromNib() {
         super.awakeFromNib()
@@ -75,6 +76,7 @@ class MarkdownTextView: NSTextView {
     override func didChangeText() {
         super.didChangeText()
         if !isUpdatingFormatting {
+            onTextChange?(string)
             DispatchQueue.main.async { [weak self] in
                 self?.updateMarkdownFormatting()
             }
@@ -315,16 +317,54 @@ class MarkdownTextView: NSTextView {
         }
     }
 
-    func refreshMarkdownFormatting() {
-        updateMarkdownFormatting()
+    func flashHighlight(range: NSRange, color: NSColor) {
+        let safeRange = NSIntersectionRange(range, NSRange(location: 0, length: string.unicodeScalars.count))
+        guard safeRange.length > 0 else { return }
+
+        scrollRangeToVisible(safeRange)
+        textStorage?.addAttribute(.backgroundColor, value: color.withAlphaComponent(1.0), range: safeRange)
+
+        let flashDuration = 0.1
+        let fadeDuration = 0.9
+        let fadeSteps = 30
+        let fadeInterval = fadeDuration / Double(fadeSteps)
+        for step in 0...fadeSteps {
+            DispatchQueue.main.asyncAfter(deadline: .now() + flashDuration + fadeInterval * Double(step)) { [weak self] in
+                let alpha = 0.8 * (1.0 - Double(step) / Double(fadeSteps))
+                if alpha > 0 {
+                    self?.textStorage?.addAttribute(.backgroundColor, value: color.withAlphaComponent(alpha), range: safeRange)
+                } else {
+                    self?.textStorage?.removeAttribute(.backgroundColor, range: safeRange)
+                    self?.updateMarkdownFormatting()
+                }
+            }
+        }
     }
 
-    func updateBaseFontSize(_ fontSize: CGFloat) {
-        storedBaseFontSize = fontSize
-    }
+    func update(text: String, font: NSFont, palette: Palette) {
+        let textChanged = string != text
+        let sizeChanged = storedBaseFontSize != font.pointSize
+        let fgChanged = textColor != palette.NSfg()
+        let bgChanged = backgroundColor != palette.NSbg()
 
-    func baseFontSize() -> CGFloat {
-        return storedBaseFontSize
+        if textChanged {
+            string = text
+        }
+        if sizeChanged {
+            self.font = font
+            storedBaseFontSize = font.pointSize
+        }
+        if fgChanged || bgChanged {
+            textColor = palette.NSfg()
+            paletteTextColor = palette.NSfg()
+            backgroundColor = palette.NSbg()
+            paletteBackgroundColor = palette.NSbg()
+            insertionPointColor = palette.NStert()
+        }
+
+        if textChanged || sizeChanged || fgChanged || bgChanged {
+            updateMarkdownFormatting()
+        }
     }
 
     func setPalette(palette: Palette) {

@@ -41,15 +41,13 @@ struct MarkdownEditor: NSViewRepresentable {
 
         // Configure text view AFTER it has a proper frame
         textView.setPalette(palette: palette)
-        textView.font = font
         textView.delegate = context.coordinator
         textView.autoresizingMask = [.width]
         textView.minSize = NSSize(width: 0, height: 0)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        textView.updateBaseFontSize(font.pointSize)
 
         textView.selectedTextAttributes = [
-            NSAttributedString.Key.backgroundColor: palette.NStert(), // Change background color
+            NSAttributedString.Key.backgroundColor: palette.NStert(),
         ]
 
         // Add padding to prevent text from interfering with buttons
@@ -61,7 +59,13 @@ struct MarkdownEditor: NSViewRepresentable {
 
         // Set initial text content
         textStorage.setAttributedString(NSAttributedString(string: text))
-        textView.refreshMarkdownFormatting()
+        textView.update(text: text, font: font, palette: palette)
+        textView.onTextChange = { [weak coordinator = context.coordinator] newText in
+            guard let coordinator = coordinator else { return }
+            DispatchQueue.main.async {
+                coordinator.parent.text = newText
+            }
+        }
 
         // Set up frame change observer to update text container width when resizing
         context.coordinator.setupFrameObserver(for: scrollView, textView: textView)
@@ -75,44 +79,14 @@ struct MarkdownEditor: NSViewRepresentable {
         // Ensure text container width is correct (important for first render)
         context.coordinator.updateTextContainerWidth(scrollView: scrollView, textView: textView)
 
-        // Update text if it changed externally
-        let textChanged = textView.string != text
-        let sizeChanged = font.pointSize != textView.baseFontSize()
-        let fgChanged = textView.textColor != palette.NSfg()
-        let bgChanged = textView.backgroundColor != palette.NSbg()
-        if textChanged || sizeChanged || fgChanged || bgChanged {
-            textView.string = text
-            textView.font = font
-            textView.updateBaseFontSize(font.pointSize)
-            textView.setPalette(palette: palette)
-            textView.refreshMarkdownFormatting()
-        }
+        // Update text/font/palette if anything changed externally
+        textView.update(text: text, font: font, palette: palette)
 
         // Scroll to and highlight search result
-        guard let range = highlightRange else { return }
-        DispatchQueue.main.async { self.highlightRange = nil }
-        let safeRange = NSIntersectionRange(range, NSRange(location: 0, length: textView.string.unicodeScalars.count))
-        guard safeRange.length > 0 else { return }
-        textView.scrollRangeToVisible(safeRange)
-
-        let highlightColor = palette.NStert()
-
-        // Flash to full opacity, then fade out over ~1 second
-        textView.textStorage?.addAttribute(.backgroundColor, value: highlightColor.withAlphaComponent(1.0), range: safeRange)
-
-        let flashDuration = 0.1
-        let fadeDuration = 0.9
-        let fadeSteps = 30
-        let fadeInterval = fadeDuration / Double(fadeSteps)
-        for step in 0 ... fadeSteps {
-            DispatchQueue.main.asyncAfter(deadline: .now() + flashDuration + fadeInterval * Double(step)) {
-                let alpha = 0.8 * (1.0 - Double(step) / Double(fadeSteps))
-                if alpha > 0 {
-                    textView.textStorage?.addAttribute(.backgroundColor, value: highlightColor.withAlphaComponent(alpha), range: safeRange)
-                } else {
-                    textView.textStorage?.removeAttribute(.backgroundColor, range: safeRange)
-                    textView.refreshMarkdownFormatting()
-                }
+        if let range = highlightRange {
+            textView.flashHighlight(range: range, color: palette.NStert())
+            DispatchQueue.main.async {
+                self.highlightRange = nil
             }
         }
     }
@@ -168,14 +142,11 @@ struct MarkdownEditor: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
-            // Update the binding
-            DispatchQueue.main.async {
-                self.parent.text = textView.string
-            }
+
+            // Auto-scroll if cursor is near the bottom of the visible area
             guard let scrollView = textView.enclosingScrollView else { return }
             guard let layoutManager = textView.layoutManager else { return }
 
-            // Auto-scroll if cursor is near the bottom of the visible area
             let insertionPoint = textView.selectedRange().location
             let glyphIndex = layoutManager.glyphIndexForCharacter(at: min(insertionPoint, textView.string.count - 1))
             var lineRect = layoutManager.lineFragmentRect(forGlyphAt: max(0, glyphIndex), effectiveRange: nil)
