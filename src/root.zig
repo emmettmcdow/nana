@@ -37,6 +37,7 @@ pub const Runtime = struct {
         skipEmbed: bool = false,
     };
 
+    /// Initialize the Nana Notes runtime
     pub fn init(allocator: std.mem.Allocator, opts: Runtime.Opts) !Runtime {
         const markdown_parser = markdown.Markdown.init(allocator);
 
@@ -62,11 +63,13 @@ pub const Runtime = struct {
         return self;
     }
 
+    /// De-initialize the Nana Notes runtime
     pub fn deinit(self: *Runtime) void {
         self.vectors.deinit();
         self.allocator.destroy(self.embedder);
     }
 
+    /// Deinits the runtime, deletes the Nana Notes metadata, and re-generates it.
     pub fn doctor(self: *Runtime) !void {
         // Deinitialize old vectordb (also deinits the embedder interface)
         self.vectors.deinit();
@@ -116,6 +119,7 @@ pub const Runtime = struct {
         }
     }
 
+    /// Create a new note.
     pub fn create(self: *Runtime, outBuf: []u8) ![]const u8 {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:create" });
         defer zone.end();
@@ -135,6 +139,8 @@ pub const Runtime = struct {
         return Error.ExhaustedIDs;
     }
 
+    /// Copy a text file (`txt` or `md`) to our storage directory. Run embedding over the file.
+    /// If there is a name collision, add a character to the beginning.
     pub fn import(self: *Runtime, path: []const u8, outBuf: []u8) !?[]const u8 {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:import" });
         defer zone.end();
@@ -216,6 +222,7 @@ pub const Runtime = struct {
         return outBuf[0..destName.len];
     }
 
+    /// Get metadata about the note, such as the path, create time, and modified time.
     pub fn get(self: *Runtime, path: []const u8) !Note {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:get" });
         defer zone.end();
@@ -245,6 +252,7 @@ pub const Runtime = struct {
         };
     }
 
+    /// Write to the note. Delete the old embeddings, and re-embed the whole contents of the note.
     pub fn writeAll(self: *Runtime, path: []const u8, content: []const u8) !void {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:writeAll" });
         defer zone.end();
@@ -266,6 +274,7 @@ pub const Runtime = struct {
         try self.vectors.embedTextAsync(path, content);
     }
 
+    /// Read the entirety of the note.
     pub fn readAll(self: *Runtime, path: []const u8, buf: []u8) !usize {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:readAll" });
         defer zone.end();
@@ -277,6 +286,7 @@ pub const Runtime = struct {
         return util.readAllZ(self.basedir, path, buf);
     }
 
+    /// Read only a section of the note.
     pub fn readRange(self: *Runtime, path: []const u8, start_i: usize, end_i: usize, buf: []u8) !void {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:readRange" });
         defer zone.end();
@@ -295,6 +305,7 @@ pub const Runtime = struct {
         buf[n] = 0;
     }
 
+    /// Delete a note and all of its embeddings.
     pub fn delete(self: *Runtime, path: []const u8) !void {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:delete" });
         defer zone.end();
@@ -308,10 +319,12 @@ pub const Runtime = struct {
         try self.basedir.deleteFile(path);
     }
 
+    /// Flags which control what info we get back when getting the search detail.
     pub const SearchDetailOpts = struct {
         skip_highlights: bool = false,
     };
 
+    /// Get information about a particular search result. Shed insight into *why* a result appears.
     pub fn searchDetail(
         self: *Runtime,
         search_result: SearchResult,
@@ -340,6 +353,7 @@ pub const Runtime = struct {
         }
     }
 
+    /// Do vector search on the contents of every note. Potentially return multiple results per note.
     pub fn search(self: *Runtime, query: []const u8, buf: []SearchResult) !usize {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:search" });
         defer zone.end();
@@ -347,6 +361,7 @@ pub const Runtime = struct {
         return self.vectors.search(query, buf);
     }
 
+    /// List all notes, optionally ignoring a list of notes(e.g. the currently selected note).
     pub fn index(self: *Runtime, buf: [][]const u8, ignore: ?[]const u8) !usize {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:index" });
         defer zone.end();
@@ -400,6 +415,7 @@ pub const Runtime = struct {
         return count;
     }
 
+    /// Parse content and return how it should be rendered as markdown.
     pub fn parseMarkdown(self: *Runtime, content: []const u8) ![]const u8 {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:parseMarkdown" });
         defer zone.end();
@@ -411,6 +427,8 @@ pub const Runtime = struct {
         return self.lastParsedMD.?.items;
     }
 
+    /// Return the title of a note. The title is simply the first line of a note, with special
+    /// characters stripped.
     pub fn title(self: *Runtime, path: []const u8, buf: []u8) ![]const u8 {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:title" });
         defer zone.end();
