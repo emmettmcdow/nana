@@ -235,12 +235,14 @@ pub fn VectorDB(embedding_model: EmbeddingModel) type {
             return found_n;
         }
 
-        pub fn uniqueSearch(self: *Self, query: []const u8, buf: []SearchResult) !usize {
+        pub fn uniqueSearch(self: *Self, raw_query: []const u8, buf: []SearchResult) !usize {
             const zone = tracy.beginZone(@src(), .{ .name = "vector.zig:uniqueSearch" });
             defer zone.end();
-
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             defer arena.deinit();
+
+            const query = stripQuery(raw_query);
+            if (query.len == 0) return 0;
 
             const query_vec_union = (try self.embedder.embed(arena.allocator(), query)) orelse return 0;
             const query_vec = @field(query_vec_union, @tagName(embedding_model)).*;
@@ -764,6 +766,21 @@ test "search cap results" {
     var results: [100]SearchResult = undefined;
     try expectEqual(100, try db.search("brick", &results));
     try expectEqual(100, try db.uniqueSearch("brick", &results));
+}
+
+test "search strip queries" {
+    var tmpD = std.testing.tmpDir(.{ .iterate = true });
+    defer tmpD.cleanup();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    const te = try testEmbedder(testing_allocator);
+    defer testing_allocator.destroy(te.e);
+    var db = try TestVecDB.init(arena.allocator(), tmpD.dir, te.iface);
+    defer db.deinit();
+
+    var results: [1]SearchResult = undefined;
+    _ = try db.search("??foo??", &results);
+    _ = try db.uniqueSearch("??foo??", &results);
 }
 
 fn expectSearchResultsIgnoresimilarity(expected: []const SearchResult, actual: []const SearchResult) !void {
