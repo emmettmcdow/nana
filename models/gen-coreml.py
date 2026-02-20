@@ -11,23 +11,19 @@ from pathlib import Path
 
 
 class EmbeddingWrapper(nn.Module):
+    """Wraps a sentence-transformers model to output only last_hidden_state.
+
+    Mean pooling and normalization are done on the caller side (in Zig) so that
+    the real attention mask is used instead of the one baked in by torch.jit.trace.
+    """
+
     def __init__(self, st_model):
         super().__init__()
         self.transformer = st_model[0].auto_model
 
     def forward(self, input_ids, attention_mask):
         outputs = self.transformer(input_ids=input_ids, attention_mask=attention_mask)
-        token_embeddings = outputs.last_hidden_state
-        # Mean pooling
-        input_mask_expanded = (
-            attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
-        )
-        sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, dim=1)
-        sum_mask = torch.clamp(input_mask_expanded.sum(dim=1), min=1e-9)
-        embeddings = sum_embeddings / sum_mask
-        # Normalize
-        embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
-        return embeddings
+        return outputs.last_hidden_state
 
 
 def main():
@@ -92,7 +88,7 @@ def main():
         ct.TensorType(name="attention_mask", shape=(1, max_seq_length), dtype=int),
     ]
 
-    outputs = [ct.TensorType(name="embeddings", dtype=float)]
+    outputs = [ct.TensorType(name="last_hidden_state", dtype=float)]
 
     print("Converting to CoreML...")
     mlmodel = ct.convert(

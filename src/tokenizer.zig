@@ -14,13 +14,13 @@ pub const WordPieceTokenizer = struct {
     allocator: Allocator,
     buf: []u8,
     backing_allocator: Allocator,
+    cls_token_id: u32,
+    sep_token_id: u32,
 
-    pub const CLS_TOKEN = "[CLS]";
-    pub const SEP_TOKEN = "[SEP]";
     pub const UNK_TOKEN = "[UNK]";
-    pub const PAD_TOKEN = "[PAD]";
-    pub const MASK_TOKEN = "[MASK]";
 
+    const DEFAULT_CLS_TOKEN = "[CLS]";
+    const DEFAULT_SEP_TOKEN = "[SEP]";
     const MAX_INPUT_CHARS_PER_WORD = 100;
 
     pub fn init(self: *WordPieceTokenizer, backing_allocator: Allocator, vocab_json: []const u8) !void {
@@ -43,6 +43,24 @@ pub const WordPieceTokenizer = struct {
             const key_copy = try self.allocator.dupe(u8, key);
             try self.vocab.put(key_copy, id);
         }
+
+        // Read CLS/SEP token IDs from post_processor if present (e.g. RobertaProcessing
+        // uses <s>/</s> instead of [CLS]/[SEP]).
+        if (parsed.value.object.get("post_processor")) |pp| {
+            if (pp.object.get("cls")) |cls_arr| {
+                self.cls_token_id = @intCast(cls_arr.array.items[1].integer);
+            } else {
+                self.cls_token_id = self.vocab.get(DEFAULT_CLS_TOKEN) orelse CLS_TOKEN_ID;
+            }
+            if (pp.object.get("sep")) |sep_arr| {
+                self.sep_token_id = @intCast(sep_arr.array.items[1].integer);
+            } else {
+                self.sep_token_id = self.vocab.get(DEFAULT_SEP_TOKEN) orelse SEP_TOKEN_ID;
+            }
+        } else {
+            self.cls_token_id = self.vocab.get(DEFAULT_CLS_TOKEN) orelse CLS_TOKEN_ID;
+            self.sep_token_id = self.vocab.get(DEFAULT_SEP_TOKEN) orelse SEP_TOKEN_ID;
+        }
     }
 
     pub fn deinit(self: *WordPieceTokenizer) void {
@@ -54,7 +72,7 @@ pub const WordPieceTokenizer = struct {
         var token_ids = std.ArrayList(u32).init(allocator);
         errdefer token_ids.deinit();
 
-        try token_ids.append(self.vocab.get(CLS_TOKEN) orelse CLS_TOKEN_ID);
+        try token_ids.append(self.cls_token_id);
 
         const basic_tokens = try self.basicTokenize(allocator, text);
         defer allocator.free(basic_tokens);
@@ -74,7 +92,7 @@ pub const WordPieceTokenizer = struct {
             }
         }
 
-        try token_ids.append(self.vocab.get(SEP_TOKEN) orelse SEP_TOKEN_ID);
+        try token_ids.append(self.sep_token_id);
 
         return token_ids.toOwnedSlice();
     }
@@ -180,8 +198,8 @@ test "tokenizer - basic" {
     defer std.testing.allocator.free(tokens);
 
     try std.testing.expectEqual(@as(usize, 4), tokens.len);
-    try std.testing.expectEqual(@as(u32, CLS_TOKEN_ID), tokens[0]); // [CLS]
+    try std.testing.expectEqual(@as(u32, 101), tokens[0]); // [CLS]
     try std.testing.expectEqual(@as(u32, 7592), tokens[1]); // hello
     try std.testing.expectEqual(@as(u32, 2088), tokens[2]); // world
-    try std.testing.expectEqual(@as(u32, SEP_TOKEN_ID), tokens[3]); // [SEP]
+    try std.testing.expectEqual(@as(u32, 102), tokens[3]); // [SEP]
 }

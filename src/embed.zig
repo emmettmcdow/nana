@@ -402,7 +402,7 @@ pub const MpnetEmbedder = struct {
         }
         // End of the prediction block
 
-        const output_key = NSString.msgSend(Object, fromUTF8, .{"embeddings"});
+        const output_key = NSString.msgSend(Object, fromUTF8, .{"last_hidden_state"});
         const output_fv = prediction.msgSend(Object, featureValueForName, .{output_key});
         if (output_fv.value == 0) {
             std.log.err("Output feature value is null\n", .{});
@@ -415,14 +415,31 @@ pub const MpnetEmbedder = struct {
             return error.OutputNotFound;
         }
 
+        // Output shape is [1, MODEL_SEQ_LEN, VEC_SZ]. Pointer is row-major.
         const data_ptr = output_array.msgSend([*]VEC_TYPE, dataPointer_sel, .{});
 
+        // Mean pooling: average only over real (non-padding) token positions.
         const output_slice = try allocator.alignedAlloc(
             VEC_TYPE,
             @alignOf(@Vector(VEC_SZ, VEC_TYPE)),
             VEC_SZ,
         );
-        @memcpy(output_slice[0..VEC_SZ], data_ptr[0..VEC_SZ]);
+        const zero_vec: @Vector(VEC_SZ, VEC_TYPE) = @splat(0.0);
+        var sum_vec = zero_vec;
+        for (0..seq_len) |t| {
+            const offset = t * VEC_SZ;
+            const token_vec: @Vector(VEC_SZ, VEC_TYPE) = data_ptr[offset..][0..VEC_SZ].*;
+            sum_vec += token_vec;
+        }
+        const count: @Vector(VEC_SZ, VEC_TYPE) = @splat(@floatFromInt(seq_len));
+        const mean_vec = sum_vec / count;
+
+        // L2 normalize
+        const dot = @reduce(.Add, mean_vec * mean_vec);
+        const norm: @Vector(VEC_SZ, VEC_TYPE) = @splat(@sqrt(dot));
+        const normed_vec = mean_vec / norm;
+
+        @as(*@Vector(VEC_SZ, VEC_TYPE), @ptrCast(output_slice)).* = normed_vec;
 
         return EmbeddingModelOutput{
             .mpnet_embedding = @as(*const @Vector(VEC_SZ, VEC_TYPE), @ptrCast(output_slice)),
@@ -905,13 +922,13 @@ test "embed - mpnetembed solo" {
     const vec_array: [768]f32 = vec;
     try expectEqualSlices(
         f32,
-        &.{ -1.0877479e-2, 5.3974453e-2, -3.3752674e-3 },
+        &.{ 2.6249737e-2, 1.3395556e-2, -4.533195e-3 },
         vec_array[0..3],
     );
 
     // From the Python reference implementation
     const sum = @reduce(.Add, vec);
-    try expectEqual(-1.0041979e-1, sum);
+    try expectEqual(-2.155769e-1, sum);
 }
 
 test "embed skip empty" {
@@ -955,11 +972,13 @@ test "embed - mpnetembed thread safety" {
 }
 
 test "embedding reference implementation" {
-    if (true) return error.SkipZigTest; // Expensive and broken.
+    if (true) return error.SkipZigTest;
     const phrases = [_][]const u8{
         "dog",
         "Hello world",
         "The quick brown fox jumps over the lazy dog",
+        "Machine learning models convert text into vector representations",
+        "Zig is a systems programming language designed for correctness",
     };
 
     const cases = [_]EmbeddingModel{
