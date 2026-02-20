@@ -12,11 +12,32 @@
 pub const EmbeddingModel = enum {
     apple_nlembedding,
     mpnet_embedding,
+
+    pub fn referenceImplementationName(self: EmbeddingModel) []const u8 {
+        return switch (self) {
+            .mpnet_embedding => MpnetEmbedder.REFERENCE_IMPLEMENTATION_NAME,
+            .apple_nlembedding => NLEmbedder.REFERENCE_IMPLEMENTATION_NAME,
+        };
+    }
 };
 
 pub const EmbeddingModelOutput = union(EmbeddingModel) {
     apple_nlembedding: *const @Vector(NLEmbedder.VEC_SZ, NLEmbedder.VEC_TYPE),
     mpnet_embedding: *const @Vector(MpnetEmbedder.VEC_SZ, MpnetEmbedder.VEC_TYPE),
+
+    pub fn slice(self: EmbeddingModelOutput) []const f32 {
+        return switch (self) {
+            .mpnet_embedding => |v| @as(*const [MpnetEmbedder.VEC_SZ]f32, @ptrCast(v)),
+            .apple_nlembedding => |v| @as(*const [NLEmbedder.VEC_SZ]f32, @ptrCast(v)),
+        };
+    }
+
+    pub fn vecSize(self: EmbeddingModelOutput) usize {
+        return switch (self) {
+            .mpnet_embedding => MpnetEmbedder.VEC_SZ,
+            .apple_nlembedding => NLEmbedder.VEC_SZ,
+        };
+    }
 };
 
 pub const Embedder = struct {
@@ -60,6 +81,7 @@ pub const MpnetEmbedder = struct {
     pub const VEC_SZ = 768;
     pub const VEC_TYPE = f32;
     pub const ID = EmbeddingModel.mpnet_embedding;
+    pub const REFERENCE_IMPLEMENTATION_NAME = "sentence-transformers/all-mpnet-base-v2";
     pub const THRESHOLD = 0.36;
     pub const STRICT_THRESHOLD = THRESHOLD + 0.1;
     pub const PATH = @tagName(ID) ++ ".db";
@@ -470,6 +492,7 @@ pub const NLEmbedder = struct {
     pub const VEC_SZ = 512;
     pub const VEC_TYPE = f32;
     pub const ID = EmbeddingModel.apple_nlembedding;
+    pub const REFERENCE_IMPLEMENTATION_NAME = "apple-nlembedding";
     pub const THRESHOLD = 0.40;
     pub const STRICT_THRESHOLD = THRESHOLD * 2;
     pub const PATH = @tagName(ID) ++ ".db";
@@ -929,6 +952,88 @@ test "embed - mpnetembed thread safety" {
     defer mpnet.deinit();
     var e = mpnet.embedder();
     try threadSafetyTest(&e);
+}
+
+test "embedding reference implementation" {
+    if (true) return error.SkipZigTest; // Expensive and broken.
+    const phrases = [_][]const u8{
+        "dog",
+        "Hello world",
+        "The quick brown fox jumps over the lazy dog",
+    };
+
+    const cases = [_]EmbeddingModel{
+        .mpnet_embedding,
+    };
+
+    const script_path = "models/embed_phrase.py";
+    const python_path = "models/venv/bin/python";
+
+    for (cases) |model| {
+        var mpnet: MpnetEmbedder = undefined;
+        var nlembed: NLEmbedder = undefined;
+        var e: Embedder = switch (model) {
+            .mpnet_embedding => blk: {
+                mpnet = try MpnetEmbedder.init();
+                break :blk mpnet.embedder();
+            },
+            .apple_nlembedding => blk: {
+                nlembed = try NLEmbedder.init();
+                break :blk nlembed.embedder();
+            },
+        };
+        defer e.deinit();
+
+        for (phrases) |phrase| {
+            // Get reference embedding from Python
+            const exec = try std.process.Child.run(.{
+                .allocator = std.testing.allocator,
+                .argv = &.{ python_path, script_path, model.referenceImplementationName(), phrase },
+            });
+            defer std.testing.allocator.free(exec.stdout);
+            defer std.testing.allocator.free(exec.stderr);
+
+            if (exec.term.Exited != 0) {
+                std.debug.print("Python script failed (exit {d}):\n{s}\n", .{ exec.term.Exited, exec.stderr });
+                return error.PythonScriptFailed;
+            }
+
+            // Get Zig embedding
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            const output = (try e.embed(arena.allocator(), phrase)) orelse return error.EmbedReturnedNull;
+            const zig_slice = output.slice();
+            const vec_sz = output.vecSize();
+
+            // Parse the reference embedding (one float per line)
+            var ref_vec: [MpnetEmbedder.VEC_SZ]f32 = undefined;
+            var line_iter = std.mem.splitScalar(u8, exec.stdout, '\n');
+            var idx: usize = 0;
+            while (line_iter.next()) |line| {
+                if (line.len == 0) continue;
+                ref_vec[idx] = std.fmt.parseFloat(f32, line) catch |err| {
+                    std.debug.print("Failed to parse float '{s}': {}\n", .{ line, err });
+                    return err;
+                };
+                idx += 1;
+                if (idx >= vec_sz) break;
+            }
+            try expectEqual(vec_sz, idx);
+
+            // Compare element-by-element with tolerance
+            const tolerance: f32 = 1e-4;
+            for (0..vec_sz) |i| {
+                const diff = @abs(zig_slice[i] - ref_vec[i]);
+                if (diff > tolerance) {
+                    std.debug.print(
+                        "Mismatch for phrase \"{s}\" at index {d}: zig={e:.8} ref={e:.8} diff={e:.8}\n",
+                        .{ phrase, i, zig_slice[i], ref_vec[i], diff },
+                    );
+                    return error.TestExpectedEqual;
+                }
+            }
+        }
+    }
 }
 
 fn threadSafetyTest(e: *Embedder) !void {
