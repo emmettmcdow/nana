@@ -52,6 +52,10 @@ pub const Token = struct {
     /// HEADER with a degree of 2 is a `##`.
     /// *LIST with a degree of 2 is a singly indented sub-list.
     degree: u8 = 1,
+    /// Offset from startI where the rendered content begins (hides leading delimiters).
+    renderStart: usize = 0,
+    /// Offset from startI where the rendered content ends (hides trailing delimiters).
+    renderEnd: usize = 0,
 };
 
 pub const Markdown = struct {
@@ -158,15 +162,39 @@ pub const Markdown = struct {
             }
             token.startI = codepointIndex;
 
-            // Advance to this token's end
+            // Convert renderStart/renderEnd from absolute byte positions
+            // to codepoint offsets relative to startI.
+            // We walk through the token's bytes and track codepoint offsets.
+            var renderStartCp: usize = 0;
+            var renderEndCp: usize = 0;
+            var tokenCpOffset: usize = 0;
+
+            // Advance to this token's end, converting render positions along the way
             while (byteIndex < token.endI) {
+                if (byteIndex == token.renderStart) {
+                    renderStartCp = tokenCpOffset;
+                }
+                if (byteIndex == token.renderEnd) {
+                    renderEndCp = tokenCpOffset;
+                }
                 const byte = self.src[byteIndex];
                 if (byte & 0xC0 != 0x80) {
                     codepointIndex += 1;
+                    tokenCpOffset += 1;
                 }
                 byteIndex += 1;
             }
+            // Handle renderEnd == endI (common case)
+            if (token.renderEnd == token.endI) {
+                renderEndCp = tokenCpOffset;
+            }
+            // Handle renderStart == endI (degenerate case)
+            if (token.renderStart == token.endI) {
+                renderStartCp = tokenCpOffset;
+            }
             token.endI = codepointIndex;
+            token.renderStart = renderStartCp;
+            token.renderEnd = renderEndCp;
         }
     }
 
@@ -179,6 +207,7 @@ pub const Markdown = struct {
             var copy = token;
             copy.endI = @min(self.i, self.src.len);
             copy.contents = self.src[copy.startI..copy.endI];
+            computeRenderRange(&copy);
             try self.tokens.append(self.allocator, copy);
         }
         if (newType) |tt| {
@@ -189,6 +218,74 @@ pub const Markdown = struct {
                     .{ .tType = tt, .startI = self.i, .endI = self.i + 1, .degree = d },
                 );
             }
+        }
+    }
+
+    /// Computes renderStart and renderEnd as absolute byte positions.
+    /// These are converted to codepoint offsets from startI during unicodePostprocess.
+    fn computeRenderRange(token: *Token) void {
+        const len = token.endI - token.startI;
+        switch (token.tType) {
+            .HEADER => {
+                // `## text` — degree # chars + 1 space
+                const prefix: usize = @as(usize, token.degree) + 1;
+                token.renderStart = token.startI + @min(prefix, len);
+                token.renderEnd = token.endI;
+            },
+            .QUOTE => {
+                // `>> text` — degree > chars + 1 space
+                const prefix: usize = @as(usize, token.degree) + 1;
+                token.renderStart = token.startI + @min(prefix, len);
+                token.renderEnd = token.endI;
+            },
+            .BOLD => {
+                // `**text**`
+                token.renderStart = token.startI + 2;
+                token.renderEnd = token.endI - 2;
+            },
+            .ITALIC => {
+                // `__text__`
+                token.renderStart = token.startI + 2;
+                token.renderEnd = token.endI - 2;
+            },
+            .EMPHASIS => {
+                // `***text***`
+                token.renderStart = token.startI + 3;
+                token.renderEnd = token.endI - 3;
+            },
+            .CODE => {
+                // `` `text` ``
+                token.renderStart = token.startI + 1;
+                token.renderEnd = token.endI - 1;
+            },
+            .UNORDERED_LIST => {
+                // `\t...- text` — (degree-1) tabs + `- `
+                const prefix: usize = @as(usize, token.degree) - 1 + 2;
+                token.renderStart = token.startI + @min(prefix, len);
+                token.renderEnd = token.endI;
+            },
+            .LINK => {
+                // `[text](url)` — hide `[` prefix, hide from `]` to end
+                token.renderStart = token.startI + 1; // skip `[`
+                // Find `]` in contents
+                const contents = token.contents;
+                var close_bracket: usize = len;
+                for (contents, 0..) |c, idx| {
+                    if (c == ']') {
+                        close_bracket = idx;
+                        break;
+                    }
+                }
+                token.renderEnd = token.startI + close_bracket;
+            },
+            .PLAIN, .BLOCK_CODE, .HORZ_RULE => {
+                token.renderStart = token.startI;
+                token.renderEnd = token.endI;
+            },
+            .ORDERED_LIST => {
+                token.renderStart = token.startI;
+                token.renderEnd = token.endI;
+            },
         }
     }
 
@@ -342,8 +439,8 @@ test "header plain" {
     var l = Markdown.init(arena.allocator());
 
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .HEADER, .contents = "# Header\n", .startI = 0, .endI = 9 },
-        .{ .tType = .PLAIN, .contents = "plain text.", .startI = 9, .endI = 20 },
+        .{ .tType = .HEADER, .contents = "# Header\n", .startI = 0, .endI = 9, .renderStart = 2, .renderEnd = 9 },
+        .{ .tType = .PLAIN, .contents = "plain text.", .startI = 9, .endI = 20, .renderStart = 0, .renderEnd = 11 },
     }, try l.parse(
         \\# Header
         \\plain text.
@@ -354,19 +451,21 @@ test "header plain" {
             .contents = "# Header with # in the middle",
             .startI = 0,
             .endI = 29,
+            .renderStart = 2,
+            .renderEnd = 29,
         },
     }, try l.parse(
         \\# Header with # in the middle
     ));
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .PLAIN, .contents = "Plain with # in the middle", .startI = 0, .endI = 26 },
+        .{ .tType = .PLAIN, .contents = "Plain with # in the middle", .startI = 0, .endI = 26, .renderStart = 0, .renderEnd = 26 },
     }, try l.parse(
         \\Plain with # in the middle
     ));
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .HEADER, .contents = "# A\n", .startI = 0, .endI = 4 },
-        .{ .tType = .PLAIN, .contents = "B\n", .startI = 4, .endI = 6 },
-        .{ .tType = .HEADER, .contents = "# C", .startI = 6, .endI = 9 },
+        .{ .tType = .HEADER, .contents = "# A\n", .startI = 0, .endI = 4, .renderStart = 2, .renderEnd = 4 },
+        .{ .tType = .PLAIN, .contents = "B\n", .startI = 4, .endI = 6, .renderStart = 0, .renderEnd = 2 },
+        .{ .tType = .HEADER, .contents = "# C", .startI = 6, .endI = 9, .renderStart = 2, .renderEnd = 3 },
     }, try l.parse(
         \\# A
         \\B
@@ -375,13 +474,13 @@ test "header plain" {
 
     var i: usize = 0;
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .HEADER, .degree = 1, .contents = "# 1\n", .startI = i, .endI = plusEq(&i, 4) },
-        .{ .tType = .HEADER, .degree = 2, .contents = "## 2\n", .startI = i, .endI = plusEq(&i, 5) },
-        .{ .tType = .HEADER, .degree = 3, .contents = "### 3\n", .startI = i, .endI = plusEq(&i, 6) },
-        .{ .tType = .HEADER, .degree = 4, .contents = "#### 4\n", .startI = i, .endI = plusEq(&i, 7) },
-        .{ .tType = .HEADER, .degree = 5, .contents = "##### 5\n", .startI = i, .endI = plusEq(&i, 8) },
-        .{ .tType = .HEADER, .degree = 6, .contents = "###### 6\n", .startI = i, .endI = plusEq(&i, 9) },
-        .{ .tType = .PLAIN, .degree = 1, .contents = "####### plain", .startI = i, .endI = plusEq(&i, 13) },
+        .{ .tType = .HEADER, .degree = 1, .contents = "# 1\n", .startI = i, .endI = plusEq(&i, 4), .renderStart = 2, .renderEnd = 4 },
+        .{ .tType = .HEADER, .degree = 2, .contents = "## 2\n", .startI = i, .endI = plusEq(&i, 5), .renderStart = 3, .renderEnd = 5 },
+        .{ .tType = .HEADER, .degree = 3, .contents = "### 3\n", .startI = i, .endI = plusEq(&i, 6), .renderStart = 4, .renderEnd = 6 },
+        .{ .tType = .HEADER, .degree = 4, .contents = "#### 4\n", .startI = i, .endI = plusEq(&i, 7), .renderStart = 5, .renderEnd = 7 },
+        .{ .tType = .HEADER, .degree = 5, .contents = "##### 5\n", .startI = i, .endI = plusEq(&i, 8), .renderStart = 6, .renderEnd = 8 },
+        .{ .tType = .HEADER, .degree = 6, .contents = "###### 6\n", .startI = i, .endI = plusEq(&i, 9), .renderStart = 7, .renderEnd = 9 },
+        .{ .tType = .PLAIN, .degree = 1, .contents = "####### plain", .startI = i, .endI = plusEq(&i, 13), .renderStart = 0, .renderEnd = 13 },
     }, try l.parse(
         \\# 1
         \\## 2
@@ -400,8 +499,8 @@ test "quote plain" {
     var l = Markdown.init(arena.allocator());
 
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .QUOTE, .contents = "> quote\n", .startI = 0, .endI = 8 },
-        .{ .tType = .PLAIN, .contents = "plain text.", .startI = 8, .endI = 19 },
+        .{ .tType = .QUOTE, .contents = "> quote\n", .startI = 0, .endI = 8, .renderStart = 2, .renderEnd = 8 },
+        .{ .tType = .PLAIN, .contents = "plain text.", .startI = 8, .endI = 19, .renderStart = 0, .renderEnd = 11 },
     }, try l.parse(
         \\> quote
         \\plain text.
@@ -412,19 +511,21 @@ test "quote plain" {
             .contents = "> quote with > in the middle",
             .startI = 0,
             .endI = 28,
+            .renderStart = 2,
+            .renderEnd = 28,
         },
     }, try l.parse(
         \\> quote with > in the middle
     ));
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .PLAIN, .contents = "Plain with > in the middle", .startI = 0, .endI = 26 },
+        .{ .tType = .PLAIN, .contents = "Plain with > in the middle", .startI = 0, .endI = 26, .renderStart = 0, .renderEnd = 26 },
     }, try l.parse(
         \\Plain with > in the middle
     ));
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .QUOTE, .contents = "> A\n", .startI = 0, .endI = 4 },
-        .{ .tType = .PLAIN, .contents = "B\n", .startI = 4, .endI = 6 },
-        .{ .tType = .QUOTE, .contents = "> C", .startI = 6, .endI = 9 },
+        .{ .tType = .QUOTE, .contents = "> A\n", .startI = 0, .endI = 4, .renderStart = 2, .renderEnd = 4 },
+        .{ .tType = .PLAIN, .contents = "B\n", .startI = 4, .endI = 6, .renderStart = 0, .renderEnd = 2 },
+        .{ .tType = .QUOTE, .contents = "> C", .startI = 6, .endI = 9, .renderStart = 2, .renderEnd = 3 },
     }, try l.parse(
         \\> A
         \\B
@@ -433,13 +534,13 @@ test "quote plain" {
 
     var i: usize = 0;
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .QUOTE, .degree = 1, .contents = "> 1\n", .startI = i, .endI = plusEq(&i, 4) },
-        .{ .tType = .QUOTE, .degree = 2, .contents = ">> 2\n", .startI = i, .endI = plusEq(&i, 5) },
-        .{ .tType = .QUOTE, .degree = 3, .contents = ">>> 3\n", .startI = i, .endI = plusEq(&i, 6) },
-        .{ .tType = .QUOTE, .degree = 4, .contents = ">>>> 4\n", .startI = i, .endI = plusEq(&i, 7) },
-        .{ .tType = .QUOTE, .degree = 5, .contents = ">>>>> 5\n", .startI = i, .endI = plusEq(&i, 8) },
-        .{ .tType = .QUOTE, .degree = 6, .contents = ">>>>>> 6\n", .startI = i, .endI = plusEq(&i, 9) },
-        .{ .tType = .PLAIN, .degree = 1, .contents = ">>>>>>> plain", .startI = i, .endI = plusEq(&i, 13) },
+        .{ .tType = .QUOTE, .degree = 1, .contents = "> 1\n", .startI = i, .endI = plusEq(&i, 4), .renderStart = 2, .renderEnd = 4 },
+        .{ .tType = .QUOTE, .degree = 2, .contents = ">> 2\n", .startI = i, .endI = plusEq(&i, 5), .renderStart = 3, .renderEnd = 5 },
+        .{ .tType = .QUOTE, .degree = 3, .contents = ">>> 3\n", .startI = i, .endI = plusEq(&i, 6), .renderStart = 4, .renderEnd = 6 },
+        .{ .tType = .QUOTE, .degree = 4, .contents = ">>>> 4\n", .startI = i, .endI = plusEq(&i, 7), .renderStart = 5, .renderEnd = 7 },
+        .{ .tType = .QUOTE, .degree = 5, .contents = ">>>>> 5\n", .startI = i, .endI = plusEq(&i, 8), .renderStart = 6, .renderEnd = 8 },
+        .{ .tType = .QUOTE, .degree = 6, .contents = ">>>>>> 6\n", .startI = i, .endI = plusEq(&i, 9), .renderStart = 7, .renderEnd = 9 },
+        .{ .tType = .PLAIN, .degree = 1, .contents = ">>>>>>> plain", .startI = i, .endI = plusEq(&i, 13), .renderStart = 0, .renderEnd = 13 },
     }, try l.parse(
         \\> 1
         \\>> 2
@@ -460,25 +561,25 @@ test "bold" {
     var i: usize = 0;
     var output = try l.parse("a**b**c**d**e");
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .PLAIN, .contents = "a", .startI = i, .endI = plusEq(&i, 1) },
-        .{ .tType = .BOLD, .contents = "**b**", .startI = i, .endI = plusEq(&i, 5) },
-        .{ .tType = .PLAIN, .contents = "c", .startI = i, .endI = plusEq(&i, 1) },
-        .{ .tType = .BOLD, .contents = "**d**", .startI = i, .endI = plusEq(&i, 5) },
-        .{ .tType = .PLAIN, .contents = "e", .startI = i, .endI = plusEq(&i, 1) },
+        .{ .tType = .PLAIN, .contents = "a", .startI = i, .endI = plusEq(&i, 1), .renderStart = 0, .renderEnd = 1 },
+        .{ .tType = .BOLD, .contents = "**b**", .startI = i, .endI = plusEq(&i, 5), .renderStart = 2, .renderEnd = 3 },
+        .{ .tType = .PLAIN, .contents = "c", .startI = i, .endI = plusEq(&i, 1), .renderStart = 0, .renderEnd = 1 },
+        .{ .tType = .BOLD, .contents = "**d**", .startI = i, .endI = plusEq(&i, 5), .renderStart = 2, .renderEnd = 3 },
+        .{ .tType = .PLAIN, .contents = "e", .startI = i, .endI = plusEq(&i, 1), .renderStart = 0, .renderEnd = 1 },
     }, output);
 
     i = 0;
     output = try l.parse("ab**cd");
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .PLAIN, .contents = "ab**cd", .startI = i, .endI = plusEq(&i, 6) },
+        .{ .tType = .PLAIN, .contents = "ab**cd", .startI = i, .endI = plusEq(&i, 6), .renderStart = 0, .renderEnd = 6 },
     }, output);
 
     i = 0;
     output = try l.parse("ab**\ne**f**g\n");
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .PLAIN, .contents = "ab**\ne", .startI = i, .endI = plusEq(&i, 6) },
-        .{ .tType = .BOLD, .contents = "**f**", .startI = i, .endI = plusEq(&i, 5) },
-        .{ .tType = .PLAIN, .contents = "g\n", .startI = i, .endI = plusEq(&i, 2) },
+        .{ .tType = .PLAIN, .contents = "ab**\ne", .startI = i, .endI = plusEq(&i, 6), .renderStart = 0, .renderEnd = 6 },
+        .{ .tType = .BOLD, .contents = "**f**", .startI = i, .endI = plusEq(&i, 5), .renderStart = 2, .renderEnd = 3 },
+        .{ .tType = .PLAIN, .contents = "g\n", .startI = i, .endI = plusEq(&i, 2), .renderStart = 0, .renderEnd = 2 },
     }, output);
 }
 
@@ -491,25 +592,25 @@ test "italic" {
     var i: usize = 0;
     var output = try l.parse("a__b__c__d__e");
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .PLAIN, .contents = "a", .startI = i, .endI = plusEq(&i, 1) },
-        .{ .tType = .ITALIC, .contents = "__b__", .startI = i, .endI = plusEq(&i, 5) },
-        .{ .tType = .PLAIN, .contents = "c", .startI = i, .endI = plusEq(&i, 1) },
-        .{ .tType = .ITALIC, .contents = "__d__", .startI = i, .endI = plusEq(&i, 5) },
-        .{ .tType = .PLAIN, .contents = "e", .startI = i, .endI = plusEq(&i, 1) },
+        .{ .tType = .PLAIN, .contents = "a", .startI = i, .endI = plusEq(&i, 1), .renderStart = 0, .renderEnd = 1 },
+        .{ .tType = .ITALIC, .contents = "__b__", .startI = i, .endI = plusEq(&i, 5), .renderStart = 2, .renderEnd = 3 },
+        .{ .tType = .PLAIN, .contents = "c", .startI = i, .endI = plusEq(&i, 1), .renderStart = 0, .renderEnd = 1 },
+        .{ .tType = .ITALIC, .contents = "__d__", .startI = i, .endI = plusEq(&i, 5), .renderStart = 2, .renderEnd = 3 },
+        .{ .tType = .PLAIN, .contents = "e", .startI = i, .endI = plusEq(&i, 1), .renderStart = 0, .renderEnd = 1 },
     }, output);
 
     i = 0;
     output = try l.parse("ab__cd");
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .PLAIN, .contents = "ab__cd", .startI = i, .endI = plusEq(&i, 6) },
+        .{ .tType = .PLAIN, .contents = "ab__cd", .startI = i, .endI = plusEq(&i, 6), .renderStart = 0, .renderEnd = 6 },
     }, output);
 
     i = 0;
     output = try l.parse("ab__\ne__f__g\n");
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .PLAIN, .contents = "ab__\ne", .startI = i, .endI = plusEq(&i, 6) },
-        .{ .tType = .ITALIC, .contents = "__f__", .startI = i, .endI = plusEq(&i, 5) },
-        .{ .tType = .PLAIN, .contents = "g\n", .startI = i, .endI = plusEq(&i, 2) },
+        .{ .tType = .PLAIN, .contents = "ab__\ne", .startI = i, .endI = plusEq(&i, 6), .renderStart = 0, .renderEnd = 6 },
+        .{ .tType = .ITALIC, .contents = "__f__", .startI = i, .endI = plusEq(&i, 5), .renderStart = 2, .renderEnd = 3 },
+        .{ .tType = .PLAIN, .contents = "g\n", .startI = i, .endI = plusEq(&i, 2), .renderStart = 0, .renderEnd = 2 },
     }, output);
 }
 
@@ -522,25 +623,25 @@ test "emphasis" {
     var i: usize = 0;
     var output = try l.parse("a***b***c***d***e");
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .PLAIN, .contents = "a", .startI = i, .endI = plusEq(&i, 1) },
-        .{ .tType = .EMPHASIS, .contents = "***b***", .startI = i, .endI = plusEq(&i, 7) },
-        .{ .tType = .PLAIN, .contents = "c", .startI = i, .endI = plusEq(&i, 1) },
-        .{ .tType = .EMPHASIS, .contents = "***d***", .startI = i, .endI = plusEq(&i, 7) },
-        .{ .tType = .PLAIN, .contents = "e", .startI = i, .endI = plusEq(&i, 1) },
+        .{ .tType = .PLAIN, .contents = "a", .startI = i, .endI = plusEq(&i, 1), .renderStart = 0, .renderEnd = 1 },
+        .{ .tType = .EMPHASIS, .contents = "***b***", .startI = i, .endI = plusEq(&i, 7), .renderStart = 3, .renderEnd = 4 },
+        .{ .tType = .PLAIN, .contents = "c", .startI = i, .endI = plusEq(&i, 1), .renderStart = 0, .renderEnd = 1 },
+        .{ .tType = .EMPHASIS, .contents = "***d***", .startI = i, .endI = plusEq(&i, 7), .renderStart = 3, .renderEnd = 4 },
+        .{ .tType = .PLAIN, .contents = "e", .startI = i, .endI = plusEq(&i, 1), .renderStart = 0, .renderEnd = 1 },
     }, output);
 
     i = 0;
     output = try l.parse("ab***cd");
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .PLAIN, .contents = "ab***cd", .startI = i, .endI = plusEq(&i, 7) },
+        .{ .tType = .PLAIN, .contents = "ab***cd", .startI = i, .endI = plusEq(&i, 7), .renderStart = 0, .renderEnd = 7 },
     }, output);
 
     i = 0;
     output = try l.parse("ab***\ne***f***g\n");
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .PLAIN, .contents = "ab***\ne", .startI = i, .endI = plusEq(&i, 7) },
-        .{ .tType = .EMPHASIS, .contents = "***f***", .startI = i, .endI = plusEq(&i, 7) },
-        .{ .tType = .PLAIN, .contents = "g\n", .startI = i, .endI = plusEq(&i, 2) },
+        .{ .tType = .PLAIN, .contents = "ab***\ne", .startI = i, .endI = plusEq(&i, 7), .renderStart = 0, .renderEnd = 7 },
+        .{ .tType = .EMPHASIS, .contents = "***f***", .startI = i, .endI = plusEq(&i, 7), .renderStart = 3, .renderEnd = 4 },
+        .{ .tType = .PLAIN, .contents = "g\n", .startI = i, .endI = plusEq(&i, 2), .renderStart = 0, .renderEnd = 2 },
     }, output);
 }
 
@@ -553,25 +654,25 @@ test "inline code" {
     var i: usize = 0;
     var output = try l.parse("a`b`c`d`e");
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .PLAIN, .contents = "a", .startI = i, .endI = plusEq(&i, 1) },
-        .{ .tType = .CODE, .contents = "`b`", .startI = i, .endI = plusEq(&i, 3) },
-        .{ .tType = .PLAIN, .contents = "c", .startI = i, .endI = plusEq(&i, 1) },
-        .{ .tType = .CODE, .contents = "`d`", .startI = i, .endI = plusEq(&i, 3) },
-        .{ .tType = .PLAIN, .contents = "e", .startI = i, .endI = plusEq(&i, 1) },
+        .{ .tType = .PLAIN, .contents = "a", .startI = i, .endI = plusEq(&i, 1), .renderStart = 0, .renderEnd = 1 },
+        .{ .tType = .CODE, .contents = "`b`", .startI = i, .endI = plusEq(&i, 3), .renderStart = 1, .renderEnd = 2 },
+        .{ .tType = .PLAIN, .contents = "c", .startI = i, .endI = plusEq(&i, 1), .renderStart = 0, .renderEnd = 1 },
+        .{ .tType = .CODE, .contents = "`d`", .startI = i, .endI = plusEq(&i, 3), .renderStart = 1, .renderEnd = 2 },
+        .{ .tType = .PLAIN, .contents = "e", .startI = i, .endI = plusEq(&i, 1), .renderStart = 0, .renderEnd = 1 },
     }, output);
 
     i = 0;
     output = try l.parse("ab`cd");
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .PLAIN, .contents = "ab`cd", .startI = i, .endI = plusEq(&i, 5) },
+        .{ .tType = .PLAIN, .contents = "ab`cd", .startI = i, .endI = plusEq(&i, 5), .renderStart = 0, .renderEnd = 5 },
     }, output);
 
     i = 0;
     output = try l.parse("ab`\ne`f`g\n");
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .PLAIN, .contents = "ab`\ne", .startI = i, .endI = plusEq(&i, 5) },
-        .{ .tType = .CODE, .contents = "`f`", .startI = i, .endI = plusEq(&i, 3) },
-        .{ .tType = .PLAIN, .contents = "g\n", .startI = i, .endI = plusEq(&i, 2) },
+        .{ .tType = .PLAIN, .contents = "ab`\ne", .startI = i, .endI = plusEq(&i, 5), .renderStart = 0, .renderEnd = 5 },
+        .{ .tType = .CODE, .contents = "`f`", .startI = i, .endI = plusEq(&i, 3), .renderStart = 1, .renderEnd = 2 },
+        .{ .tType = .PLAIN, .contents = "g\n", .startI = i, .endI = plusEq(&i, 2), .renderStart = 0, .renderEnd = 2 },
     }, output);
 }
 
@@ -589,20 +690,24 @@ test "block code" {
             .contents = "```this is code\nsecond line of code\n```",
             .startI = i,
             .endI = plusEq(&i, 39),
+            .renderStart = 0,
+            .renderEnd = 39,
         },
     }, output);
 
     i = 0;
     output = try l.parse("not code\n```\ncode with **no styling**\n```\nnot code again");
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .PLAIN, .contents = "not code\n", .startI = i, .endI = plusEq(&i, 9) },
+        .{ .tType = .PLAIN, .contents = "not code\n", .startI = i, .endI = plusEq(&i, 9), .renderStart = 0, .renderEnd = 9 },
         .{
             .tType = .BLOCK_CODE,
             .contents = "```\ncode with **no styling**\n```",
             .startI = i,
             .endI = plusEq(&i, 32),
+            .renderStart = 0,
+            .renderEnd = 32,
         },
-        .{ .tType = .PLAIN, .contents = "\nnot code again", .startI = i, .endI = plusEq(&i, 15) },
+        .{ .tType = .PLAIN, .contents = "\nnot code again", .startI = i, .endI = plusEq(&i, 15), .renderStart = 0, .renderEnd = 15 },
     }, output);
 }
 
@@ -615,19 +720,19 @@ test "unordered list" {
     var i: usize = 0;
     var output = try l.parse("- uno\n- dos");
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .UNORDERED_LIST, .contents = "- uno\n", .startI = i, .endI = plusEq(&i, 6) },
-        .{ .tType = .UNORDERED_LIST, .contents = "- dos", .startI = i, .endI = plusEq(&i, 5) },
+        .{ .tType = .UNORDERED_LIST, .contents = "- uno\n", .startI = i, .endI = plusEq(&i, 6), .renderStart = 2, .renderEnd = 6 },
+        .{ .tType = .UNORDERED_LIST, .contents = "- dos", .startI = i, .endI = plusEq(&i, 5), .renderStart = 2, .renderEnd = 5 },
     }, output);
 
     i = 0;
     output = try l.parse("- 1\n\t- 2\n\t\t- 3\n\t\t\t- 4\n\t\t\t\t- 5\n\t\t\t\t\t- 6");
     try expectEqualDeep(&[_]Token{
-        .{ .tType = .UNORDERED_LIST, .contents = "- 1\n", .startI = i, .endI = plusEq(&i, 4), .degree = 1 },
-        .{ .tType = .UNORDERED_LIST, .contents = "\t- 2\n", .startI = i, .endI = plusEq(&i, 5), .degree = 2 },
-        .{ .tType = .UNORDERED_LIST, .contents = "\t\t- 3\n", .startI = i, .endI = plusEq(&i, 6), .degree = 3 },
-        .{ .tType = .UNORDERED_LIST, .contents = "\t\t\t- 4\n", .startI = i, .endI = plusEq(&i, 7), .degree = 4 },
-        .{ .tType = .UNORDERED_LIST, .contents = "\t\t\t\t- 5\n", .startI = i, .endI = plusEq(&i, 8), .degree = 5 },
-        .{ .tType = .UNORDERED_LIST, .contents = "\t\t\t\t\t- 6", .startI = i, .endI = plusEq(&i, 8), .degree = 6 },
+        .{ .tType = .UNORDERED_LIST, .contents = "- 1\n", .startI = i, .endI = plusEq(&i, 4), .degree = 1, .renderStart = 2, .renderEnd = 4 },
+        .{ .tType = .UNORDERED_LIST, .contents = "\t- 2\n", .startI = i, .endI = plusEq(&i, 5), .degree = 2, .renderStart = 3, .renderEnd = 5 },
+        .{ .tType = .UNORDERED_LIST, .contents = "\t\t- 3\n", .startI = i, .endI = plusEq(&i, 6), .degree = 3, .renderStart = 4, .renderEnd = 6 },
+        .{ .tType = .UNORDERED_LIST, .contents = "\t\t\t- 4\n", .startI = i, .endI = plusEq(&i, 7), .degree = 4, .renderStart = 5, .renderEnd = 7 },
+        .{ .tType = .UNORDERED_LIST, .contents = "\t\t\t\t- 5\n", .startI = i, .endI = plusEq(&i, 8), .degree = 5, .renderStart = 6, .renderEnd = 8 },
+        .{ .tType = .UNORDERED_LIST, .contents = "\t\t\t\t\t- 6", .startI = i, .endI = plusEq(&i, 8), .degree = 6, .renderStart = 7, .renderEnd = 8 },
     }, output);
 }
 
@@ -641,7 +746,7 @@ test "link" {
         const output = try l.parse(input);
         var i: usize = 0;
         try expectEqualDeep(&[_]Token{
-            .{ .tType = .LINK, .contents = input, .startI = i, .endI = plusEq(&i, input.len) },
+            .{ .tType = .LINK, .contents = input, .startI = i, .endI = plusEq(&i, input.len), .renderStart = 1, .renderEnd = 6 },
         }, output);
     }
     {
@@ -649,7 +754,7 @@ test "link" {
         const output = try l.parse(input);
         var i: usize = 0;
         try expectEqualDeep(&[_]Token{
-            .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len) },
+            .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len), .renderStart = 0, .renderEnd = input.len },
         }, output);
     }
     {
@@ -657,7 +762,7 @@ test "link" {
         const output = try l.parse(input);
         var i: usize = 0;
         try expectEqualDeep(&[_]Token{
-            .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len) },
+            .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len), .renderStart = 0, .renderEnd = input.len },
         }, output);
     }
 }
@@ -672,7 +777,7 @@ test "failed reset to last position" {
         const output = try l.parse(input);
         var i: usize = 0;
         try expectEqualDeep(&[_]Token{
-            .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len) },
+            .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len), .renderStart = 0, .renderEnd = input.len },
         }, output);
     }
     {
@@ -680,7 +785,7 @@ test "failed reset to last position" {
         const output = try l.parse(input);
         var i: usize = 0;
         try expectEqualDeep(&[_]Token{
-            .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len) },
+            .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len), .renderStart = 0, .renderEnd = input.len },
         }, output);
     }
     {
@@ -688,7 +793,7 @@ test "failed reset to last position" {
         const output = try l.parse(input);
         var i: usize = 0;
         try expectEqualDeep(&[_]Token{
-            .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len) },
+            .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len), .renderStart = 0, .renderEnd = input.len },
         }, output);
     }
     {
@@ -696,7 +801,7 @@ test "failed reset to last position" {
         const output = try l.parse(input);
         var i: usize = 0;
         try expectEqualDeep(&[_]Token{
-            .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len) },
+            .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len), .renderStart = 0, .renderEnd = input.len },
         }, output);
     }
     {
@@ -704,7 +809,7 @@ test "failed reset to last position" {
         const output = try l.parse(input);
         var i: usize = 0;
         try expectEqualDeep(&[_]Token{
-            .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len) },
+            .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len), .renderStart = 0, .renderEnd = input.len },
         }, output);
     }
     {
@@ -712,7 +817,7 @@ test "failed reset to last position" {
         const output = try l.parse(input);
         var i: usize = 0;
         try expectEqualDeep(&[_]Token{
-            .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len) },
+            .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len), .renderStart = 0, .renderEnd = input.len },
         }, output);
     }
 }
@@ -730,9 +835,130 @@ test "unicode handling" {
         // __good (6) + 🐶 (1) + __ (2) = 9
         // *** (3) + 🔗 (1) + wax*** (6) = 10
         try expectEqualDeep(&[_]Token{
-            .{ .tType = .BOLD, .contents = "**brave❤️**", .startI = i, .endI = plusEq(&i, 11) },
-            .{ .tType = .ITALIC, .contents = "__good🐶__", .startI = i, .endI = plusEq(&i, 9) },
-            .{ .tType = .EMPHASIS, .contents = "***🔗wax***", .startI = i, .endI = plusEq(&i, 10) },
+            .{ .tType = .BOLD, .contents = "**brave❤️**", .startI = i, .endI = plusEq(&i, 11), .renderStart = 2, .renderEnd = 9 },
+            .{ .tType = .ITALIC, .contents = "__good🐶__", .startI = i, .endI = plusEq(&i, 9), .renderStart = 2, .renderEnd = 7 },
+            .{ .tType = .EMPHASIS, .contents = "***🔗wax***", .startI = i, .endI = plusEq(&i, 10), .renderStart = 3, .renderEnd = 7 },
+        }, output);
+    }
+}
+
+test "renderStart and renderEnd" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var l = Markdown.init(arena.allocator());
+
+    // Plain text: renderStart=0, renderEnd=length (everything visible)
+    {
+        const output = try l.parse("hello world");
+        try expectEqualDeep(&[_]Token{
+            .{ .tType = .PLAIN, .contents = "hello world", .startI = 0, .endI = 11, .renderStart = 0, .renderEnd = 11 },
+        }, output);
+    }
+
+    // Headers: hide `## ` prefix
+    {
+        var i: usize = 0;
+        const output = try l.parse("# Title\n## Subtitle");
+        try expectEqualDeep(&[_]Token{
+            .{ .tType = .HEADER, .degree = 1, .contents = "# Title\n", .startI = i, .endI = plusEq(&i, 8), .renderStart = 2, .renderEnd = 8 },
+            .{ .tType = .HEADER, .degree = 2, .contents = "## Subtitle", .startI = i, .endI = plusEq(&i, 11), .renderStart = 3, .renderEnd = 11 },
+        }, output);
+    }
+
+    // Bold: hide `**` on each side
+    {
+        var i: usize = 0;
+        const output = try l.parse("a**bold**b");
+        try expectEqualDeep(&[_]Token{
+            .{ .tType = .PLAIN, .contents = "a", .startI = i, .endI = plusEq(&i, 1), .renderStart = 0, .renderEnd = 1 },
+            .{ .tType = .BOLD, .contents = "**bold**", .startI = i, .endI = plusEq(&i, 8), .renderStart = 2, .renderEnd = 6 },
+            .{ .tType = .PLAIN, .contents = "b", .startI = i, .endI = plusEq(&i, 1), .renderStart = 0, .renderEnd = 1 },
+        }, output);
+    }
+
+    // Italic: hide `__` on each side
+    {
+        var i: usize = 0;
+        const output = try l.parse("a__italic__b");
+        try expectEqualDeep(&[_]Token{
+            .{ .tType = .PLAIN, .contents = "a", .startI = i, .endI = plusEq(&i, 1), .renderStart = 0, .renderEnd = 1 },
+            .{ .tType = .ITALIC, .contents = "__italic__", .startI = i, .endI = plusEq(&i, 10), .renderStart = 2, .renderEnd = 8 },
+            .{ .tType = .PLAIN, .contents = "b", .startI = i, .endI = plusEq(&i, 1), .renderStart = 0, .renderEnd = 1 },
+        }, output);
+    }
+
+    // Emphasis: hide `***` on each side
+    {
+        var i: usize = 0;
+        const output = try l.parse("***wow***");
+        try expectEqualDeep(&[_]Token{
+            .{ .tType = .EMPHASIS, .contents = "***wow***", .startI = i, .endI = plusEq(&i, 9), .renderStart = 3, .renderEnd = 6 },
+        }, output);
+    }
+
+    // Inline code: hide ` on each side
+    {
+        var i: usize = 0;
+        const output = try l.parse("a`code`b");
+        try expectEqualDeep(&[_]Token{
+            .{ .tType = .PLAIN, .contents = "a", .startI = i, .endI = plusEq(&i, 1), .renderStart = 0, .renderEnd = 1 },
+            .{ .tType = .CODE, .contents = "`code`", .startI = i, .endI = plusEq(&i, 6), .renderStart = 1, .renderEnd = 5 },
+            .{ .tType = .PLAIN, .contents = "b", .startI = i, .endI = plusEq(&i, 1), .renderStart = 0, .renderEnd = 1 },
+        }, output);
+    }
+
+    // Quote: hide `> ` prefix
+    {
+        const output = try l.parse("> quoted text");
+        try expectEqualDeep(&[_]Token{
+            .{ .tType = .QUOTE, .contents = "> quoted text", .startI = 0, .endI = 13, .renderStart = 2, .renderEnd = 13 },
+        }, output);
+    }
+
+    // Multi-level quote: hide `>>> ` prefix
+    {
+        const output = try l.parse(">>> deep quote");
+        try expectEqualDeep(&[_]Token{
+            .{ .tType = .QUOTE, .degree = 3, .contents = ">>> deep quote", .startI = 0, .endI = 14, .renderStart = 4, .renderEnd = 14 },
+        }, output);
+    }
+
+    // Unordered list: hide `- ` prefix
+    {
+        var i: usize = 0;
+        const output = try l.parse("- item one\n- item two");
+        try expectEqualDeep(&[_]Token{
+            .{ .tType = .UNORDERED_LIST, .contents = "- item one\n", .startI = i, .endI = plusEq(&i, 11), .renderStart = 2, .renderEnd = 11 },
+            .{ .tType = .UNORDERED_LIST, .contents = "- item two", .startI = i, .endI = plusEq(&i, 10), .renderStart = 2, .renderEnd = 10 },
+        }, output);
+    }
+
+    // Indented unordered list: hide `\t- ` prefix
+    {
+        var i: usize = 0;
+        const output = try l.parse("- top\n\t- nested");
+        try expectEqualDeep(&[_]Token{
+            .{ .tType = .UNORDERED_LIST, .degree = 1, .contents = "- top\n", .startI = i, .endI = plusEq(&i, 6), .renderStart = 2, .renderEnd = 6 },
+            .{ .tType = .UNORDERED_LIST, .degree = 2, .contents = "\t- nested", .startI = i, .endI = plusEq(&i, 9), .renderStart = 3, .renderEnd = 9 },
+        }, output);
+    }
+
+    // Link: hide `[` and `](url)`
+    {
+        const input = "[click here](https://example.com)";
+        const output = try l.parse(input);
+        try expectEqualDeep(&[_]Token{
+            .{ .tType = .LINK, .contents = input, .startI = 0, .endI = input.len, .renderStart = 1, .renderEnd = 11 },
+        }, output);
+    }
+
+    // Block code: renderStart=0, renderEnd=length (no hiding for now)
+    {
+        const input = "```\nsome code\n```";
+        const output = try l.parse(input);
+        try expectEqualDeep(&[_]Token{
+            .{ .tType = .BLOCK_CODE, .contents = input, .startI = 0, .endI = input.len, .renderStart = 0, .renderEnd = input.len },
         }, output);
     }
 }

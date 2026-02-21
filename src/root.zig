@@ -1329,15 +1329,15 @@ test "parse markdown" {
     defer rt.deinit();
 
     try expectEqlStrings(
-        "[{\"tType\":\"PLAIN\",\"startI\":0,\"endI\":3,\"contents\":\"foo\",\"degree\":1}]\x00",
+        "[{\"tType\":\"PLAIN\",\"startI\":0,\"endI\":3,\"contents\":\"foo\",\"degree\":1,\"renderStart\":0,\"renderEnd\":3}]\x00",
         try rt.parseMarkdown("foo"),
     );
     try expectEqlStrings(
-        "[{\"tType\":\"BOLD\",\"startI\":0,\"endI\":7,\"contents\":\"**foo**\",\"degree\":1}]\x00",
+        "[{\"tType\":\"BOLD\",\"startI\":0,\"endI\":7,\"contents\":\"**foo**\",\"degree\":1,\"renderStart\":2,\"renderEnd\":5}]\x00",
         try rt.parseMarkdown("**foo**"),
     );
     try expectEqlStrings(
-        "[{\"tType\":\"PLAIN\",\"startI\":0,\"endI\":1,\"contents\":\"a\",\"degree\":1},{\"tType\":\"BOLD\",\"startI\":1,\"endI\":6,\"contents\":\"**b**\",\"degree\":1}]\x00",
+        "[{\"tType\":\"PLAIN\",\"startI\":0,\"endI\":1,\"contents\":\"a\",\"degree\":1,\"renderStart\":0,\"renderEnd\":1},{\"tType\":\"BOLD\",\"startI\":1,\"endI\":6,\"contents\":\"**b**\",\"degree\":1,\"renderStart\":2,\"renderEnd\":3}]\x00",
         try rt.parseMarkdown("a**b**"),
     );
 }

@@ -129,11 +129,14 @@ class MarkdownTextView: NSTextView {
 
             if onSelectedLine { continue }
 
-            let delimiterRanges = syntaxRanges(for: token)
-            for range in delimiterRanges {
-                for idx in range {
-                    hidden.insert(idx)
-                }
+            // Hide characters outside the render range
+            let renderAbsStart = token.startI + token.renderStart
+            let renderAbsEnd = token.startI + token.renderEnd
+            for idx in token.startI..<renderAbsStart {
+                hidden.insert(idx)
+            }
+            for idx in renderAbsEnd..<token.endI {
+                hidden.insert(idx)
             }
 
             if token.tType == .UNORDERED_LIST {
@@ -155,74 +158,6 @@ class MarkdownTextView: NSTextView {
             if ch == "\n" { line += 1 }
         }
         return line
-    }
-
-    /// Returns the character index ranges of syntax delimiters that should be hidden for a token.
-    private func syntaxRanges(for token: MarkdownToken) -> [Range<Int>] {
-        let start = token.startI
-        let end = token.endI
-
-        switch token.tType {
-        case .HEADER:
-            // `## Header text\n` — hide the `## ` prefix (degree # chars + 1 space)
-            let prefixLen = token.degree + 1
-            let prefixEnd = min(start + prefixLen, end)
-            return [start..<prefixEnd]
-
-        case .BOLD, .ITALIC, .EMPHASIS:
-            let delimLen = inlineDelimiterLength(token.contents)
-            guard delimLen > 0, end - start > delimLen * 2 else { return [] }
-            return [start..<(start + delimLen), (end - delimLen)..<end]
-
-        case .CODE:
-            // `` `text` `` — hide backtick on each side
-            guard end - start > 2 else { return [] }
-            return [start..<(start + 1), (end - 1)..<end]
-
-        case .BLOCK_CODE:
-            return []
-
-        case .QUOTE:
-            // `> text` — hide `> ` prefix
-            let prefixLen = min(2, end - start)
-            return [start..<(start + prefixLen)]
-
-        case .UNORDERED_LIST:
-            // Dash is substituted with bullet; keep the space visible
-            return []
-
-        case .ORDERED_LIST:
-            // `1. text` — find the `. ` after digits
-            let contents = token.contents
-            if let dotIdx = contents.firstIndex(of: ".") {
-                let prefixLen = contents.distance(from: contents.startIndex, to: dotIdx) + 2 // digits + ". "
-                return [start..<min(start + prefixLen, end)]
-            }
-            return []
-
-        case .LINK:
-            // `[text](url)` — hide `[` and `](url)`
-            let contents = token.contents
-            guard let closeBracket = contents.firstIndex(of: "]") else { return [] }
-            let closeBracketOffset = contents.distance(from: contents.startIndex, to: closeBracket)
-            return [
-                start..<(start + 1),                          // hide `[`
-                (start + closeBracketOffset)..<end,            // hide `](url)`
-            ]
-
-        case .HORZ_RULE, .PLAIN:
-            return []
-        }
-    }
-
-    /// Counts leading `*` or `_` characters in an inline token's contents to determine delimiter length.
-    private func inlineDelimiterLength(_ contents: String) -> Int {
-        guard let first = contents.first, first == "*" || first == "_" else { return 0 }
-        var count = 0
-        for ch in contents {
-            if ch == first { count += 1 } else { break }
-        }
-        return count
     }
 
     private func updateMarkdownFormatting() {
@@ -267,7 +202,9 @@ class MarkdownTextView: NSTextView {
                 startI: old_tok.startI + length_change,
                 endI: old_tok.endI + length_change,
                 contents: old_tok.contents,
-                degree: old_tok.degree
+                degree: old_tok.degree,
+                renderStart: old_tok.renderStart,
+                renderEnd: old_tok.renderEnd
             )
 
             assert(old_tok_mod.startI >= 0 && old_tok_mod.startI <= text.unicodeScalars.count)

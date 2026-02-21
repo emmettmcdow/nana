@@ -29,9 +29,32 @@ struct MarkdownToken: Codable, Equatable {
     let endI: Int
     let contents: String
     let degree: Int
+    let renderStart: Int
+    let renderEnd: Int
 
     enum CodingKeys: String, CodingKey {
-        case tType, startI, endI, contents, degree
+        case tType, startI, endI, contents, degree, renderStart, renderEnd
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        tType = try container.decode(TokenType.self, forKey: .tType)
+        startI = try container.decode(Int.self, forKey: .startI)
+        endI = try container.decode(Int.self, forKey: .endI)
+        contents = try container.decode(String.self, forKey: .contents)
+        degree = try container.decode(Int.self, forKey: .degree)
+        renderStart = try container.decodeIfPresent(Int.self, forKey: .renderStart) ?? 0
+        renderEnd = try container.decodeIfPresent(Int.self, forKey: .renderEnd) ?? 0
+    }
+
+    init(tType: TokenType, startI: Int, endI: Int, contents: String, degree: Int, renderStart: Int = 0, renderEnd: Int = 0) {
+        self.tType = tType
+        self.startI = startI
+        self.endI = endI
+        self.contents = contents
+        self.degree = degree
+        self.renderStart = renderStart
+        self.renderEnd = renderEnd
     }
 }
 
