@@ -13,7 +13,7 @@ struct MarkdownEditor: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         // Create the text system components in the correct order
         let textStorage = NSTextStorage()
-        let layoutManager = NSLayoutManager()
+        let layoutManager = HidingLayoutManager()
         let textContainer = NSTextContainer()
 
         // Connect the text system

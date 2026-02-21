@@ -7,6 +7,8 @@ class MarkdownTextView: NSTextView {
     private var paletteTextColor: NSColor?
     private var paletteBackgroundColor: NSColor?
     private var currFormatting: MarkdownFormatting = .init(tokens: [])
+    private var isMouseDown = false
+    private var suppressCursorRestart = false
     var onTextChange: ((String) -> Void)?
 
     override func awakeFromNib() {
@@ -53,6 +55,14 @@ class MarkdownTextView: NSTextView {
         }
     }
 
+    override func updateInsertionPointStateAndRestartTimer(_ restartFlag: Bool) {
+        if suppressCursorRestart {
+            super.updateInsertionPointStateAndRestartTimer(false)
+        } else {
+            super.updateInsertionPointStateAndRestartTimer(restartFlag)
+        }
+    }
+
     override var acceptsFirstResponder: Bool {
         return true
     }
@@ -81,6 +91,138 @@ class MarkdownTextView: NSTextView {
                 self?.updateMarkdownFormatting()
             }
         }
+        updateHidingLayoutManager()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        isMouseDown = true
+        super.mouseDown(with: event)
+        // mouseDown returns after the full click tracking (down + drag + up)
+        isMouseDown = false
+        updateHidingLayoutManager()
+    }
+
+    override func setSelectedRange(_ charRange: NSRange, affinity: NSSelectionAffinity, stillSelecting stillSelectingFlag: Bool) {
+        super.setSelectedRange(charRange, affinity: affinity, stillSelecting: stillSelectingFlag)
+        if !isMouseDown {
+            updateHidingLayoutManager()
+        }
+    }
+
+    private func updateHidingLayoutManager() {
+        guard let hidingLM = layoutManager as? HidingLayoutManager else { return }
+        let text = string
+        let selectedLine = lineNumber(at: selectedRange().location, in: text)
+
+        let oldHidden = hidingLM.hiddenCharIndices
+        let oldBullets = hidingLM.bulletCharIndices
+        var hidden = Set<Int>()
+        var bullets = Set<Int>()
+        for token in currFormatting.tokens {
+            let tokenStartLine = lineNumber(at: token.startI, in: text)
+            let tokenEndLine = lineNumber(at: max(token.endI - 1, token.startI), in: text)
+            let onSelectedLine = selectedLine >= tokenStartLine && selectedLine <= tokenEndLine
+
+            if token.tType == .LINK {
+                updateLinkAttribute(for: token, selected: onSelectedLine)
+            }
+
+            if onSelectedLine { continue }
+
+            let delimiterRanges = syntaxRanges(for: token)
+            for range in delimiterRanges {
+                for idx in range {
+                    hidden.insert(idx)
+                }
+            }
+
+            if token.tType == .UNORDERED_LIST {
+                bullets.insert(token.startI)
+            }
+        }
+        hidingLM.hiddenCharIndices = hidden
+        hidingLM.bulletCharIndices = bullets
+        suppressCursorRestart = true
+        hidingLM.applyChanges(oldHidden: oldHidden, oldBullets: oldBullets)
+        suppressCursorRestart = false
+    }
+
+    /// Returns the 0-based line number for a character index.
+    private func lineNumber(at charIndex: Int, in text: String) -> Int {
+        var line = 0
+        for (i, ch) in text.unicodeScalars.enumerated() {
+            if i >= charIndex { break }
+            if ch == "\n" { line += 1 }
+        }
+        return line
+    }
+
+    /// Returns the character index ranges of syntax delimiters that should be hidden for a token.
+    private func syntaxRanges(for token: MarkdownToken) -> [Range<Int>] {
+        let start = token.startI
+        let end = token.endI
+
+        switch token.tType {
+        case .HEADER:
+            // `## Header text\n` — hide the `## ` prefix (degree # chars + 1 space)
+            let prefixLen = token.degree + 1
+            let prefixEnd = min(start + prefixLen, end)
+            return [start..<prefixEnd]
+
+        case .BOLD, .ITALIC, .EMPHASIS:
+            let delimLen = inlineDelimiterLength(token.contents)
+            guard delimLen > 0, end - start > delimLen * 2 else { return [] }
+            return [start..<(start + delimLen), (end - delimLen)..<end]
+
+        case .CODE:
+            // `` `text` `` — hide backtick on each side
+            guard end - start > 2 else { return [] }
+            return [start..<(start + 1), (end - 1)..<end]
+
+        case .BLOCK_CODE:
+            return []
+
+        case .QUOTE:
+            // `> text` — hide `> ` prefix
+            let prefixLen = min(2, end - start)
+            return [start..<(start + prefixLen)]
+
+        case .UNORDERED_LIST:
+            // Dash is substituted with bullet; keep the space visible
+            return []
+
+        case .ORDERED_LIST:
+            // `1. text` — find the `. ` after digits
+            let contents = token.contents
+            if let dotIdx = contents.firstIndex(of: ".") {
+                let prefixLen = contents.distance(from: contents.startIndex, to: dotIdx) + 2 // digits + ". "
+                return [start..<min(start + prefixLen, end)]
+            }
+            return []
+
+        case .LINK:
+            // `[text](url)` — hide `[` and `](url)`
+            let contents = token.contents
+            guard let closeBracket = contents.firstIndex(of: "]") else { return [] }
+            let closeBracketOffset = contents.distance(from: contents.startIndex, to: closeBracket)
+            return [
+                start..<(start + 1),                          // hide `[`
+                (start + closeBracketOffset)..<end,            // hide `](url)`
+            ]
+
+        case .HORZ_RULE, .PLAIN:
+            return []
+        }
+    }
+
+    /// Counts leading `*` or `_` characters in an inline token's contents to determine delimiter length.
+    private func inlineDelimiterLength(_ contents: String) -> Int {
+        guard let first = contents.first, first == "*" || first == "_" else { return 0 }
+        var count = 0
+        for ch in contents {
+            if ch == first { count += 1 } else { break }
+        }
+        return count
     }
 
     private func updateMarkdownFormatting() {
@@ -99,6 +241,7 @@ class MarkdownTextView: NSTextView {
                 applyTokenFormatting(token: token, range: range, to: textStorage)
             }
             currFormatting = new_formatting
+            updateHidingLayoutManager()
             return
         }
 
@@ -147,6 +290,7 @@ class MarkdownTextView: NSTextView {
             currFormatting = new_formatting
             textStorage.endEditing()
             isUpdatingFormatting = false
+            updateHidingLayoutManager()
         }
 
         let first_changed_str_idx = new_formatting.tokens[first_changed_token_idx].startI
@@ -375,6 +519,22 @@ class MarkdownTextView: NSTextView {
         paletteBackgroundColor = palette.NSbg()
 
         insertionPointColor = palette.NStert()
+    }
+
+    private func updateLinkAttribute(for token: MarkdownToken, selected: Bool) {
+        guard let textStorage = textStorage else { return }
+        let range = NSRange(location: token.startI, length: token.endI - token.startI)
+        guard NSMaxRange(range) <= textStorage.length else { return }
+
+        if selected {
+            textStorage.removeAttribute(.link, range: range)
+        } else {
+            if let urlString = extractURL(from: token.contents),
+               let url = URL(string: urlString)
+            {
+                textStorage.addAttribute(.link, value: url, range: range)
+            }
+        }
     }
 
     private func extractURL(from linkContent: String) -> String? {
