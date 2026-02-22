@@ -11,18 +11,14 @@ class MarkdownTextView: NSTextView {
     private var suppressCursorRestart = false
     var onTextChange: ((String) -> Void)?
 
-    override func awakeFromNib() {
-        super.awakeFromNib()
-        setupTextView()
+    // We must implment this, but we don't really care about it because we aren't using
+    // nibs/storyboards. This along with awakeWithNib.
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
     }
 
     override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
         super.init(frame: frameRect, textContainer: container)
-        setupTextView()
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
         setupTextView()
     }
 
@@ -42,9 +38,14 @@ class MarkdownTextView: NSTextView {
         usesFontPanel = false
         isVerticallyResizable = true
         isHorizontallyResizable = false
-        textContainerInset = NSSize(width: 8, height: 8)
+        // Padding to prevent interfering with buttons
+        // TODO: This may not be the place to manage this. Maybe want to move this higher.
+        textContainerInset = NSSize(width: 60, height: 30)
         isEditable = true
         isSelectable = true
+        autoresizingMask = [.width]
+        minSize = NSSize(width: 0, height: 0)
+        maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
 
         // Set default font
         font = NSFont.systemFont(ofSize: 14)
@@ -53,6 +54,17 @@ class MarkdownTextView: NSTextView {
         if let container = textContainer {
             container.lineFragmentPadding = 10 // Add padding to help with background rendering
         }
+    }
+
+    // Sets the base colors and font
+    func setBaseStyle(new_font: NSFont, palette: Palette) {
+        textColor = palette.NSfg()
+        paletteTextColor = palette.NSfg()
+        backgroundColor = palette.NSbg()
+        paletteBackgroundColor = palette.NSbg()
+        insertionPointColor = palette.NStert()
+        selectedTextAttributes = [NSAttributedString.Key.backgroundColor: palette.NStert()]
+        font = new_font
     }
 
     override func updateInsertionPointStateAndRestartTimer(_ restartFlag: Bool) {
@@ -132,10 +144,10 @@ class MarkdownTextView: NSTextView {
             // Hide characters outside the render range
             let renderAbsStart = token.startI + token.renderStart
             let renderAbsEnd = token.startI + token.renderEnd
-            for idx in token.startI..<renderAbsStart {
+            for idx in token.startI ..< renderAbsStart {
                 hidden.insert(idx)
             }
-            for idx in renderAbsEnd..<token.endI {
+            for idx in renderAbsEnd ..< token.endI {
                 hidden.insert(idx)
             }
 
@@ -409,7 +421,7 @@ class MarkdownTextView: NSTextView {
         let fadeDuration = 0.9
         let fadeSteps = 30
         let fadeInterval = fadeDuration / Double(fadeSteps)
-        for step in 0...fadeSteps {
+        for step in 0 ... fadeSteps {
             DispatchQueue.main.asyncAfter(deadline: .now() + flashDuration + fadeInterval * Double(step)) { [weak self] in
                 let alpha = 0.8 * (1.0 - Double(step) / Double(fadeSteps))
                 if alpha > 0 {
@@ -446,16 +458,6 @@ class MarkdownTextView: NSTextView {
         if textChanged || sizeChanged || fgChanged || bgChanged {
             updateMarkdownFormatting()
         }
-    }
-
-    func setPalette(palette: Palette) {
-        textColor = palette.NSfg()
-        paletteTextColor = palette.NSfg()
-
-        backgroundColor = palette.NSbg()
-        paletteBackgroundColor = palette.NSbg()
-
-        insertionPointColor = palette.NStert()
     }
 
     private func updateLinkAttribute(for token: MarkdownToken, selected: Bool) {

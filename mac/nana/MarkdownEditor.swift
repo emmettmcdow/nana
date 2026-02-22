@@ -12,60 +12,51 @@ struct MarkdownEditor: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSScrollView {
         // Create the text system components in the correct order
+        // TextKit is MVC
+
+        // Model - The "what". This is in charge of the canonical representation of the data itself
+        // and it's attributes.
         let textStorage = NSTextStorage()
-        let layoutManager = HidingLayoutManager()
+        // Controller - The "how". It takes the value held in NSTextStorage and converts it into
+        // glyphs and arranges them into lines.
+        let layoutManager = NSLayoutManager()
+        // let layoutManager = HidingLayoutManager()
+        // View - The "where". This controls the bounding box of the text.
         let textContainer = NSTextContainer()
 
-        // Connect the text system
+        // Workflow
+        // 1. Text changes in NSTextStorage
+        // 2. NSTextStorage tells NSLayoutManager about the change, which breaks it into lines to
+        //    fit inside the NSTextContainer.
+        // 3. UITextView asks NSLayoutManager to draw those glyphs.
         textStorage.addLayoutManager(layoutManager)
         layoutManager.addTextContainer(textContainer)
 
         // Configure text container to prevent horizontal scrolling
-        textContainer.widthTracksTextView = false // We'll manage width manually to account for insets
+        textContainer.widthTracksTextView = false // Manage width manually to account for insets
         textContainer.heightTracksTextView = false
         textContainer.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         textContainer.lineFragmentPadding = 0
 
-        // Create MarkdownTextView with initial frame that will be auto-resized
-        let textView = MarkdownTextView(frame: .zero, textContainer: textContainer)
-
-        // Create scroll view
-        let scrollView = NSScrollView()
-        scrollView.documentView = textView
-        scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = false
-        scrollView.autohidesScrollers = false
-
-        // Ensure no horizontal scrolling
-        scrollView.contentView.postsBoundsChangedNotifications = true
-
-        // Configure text view AFTER it has a proper frame
-        textView.setPalette(palette: palette)
+        // TextView is the top level object. This is the combination of our MVC described above.
+        let textView = MarkdownTextView(frame: .zero, // This will be auto-resized
+                                        textContainer: textContainer)
+        textView.setBaseStyle(new_font: font, palette: palette)
         textView.delegate = context.coordinator
-        textView.autoresizingMask = [.width]
-        textView.minSize = NSSize(width: 0, height: 0)
-        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-
-        textView.selectedTextAttributes = [
-            NSAttributedString.Key.backgroundColor: palette.NStert(),
-        ]
-
-        // Add padding to prevent text from interfering with buttons
-        textView.textContainerInset = NSSize(width: 60, height: 30)
-        textView.typingAttributes = [
-            .font: font,
-            .foregroundColor: palette.NSfg(),
-        ]
-
-        // Set initial text content
-        textStorage.setAttributedString(NSAttributedString(string: text))
-        textView.update(text: text, font: font, palette: palette)
         textView.onTextChange = { [weak coordinator = context.coordinator] newText in
             guard let coordinator = coordinator else { return }
             DispatchQueue.main.async {
                 coordinator.parent.text = newText
             }
         }
+
+        // Wrap our textView in a NSScrollView.
+        let scrollView = NSScrollView()
+        scrollView.documentView = textView
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = false
+        scrollView.contentView.postsBoundsChangedNotifications = true // No horizontal scrolling
 
         // Set up frame change observer to update text container width when resizing
         context.coordinator.setupFrameObserver(for: scrollView, textView: textView)
