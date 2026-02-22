@@ -41,7 +41,7 @@ struct MarkdownEditor: NSViewRepresentable {
         // TextView is the top level object. This is the combination of our MVC described above.
         let textView = MarkdownTextView(frame: .zero, // This will be auto-resized
                                         textContainer: textContainer)
-        textView.setBaseStyle(new_font: font, palette: palette)
+        textView.setBaseStyle(new_font: font, new_palette: palette)
         textView.delegate = context.coordinator
         textView.onTextChange = { [weak coordinator = context.coordinator] newText in
             guard let coordinator = coordinator else { return }
@@ -71,7 +71,7 @@ struct MarkdownEditor: NSViewRepresentable {
         context.coordinator.updateTextContainerWidth(scrollView: scrollView, textView: textView)
 
         // Update text/font/palette if anything changed externally
-        textView.update(text: text, font: font, palette: palette)
+        textView.update(new_string: text, new_font: font, new_palette: palette)
 
         // Scroll to and highlight search result
         if let range = highlightRange {
