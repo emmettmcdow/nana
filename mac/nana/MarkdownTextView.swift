@@ -4,7 +4,6 @@ import Foundation
 class MarkdownTextView: NSTextView {
     private var isUpdatingFormatting = false
     private var currFormatting: MarkdownFormatting = .init(tokens: [])
-    private var isMouseDown = false
     var onTextChange: ((String) -> Void)?
 
     // We must implment this, but we don't really care about it because we aren't using
@@ -89,11 +88,9 @@ class MarkdownTextView: NSTextView {
         }
     }
 
-    override func mouseDown(with event: NSEvent) {
-        isMouseDown = true
-        super.mouseDown(with: event)
-        // mouseDown returns after the full click tracking (down + drag + up)
-        isMouseDown = false
+    override func cursorUpdate(with event: NSEvent) {
+        super.cursorUpdate(with: event)
+        // Whether or not the Markdown tokens are visible depends on where the cursor is.
         updateHidingLayoutManager()
     }
 
