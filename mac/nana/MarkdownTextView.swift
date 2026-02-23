@@ -116,18 +116,18 @@ class MarkdownTextView: NSTextView {
 
             if onSelectedLine { continue }
 
-            // Hide characters outside the render range
-            let renderAbsStart = token.startI + token.renderStart
-            let renderAbsEnd = token.startI + token.renderEnd
-            for idx in token.startI ..< renderAbsStart {
-                hidden.insert(idx)
-            }
-            for idx in renderAbsEnd ..< token.endI {
-                hidden.insert(idx)
-            }
-
             if token.tType == .UNORDERED_LIST {
                 bullets.insert(token.startI)
+            } else {
+                // Hide characters outside the render range
+                let renderAbsStart = token.startI + token.renderStart
+                let renderAbsEnd = token.startI + token.renderEnd
+                for idx in token.startI ..< renderAbsStart {
+                    hidden.insert(idx)
+                }
+                for idx in renderAbsEnd ..< token.endI {
+                    hidden.insert(idx)
+                }
             }
         }
         hidingLM.hiddenCharIndices = hidden

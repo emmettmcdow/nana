@@ -38,7 +38,7 @@ class HidingLayoutManager: NSLayoutManager {
         var bulletChar: UniChar = 0x2022
         CTFontGetGlyphsForCharacters(aFont, &bulletChar, &bulletGlyph, 1)
 
-        for i in 0..<count {
+        for i in 0 ..< count {
             let charIdx = charIndexes[i]
             if hiddenCharIndices.contains(charIdx) {
                 modifiedProps[i] = .null
@@ -49,7 +49,11 @@ class HidingLayoutManager: NSLayoutManager {
 
         modifiedGlyphs.withUnsafeBufferPointer { glyphBuf in
             modifiedProps.withUnsafeBufferPointer { propBuf in
-                super.setGlyphs(glyphBuf.baseAddress!, properties: propBuf.baseAddress!, characterIndexes: charIndexes, font: aFont, forGlyphRange: glyphRange)
+                super.setGlyphs(glyphBuf.baseAddress!,
+                                properties: propBuf.baseAddress!,
+                                characterIndexes: charIndexes,
+                                font: aFont,
+                                forGlyphRange: glyphRange)
             }
         }
     }
