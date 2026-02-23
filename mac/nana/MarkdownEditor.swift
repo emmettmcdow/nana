@@ -32,10 +32,9 @@ struct MarkdownEditor: NSViewRepresentable {
         textStorage.addLayoutManager(layoutManager)
         layoutManager.addTextContainer(textContainer)
 
-        // Configure text container to prevent horizontal scrolling
-        textContainer.widthTracksTextView = false // Manage width manually to account for insets
+        // Configure text container
+        textContainer.widthTracksTextView = true // Automatically tracks textView width minus textContainerInset
         textContainer.heightTracksTextView = false
-        textContainer.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         textContainer.lineFragmentPadding = 0
 
         // TextView is the top level object. This is the combination of our MVC described above.
@@ -58,17 +57,11 @@ struct MarkdownEditor: NSViewRepresentable {
         scrollView.autohidesScrollers = false
         scrollView.contentView.postsBoundsChangedNotifications = true // No horizontal scrolling
 
-        // Set up frame change observer to update text container width when resizing
-        context.coordinator.setupFrameObserver(for: scrollView, textView: textView)
-
         return scrollView
     }
 
-    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+    func updateNSView(_ scrollView: NSScrollView, context _: Context) {
         guard let textView = scrollView.documentView as? MarkdownTextView else { return }
-
-        // Ensure text container width is correct (important for first render)
-        context.coordinator.updateTextContainerWidth(scrollView: scrollView, textView: textView)
 
         // Update text/font/palette if anything changed externally
         textView.update(new_string: text, new_font: font, new_palette: palette)
@@ -88,47 +81,8 @@ struct MarkdownEditor: NSViewRepresentable {
 
     class Coordinator: NSObject, NSTextViewDelegate {
         let parent: MarkdownEditor
-        private var frameObserver: NSObjectProtocol?
-
         init(_ parent: MarkdownEditor) {
             self.parent = parent
-        }
-
-        deinit {
-            if let observer = frameObserver {
-                NotificationCenter.default.removeObserver(observer)
-            }
-        }
-
-        func setupFrameObserver(for scrollView: NSScrollView, textView: NSTextView) {
-            // Update container width initially
-            updateTextContainerWidth(scrollView: scrollView, textView: textView)
-
-            // Observe frame changes
-            frameObserver = NotificationCenter.default.addObserver(
-                forName: NSView.frameDidChangeNotification,
-                object: scrollView,
-                queue: .main
-            ) { [weak textView] _ in
-                guard let textView = textView,
-                      let scrollView = textView.enclosingScrollView else { return }
-                self.updateTextContainerWidth(scrollView: scrollView, textView: textView)
-            }
-        }
-
-        func updateTextContainerWidth(scrollView: NSScrollView, textView: NSTextView) {
-            guard let textContainer = textView.textContainer else { return }
-
-            // Calculate available width: scroll view's content width minus text insets
-            let scrollViewWidth = scrollView.contentView.bounds.width
-            let horizontalInset = textView.textContainerInset.width * 2 // Inset on both sides
-            let availableWidth = max(0, scrollViewWidth - horizontalInset)
-
-            // Update text container width
-            textContainer.containerSize = NSSize(
-                width: availableWidth,
-                height: CGFloat.greatestFiniteMagnitude
-            )
         }
 
         func textDidChange(_ notification: Notification) {
@@ -163,11 +117,6 @@ struct MarkdownEditor: NSViewRepresentable {
                 }
                 scrollView.reflectScrolledClipView(scrollView.contentView)
             }
-        }
-
-        // Optional: Handle other text view delegate methods as needed
-        func textView(_: NSTextView, shouldChangeTextIn _: NSRange, replacementString _: String?) -> Bool {
-            return true
         }
     }
 }

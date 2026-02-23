@@ -45,6 +45,7 @@ class MarkdownTextView: NSTextView {
 
         // Ensure the text container is properly configured
         if let container = textContainer {
+            container.widthTracksTextView = true
             container.lineFragmentPadding = 10 // Add padding to help with background rendering
         }
     }
@@ -88,10 +89,11 @@ class MarkdownTextView: NSTextView {
         }
     }
 
-    override func cursorUpdate(with event: NSEvent) {
-        super.cursorUpdate(with: event)
-        // Whether or not the Markdown tokens are visible depends on where the cursor is.
-        updateHidingLayoutManager()
+    override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting: Bool) {
+        super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
+        if !stillSelecting {
+            updateHidingLayoutManager()
+        }
     }
 
     private func updateHidingLayoutManager() {
@@ -299,7 +301,6 @@ class MarkdownTextView: NSTextView {
             // Darken the background slightly for code blocks
             attributes[.font] = codeFont
             attributes[.foregroundColor] = textColor!
-            print(backgroundColor)
             attributes[.backgroundColor] = backgroundColor.blended(withFraction: 0.15, of: NSColor.black)
 
             if NSMaxRange(range) < string.unicodeScalars.count {
