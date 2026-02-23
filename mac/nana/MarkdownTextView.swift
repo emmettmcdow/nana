@@ -3,11 +3,8 @@ import Foundation
 
 class MarkdownTextView: NSTextView {
     private var isUpdatingFormatting = false
-    private var paletteTextColor: NSColor?
-    private var paletteBackgroundColor: NSColor?
     private var currFormatting: MarkdownFormatting = .init(tokens: [])
     private var isMouseDown = false
-    private var suppressCursorRestart = false
     var onTextChange: ((String) -> Void)?
 
     // We must implment this, but we don't really care about it because we aren't using
@@ -56,20 +53,10 @@ class MarkdownTextView: NSTextView {
     // Sets the base colors and font
     func setBaseStyle(new_font: NSFont, new_palette: Palette) {
         textColor = new_palette.NSfg()
-        paletteTextColor = new_palette.NSfg()
         backgroundColor = new_palette.NSbg()
-        paletteBackgroundColor = new_palette.NSbg()
         insertionPointColor = new_palette.NStert()
         selectedTextAttributes = [NSAttributedString.Key.backgroundColor: new_palette.NStert()]
         font = new_font
-    }
-
-    override func updateInsertionPointStateAndRestartTimer(_ restartFlag: Bool) {
-        if suppressCursorRestart {
-            super.updateInsertionPointStateAndRestartTimer(false)
-        } else {
-            super.updateInsertionPointStateAndRestartTimer(restartFlag)
-        }
     }
 
     override var acceptsFirstResponder: Bool {
@@ -100,7 +87,6 @@ class MarkdownTextView: NSTextView {
                 self?.updateMarkdownFormatting()
             }
         }
-        updateHidingLayoutManager()
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -109,13 +95,6 @@ class MarkdownTextView: NSTextView {
         // mouseDown returns after the full click tracking (down + drag + up)
         isMouseDown = false
         updateHidingLayoutManager()
-    }
-
-    override func setSelectedRange(_ charRange: NSRange, affinity: NSSelectionAffinity, stillSelecting stillSelectingFlag: Bool) {
-        super.setSelectedRange(charRange, affinity: affinity, stillSelecting: stillSelectingFlag)
-        if !isMouseDown {
-            updateHidingLayoutManager()
-        }
     }
 
     private func updateHidingLayoutManager() {
@@ -154,9 +133,7 @@ class MarkdownTextView: NSTextView {
         }
         hidingLM.hiddenCharIndices = hidden
         hidingLM.bulletCharIndices = bullets
-        suppressCursorRestart = true
         hidingLM.applyChanges(oldHidden: oldHidden, oldBullets: oldBullets)
-        suppressCursorRestart = false
     }
 
     /// Returns the 0-based line number for a character index.
@@ -278,7 +255,6 @@ class MarkdownTextView: NSTextView {
         ]
     }
 
-    // TODO: the colors are all messed up here.
     // TODO: the first font jump is large
     private func applyTokenFormatting(token: MarkdownToken, range: NSRange, to textStorage: NSTextStorage) {
         var attributes: [NSAttributedString.Key: Any] = [:]
@@ -346,16 +322,9 @@ class MarkdownTextView: NSTextView {
             }
 
         case .CODE:
-            // Use palette colors but make them slightly darker
-            let originalBackground = paletteBackgroundColor ?? NSColor.textBackgroundColor
-            let originalForeground = paletteTextColor ?? NSColor.textColor
-            // Darken the background slightly for code blocks
-            let codeBackgroundColor = originalBackground.blended(withFraction: 0.15, of: NSColor.black) ?? originalBackground
-            let codeTextColor = originalForeground
-
             attributes[.font] = codeFont
-            attributes[.foregroundColor] = codeTextColor
-            attributes[.backgroundColor] = codeBackgroundColor
+            attributes[.foregroundColor] = textColor!
+            attributes[.backgroundColor] = backgroundColor.blended(withFraction: 0.15, of: NSColor.black)
 
         case .UNORDERED_LIST:
             attributes[.font] = listFont

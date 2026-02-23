@@ -19,8 +19,8 @@ struct MarkdownEditor: NSViewRepresentable {
         let textStorage = NSTextStorage()
         // Controller - The "how". It takes the value held in NSTextStorage and converts it into
         // glyphs and arranges them into lines.
-        let layoutManager = NSLayoutManager()
-        // let layoutManager = HidingLayoutManager()
+        // let layoutManager = NSLayoutManager()
+        let layoutManager = HidingLayoutManager()
         // View - The "where". This controls the bounding box of the text.
         let textContainer = NSTextContainer()
 
