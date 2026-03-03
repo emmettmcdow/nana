@@ -1,5 +1,3 @@
-const VEC_SZ = 512;
-
 const xc_fw_path = "macos/NanaKit.xcframework";
 
 pub fn build(b: *std.Build) !void {
@@ -17,7 +15,7 @@ pub fn build(b: *std.Build) !void {
     const test_file: ?[]const u8 = b.option(
         []const u8,
         "test-file",
-        "Run tests only from this file (e.g., -Dtest-file=vector)",
+        "Run tests only from this file (e.g., -Dtest-file=root)",
     );
     const use_objc_leakcheck: bool = b.option(
         bool,
@@ -42,35 +40,62 @@ pub fn build(b: *std.Build) !void {
         arm_target,
     };
 
-    const fake_vec_cfg = GlobalOptions{};
-    const real_vec_cfg = GlobalOptions{ .vec_sz = VEC_SZ };
-
     // Sources
     const root_file = b.path("src/root.zig");
-    const note_id_map_file = b.path("src/note_id_map.zig");
     const diff_file = b.path("src/dmp.zig");
-    const embed_file = b.path("src/embed.zig");
-    const vec_storage_file = b.path("src/vec_storage.zig");
-    const vector_file = b.path("src/vector.zig");
-    const benchmark_file = b.path("src/benchmark.zig");
     const perf_file = b.path("src/perf_benchmark.zig");
     const profile_file = b.path("src/profile.zig");
     const markdown_file = b.path("src/markdown.zig");
     const util_file = b.path("src/util.zig");
 
+    ///////////////////////////
+    // dve dependency module //
+    ///////////////////////////
+    const dve_dep = b.dependency("dve", .{
+        .target = x86_target,
+        .optimize = optimize,
+        .@"debug-output" = debug,
+        .@"embedding-model" = embedding_model,
+    });
+    const dve_module = dve_dep.module("dve");
+
+    // Copy model and tokenizer to mac app Resources for bundling
+    const mkdir_mac_resources = RunStep.create(b, "create mac resources dir");
+    mkdir_mac_resources.addArgs(&.{ "mkdir", "-p", "mac/nana/Resources" });
+
+    const copy_model_to_mac = RunStep.create(b, "copy mpnet model to mac app");
+    copy_model_to_mac.addArgs(&.{ "cp", "-R" });
+    copy_model_to_mac.addFileArg(dve_dep.path("models/all_mpnet_base_v2/all_mpnet_base_v2.mlpackage"));
+    copy_model_to_mac.addArgs(&.{"mac/nana/Resources/"});
+    copy_model_to_mac.step.dependOn(&mkdir_mac_resources.step);
+
+    const copy_tokenizer_to_mac = RunStep.create(b, "copy tokenizer to mac app");
+    copy_tokenizer_to_mac.addArgs(&.{"cp"});
+    copy_tokenizer_to_mac.addFileArg(dve_dep.path("models/all_mpnet_base_v2/tokenizer.json"));
+    copy_tokenizer_to_mac.addArgs(&.{"mac/nana/Resources/"});
+    copy_tokenizer_to_mac.step.dependOn(&mkdir_mac_resources.step);
+
+    install_step.dependOn(&copy_model_to_mac.step);
+    install_step.dependOn(&copy_tokenizer_to_mac.step);
+
     ///////////////////
     // Build the Lib //
     ///////////////////
-    // Base Library
     var baselib_platform_list = std.ArrayList(Baselib).init(b.allocator);
     defer baselib_platform_list.deinit();
     for (targets) |target| {
+        const dve_dep_arch = b.dependency("dve", .{
+            .target = target,
+            .optimize = optimize,
+            .@"debug-output" = debug,
+            .@"embedding-model" = embedding_model,
+        });
         try baselib_platform_list.append(Baselib.create(.{
             .b = b,
             .target = target,
             .optimize = optimize,
             .debug = debug,
-            .embedding_model = embedding_model,
+            .dve_module = dve_dep_arch.module("dve"),
         }));
     }
 
@@ -93,40 +118,6 @@ pub fn build(b: *std.Build) !void {
     signedFW.step.dependOn(xcframework.step);
     install_step.dependOn(signedFW.step);
 
-    ///////////////////////
-    // Mpnet Model Fetch //
-    ///////////////////////
-    const mpnet_model = MpnetModel.create(b);
-    const fetch_mpnet_step = b.step(
-        "fetch-mpnet-model",
-        "Generate MPNet embeddings model for CoreML",
-    );
-    fetch_mpnet_step.dependOn(mpnet_model.step);
-
-    // Copy model and tokenizer to mac app Resources for bundling
-    const mkdir_mac_resources = RunStep.create(b, "create mac resources dir");
-    mkdir_mac_resources.addArgs(&.{ "mkdir", "-p", "mac/nana/Resources" });
-
-    const copy_model_to_mac = RunStep.create(b, "copy mpnet model to mac app");
-    copy_model_to_mac.addArgs(&.{
-        "cp",                  "-R",
-        MpnetModel.MODEL_PATH, "mac/nana/Resources/",
-    });
-    copy_model_to_mac.step.dependOn(mpnet_model.step);
-    copy_model_to_mac.step.dependOn(&mkdir_mac_resources.step);
-
-    const copy_tokenizer_to_mac = RunStep.create(b, "copy tokenizer to mac app");
-    copy_tokenizer_to_mac.addArgs(&.{
-        "cp",
-        MpnetModel.TOKENIZER_PATH,
-        "mac/nana/Resources/",
-    });
-    copy_tokenizer_to_mac.step.dependOn(mpnet_model.step);
-    copy_tokenizer_to_mac.step.dependOn(&mkdir_mac_resources.step);
-
-    install_step.dependOn(&copy_model_to_mac.step);
-    install_step.dependOn(&copy_tokenizer_to_mac.step);
-
     ////////////////////////
     // Standalone Binary  //
     ////////////////////////
@@ -140,21 +131,21 @@ pub fn build(b: *std.Build) !void {
     });
     exe.root_module.addImport("nana", b.createModule(.{
         .root_source_file = root_file,
+        .imports = &.{.{ .name = "dve", .module = dve_module }},
     }));
-    real_vec_cfg.install(b, exe, debug, embedding_model);
-    addAllDeps(.{ .b = b, .dest = exe, .target = native_target, .optimize = optimize });
+    addNanaDeps(.{ .b = b, .dest = exe, .target = native_target, .optimize = optimize }, dve_module);
     b.installArtifact(exe);
 
     // Install model files to share directory
     b.installDirectory(.{
-        .source_dir = .{ .cwd_relative = MpnetModel.MODEL_PATH },
-        .install_dir = .{ .custom = "share/nana" },
+        .source_dir = dve_dep.path("models/all_mpnet_base_v2/all_mpnet_base_v2.mlpackage"),
+        .install_dir = .{ .custom = "share" },
         .install_subdir = "all_mpnet_base_v2.mlpackage",
     });
-    b.installFile(
-        MpnetModel.TOKENIZER_PATH,
-        "share/nana/tokenizer.json",
-    );
+    install_step.dependOn(&b.addInstallFile(
+        dve_dep.path("models/all_mpnet_base_v2/tokenizer.json"),
+        "share/tokenizer.json",
+    ).step);
 
     const run_exe = b.addRunArtifact(exe);
     run_exe.step.dependOn(b.getInstallStep());
@@ -174,10 +165,8 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     };
 
-    // Helper to get filters - uses test_filter if provided, otherwise uses default
     const filters: []const []const u8 = if (test_filter) |f| &.{f} else &.{};
 
-    // Helper to create a run step, optionally wrapping with lldb
     const runTest = struct {
         fn run(builder: *std.Build, test_artifact: *std.Build.Step.Compile, lldb: bool, leaks: bool) *RunStep {
             if (lldb) {
@@ -203,64 +192,23 @@ pub fn build(b: *std.Build) !void {
             .root_source_file = root_file,
             .target = x86_target,
             .optimize = optimize,
-            .filters = if (test_filter != null) filters else &.{"root"},
+            .filters = if (test_filter != null) filters else &.{},
         });
-        real_vec_cfg.install(b, t, debug, embedding_model);
-        addAllDeps(depOpts(x86_deps, t));
-        test_root.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
-    }
-
-    const test_note_id_map = b.step("test-note_id_map", "run the tests for src/note_id_map.zig");
-    {
-        const t = b.addTest(.{
-            .root_source_file = note_id_map_file,
-            .target = x86_target,
-            .optimize = optimize,
-            .filters = if (test_filter != null) filters else &.{"note_id_map"},
-        });
-        addTracy(depOpts(x86_deps, t));
-        test_note_id_map.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
-    }
-
-    const test_embed = b.step("test-embed", "run the tests for src/embed.zig");
-    {
-        const t = b.addTest(.{
-            .root_source_file = embed_file,
-            .target = x86_target,
-            .optimize = optimize,
-            .filters = if (test_filter != null) filters else &.{"embed"},
-        });
-        real_vec_cfg.install(b, t, debug, embedding_model);
-        addObjC(depOpts(x86_deps, t));
-        addTracy(depOpts(x86_deps, t));
+        t.root_module.addImport("dve", dve_module);
+        addNanaDeps(depOpts(x86_deps, t), dve_module);
         const install_models = b.addInstallDirectory(.{
-            .source_dir = .{ .cwd_relative = MpnetModel.MODEL_PATH },
-            .install_dir = .{ .custom = "share/nana" },
+            .source_dir = dve_dep.path("models/all_mpnet_base_v2/all_mpnet_base_v2.mlpackage"),
+            .install_dir = .{ .custom = "share" },
             .install_subdir = "all_mpnet_base_v2.mlpackage",
         });
-        install_models.step.dependOn(mpnet_model.step);
         const install_tokenizer = b.addInstallFile(
-            .{ .cwd_relative = MpnetModel.TOKENIZER_PATH },
-            "share/nana/tokenizer.json",
+            dve_dep.path("models/all_mpnet_base_v2/tokenizer.json"),
+            "share/tokenizer.json",
         );
-        install_tokenizer.step.dependOn(mpnet_model.step);
         const run = runTest(b, t, use_lldb, use_objc_leakcheck);
         run.step.dependOn(&install_models.step);
         run.step.dependOn(&install_tokenizer.step);
-        test_embed.dependOn(&run.step);
-    }
-
-    const test_vec_storage = b.step("test-vec_storage", "run the tests for src/vec_storage.zig");
-    {
-        const t = b.addTest(.{
-            .root_source_file = vec_storage_file,
-            .target = x86_target,
-            .optimize = optimize,
-            .filters = if (test_filter != null) filters else &.{"vec_storage"},
-        });
-        fake_vec_cfg.install(b, t, debug, embedding_model);
-        addTracy(depOpts(x86_deps, t));
-        test_vec_storage.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
+        test_root.dependOn(&run.step);
     }
 
     const test_markdown = b.step("test-markdown", "run the tests for src/markdown.zig");
@@ -269,24 +217,11 @@ pub fn build(b: *std.Build) !void {
             .root_source_file = markdown_file,
             .target = x86_target,
             .optimize = optimize,
-            .filters = if (test_filter != null) filters else &.{"markdown"},
+            .filters = if (test_filter != null) filters else &.{},
         });
-        fake_vec_cfg.install(b, t, debug, embedding_model);
+        t.root_module.addImport("dve", dve_module);
         addTracy(depOpts(x86_deps, t));
         test_markdown.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
-    }
-
-    const test_vector = b.step("test-vector", "run the tests for src/vector.zig");
-    {
-        const t = b.addTest(.{
-            .root_source_file = vector_file,
-            .target = x86_target,
-            .optimize = optimize,
-            .filters = if (test_filter != null) filters else &.{"vector"},
-        });
-        real_vec_cfg.install(b, t, debug, embedding_model);
-        addAllDeps(depOpts(x86_deps, t));
-        test_vector.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
     }
 
     const test_diff = b.step("test-diff", "run the tests for src/diff.zig");
@@ -295,9 +230,8 @@ pub fn build(b: *std.Build) !void {
             .root_source_file = diff_file,
             .target = x86_target,
             .optimize = optimize,
-            .filters = if (test_filter != null) filters else &.{"diff"},
+            .filters = if (test_filter != null) filters else &.{},
         });
-        fake_vec_cfg.install(b, t, debug, embedding_model);
         test_diff.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
     }
 
@@ -307,23 +241,9 @@ pub fn build(b: *std.Build) !void {
             .root_source_file = util_file,
             .target = x86_target,
             .optimize = optimize,
-            .filters = if (test_filter != null) filters else &.{"util"},
+            .filters = if (test_filter != null) filters else &.{},
         });
-        fake_vec_cfg.install(b, t, debug, embedding_model);
         test_util.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
-    }
-
-    const test_benchmark = b.step("test-benchmark", "run the tests for src/benchmark.zig");
-    {
-        const t = b.addTest(.{
-            .root_source_file = benchmark_file,
-            .target = x86_target,
-            .optimize = optimize,
-            .filters = if (test_filter != null) filters else &.{"benchmark"},
-        });
-        real_vec_cfg.install(b, t, debug, embedding_model);
-        addAllDeps(depOpts(x86_deps, t));
-        test_benchmark.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
     }
 
     const test_perf = b.step("perf", "Run performance benchmark tests");
@@ -332,14 +252,11 @@ pub fn build(b: *std.Build) !void {
             .root_source_file = perf_file,
             .target = x86_target,
             .optimize = optimize,
-            .filters = if (test_filter != null) filters else &.{"perf"},
+            .filters = if (test_filter != null) filters else &.{},
         });
-        real_vec_cfg.install(b, t, debug, embedding_model);
-        addObjC(depOpts(x86_deps, t));
-        addTracy(depOpts(x86_deps, t));
-        const run = runTest(b, t, use_lldb, use_objc_leakcheck);
-        run.step.dependOn(mpnet_model.step);
-        test_perf.dependOn(&run.step);
+        t.root_module.addImport("dve", dve_module);
+        addNanaDeps(depOpts(x86_deps, t), dve_module);
+        test_perf.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
     }
 
     const profile_step = b.step("profile", "run the profile executable");
@@ -350,8 +267,8 @@ pub fn build(b: *std.Build) !void {
             .target = x86_target,
             .optimize = optimize,
         });
-        real_vec_cfg.install(b, p, debug, embedding_model);
-        addAllDeps(depOpts(x86_deps, p));
+        p.root_module.addImport("dve", dve_module);
+        addNanaDeps(depOpts(x86_deps, p), dve_module);
         const profile_run = if (use_lldb) blk: {
             const lldb_run = RunStep.create(b, "lldb profile");
             lldb_run.addArgs(&.{ "lldb", "--" });
@@ -361,14 +278,10 @@ pub fn build(b: *std.Build) !void {
         profile_step.dependOn(&profile_run.step);
     }
 
-    // All tests - use test_file to run only specific file's tests
+    // All tests
     const test_step = b.step("test", "Run unit tests (-Dtest-file=X to run one file, -Dtest-filter=Y to filter tests)");
     const file_tests = .{
         .{ "root.zig", test_root },
-        .{ "note_id_map.zig", test_note_id_map },
-        .{ "embed.zig", test_embed },
-        .{ "vec_storage.zig", test_vec_storage },
-        .{ "vector.zig", test_vector },
         .{ "diff.zig", test_diff },
         .{ "markdown.zig", test_markdown },
         .{ "util.zig", test_util },
@@ -396,23 +309,6 @@ pub fn build(b: *std.Build) !void {
         builder.addRule(.{ .builtin = .no_swallow_error }, .{});
         builder.addRule(.{ .builtin = .require_errdefer_dealloc }, .{});
         builder.addRule(.{ .builtin = .no_todo }, .{});
-        // builder.addRule(.{ .builtin = .declaration_naming }, .{});
-        // builder.addRule(.{ .builtin = .field_ordering }, .{});
-        // builder.addRule(.{ .builtin = .field_naming }, .{});
-        // builder.addRule(.{ .builtin = .file_naming }, .{});
-        // builder.addRule(.{ .builtin = .function_naming }, .{});
-        // builder.addRule(.{ .builtin = .import_ordering }, .{});
-        // builder.addRule(.{ .builtin = .no_comment_out_code }, .{});
-        // builder.addRule(.{ .builtin = .no_deprecated }, .{});
-        // builder.addRule(.{ .builtin = .no_empty_block }, .{});
-        // builder.addRule(.{ .builtin = .no_inferred_error_unions }, .{});
-        // builder.addRule(.{ .builtin = .no_literal_args }, .{});
-        // builder.addRule(.{ .builtin = .no_literal_only_bool_expression }, .{});
-        // builder.addRule(.{ .builtin = .no_panic }, .{});
-        // builder.addRule(.{ .builtin = .no_undefined }, .{});
-        // builder.addRule(.{ .builtin = .require_braces }, .{});
-        // builder.addRule(.{ .builtin = .require_doc_comment }, .{});
-        // builder.addRule(.{ .builtin = .switch_case_ordering }, .{});
         break :step builder.build();
     });
 }
@@ -422,35 +318,13 @@ const EmbeddingModel = enum {
     mpnet_embedding,
 };
 
-const GlobalOptions = struct {
-    vec_sz: usize = 3,
-    vec_type: type = f32,
-
-    const Self = @This();
-
-    pub fn install(
-        self: Self,
-        b: *std.Build,
-        dest: *Step.Compile,
-        debug: bool,
-        embedding_model: EmbeddingModel,
-    ) void {
-        const options = b.addOptions();
-        options.addOption(usize, "vec_sz", self.vec_sz);
-        // options.addOption(type, "vec_type", self.vec_type);
-        options.addOption(bool, "debug", debug);
-        options.addOption(EmbeddingModel, "embedding_model", embedding_model);
-        dest.root_module.addOptions("config", options);
-    }
-};
-
 const Baselib = struct {
     pub const Options = struct {
         b: *std.Build,
         target: std.Build.ResolvedTarget,
         optimize: std.builtin.OptimizeMode,
         debug: bool,
-        embedding_model: EmbeddingModel,
+        dve_module: *std.Build.Module,
     };
 
     step: *Step,
@@ -459,27 +333,21 @@ const Baselib = struct {
     pub fn create(opts: Baselib.Options) Baselib {
         const interface_file = opts.b.path("src/intf.zig");
 
-        const options = opts.b.addOptions();
-        options.addOption(bool, "debug", opts.debug);
-        options.addOption(usize, "vec_sz", VEC_SZ);
-        options.addOption(EmbeddingModel, "embedding_model", opts.embedding_model);
-
         const base_nana_lib = opts.b.addStaticLibrary(.{
             .name = "nana",
             .root_source_file = interface_file,
             .target = opts.target,
             .optimize = opts.optimize,
         });
-        // Bundle compiler_rt to include __zig_probe_stack for x86_64
         base_nana_lib.bundle_compiler_rt = true;
-        base_nana_lib.root_module.addOptions("config", options);
+        base_nana_lib.root_module.addImport("dve", opts.dve_module);
         const dep_opts = DepOptions{
             .b = opts.b,
             .dest = base_nana_lib,
             .target = opts.target,
             .optimize = opts.optimize,
         };
-        addObjC(dep_opts);
+        addObjCFrameworks(dep_opts);
         addTracy(dep_opts);
 
         return .{
@@ -496,12 +364,8 @@ const DepOptions = struct {
     optimize: std.builtin.OptimizeMode,
 };
 
-fn addObjC(opts: DepOptions) void {
-    const objc_dep = opts.b.dependency("zig_objc", .{
-        .target = opts.target,
-        .optimize = opts.optimize,
-    });
-    opts.dest.root_module.addImport("objc", objc_dep.module("objc"));
+/// Link ObjC frameworks needed by dve's embed code.
+fn addObjCFrameworks(opts: DepOptions) void {
     opts.dest.root_module.linkFramework("NaturalLanguage", .{});
     opts.dest.root_module.linkFramework("CoreML", .{});
     opts.dest.root_module.linkFramework("Foundation", .{});
@@ -525,8 +389,10 @@ fn addTracy(opts: DepOptions) void {
     }).step);
 }
 
-fn addAllDeps(opts: DepOptions) void {
-    addObjC(opts);
+/// Add all deps a nana compile target needs: ObjC framework links + tracy.
+fn addNanaDeps(opts: DepOptions, dve_module: *std.Build.Module) void {
+    _ = dve_module;
+    addObjCFrameworks(opts);
     addTracy(opts);
 }
 
@@ -538,25 +404,14 @@ fn depOpts(base: DepOptions, dest: *Step.Compile) DepOptions {
 // https://gist.github.com/mitchellh/0ee168fb34915e96159b558b89c9a74b#file-libtoolstep-zig
 const Libtool = struct {
     pub const Options = struct {
-        /// The name of this step.
         name: []const u8,
-
-        /// The filename (not the path) of the file to create. This will
-        /// be placed in a unique hashed directory. Use out_path to access.
         out_name: []const u8,
-
-        /// Library files (.a) to combine.
         sources: []LazyPath,
     };
 
-    /// The step to depend on.
     step: *Step,
-
-    /// The output file from the libtool run.
     output: LazyPath,
 
-    /// Run libtool against a list of library files to combine into a single
-    /// static library.
     pub fn create(b: *std.Build, opts: Libtool.Options) *Libtool {
         const self = b.allocator.create(Libtool) catch @panic("OOM");
 
@@ -576,19 +431,12 @@ const Libtool = struct {
 
 const Lipo = struct {
     pub const Options = struct {
-        /// The name of the xcframework to create.
         name: []const u8,
-
-        /// The filename (not the path) of the file to create.
         out_name: []const u8,
-
-        /// Library file (dylib, a) to package.
         inputs: []Baselib,
     };
 
     step: *Step,
-
-    /// Resulting binary
     output: LazyPath,
 
     pub fn create(b: *std.Build, opts: Lipo.Options) *Lipo {
@@ -613,16 +461,9 @@ const Lipo = struct {
 
 const XCFramework = struct {
     pub const Options = struct {
-        /// The name of the xcframework to create.
         name: []const u8,
-
-        /// The path to write the framework
         out_path: []const u8,
-
-        /// Library file (dylib, a) to package.
         libraries: []const LazyPath,
-
-        /// Path to a directory with the headers.
         headers: []const LazyPath,
     };
 
@@ -631,8 +472,6 @@ const XCFramework = struct {
     pub fn create(b: *std.Build, opts: XCFramework.Options) *XCFramework {
         const self = b.allocator.create(XCFramework) catch @panic("OOM");
 
-        // We have to delete the old xcframework first since we're writing
-        // to a static path.
         const run_delete = run: {
             const run = RunStep.create(b, b.fmt("xcframework delete {s}", .{opts.name}));
             run.has_side_effects = true;
@@ -640,7 +479,6 @@ const XCFramework = struct {
             break :run run;
         };
 
-        // Then we run xcodebuild to create the framework.
         const run_create = run: {
             const run = RunStep.create(b, b.fmt("xcframework {s}", .{opts.name}));
             run.has_side_effects = true;
@@ -668,7 +506,6 @@ const XCFramework = struct {
 const Codesign = struct {
     pub const Options = struct {
         b: *std.Build,
-        /// The path of the xcframework to sign.
         path: []const u8,
     };
 
@@ -680,80 +517,19 @@ const Codesign = struct {
             "codesign",
             "--timestamp",
             "-s",
-            "5AE3B7EECB504FB7ED5B00BB70576647A21ADB15", // Apple Development: email@email.com
+            "5AE3B7EECB504FB7ED5B00BB70576647A21ADB15",
             opts.path,
         });
 
-        const self: Codesign = .{
-            .step = &run_step.step,
-        };
-
-        return self;
+        return .{ .step = &run_step.step };
     }
 };
-
-const MpnetModel = struct {
-    const MODEL_DIR = "models/all_mpnet_base_v2";
-    const MODEL_PATH = MODEL_DIR ++ "/all_mpnet_base_v2.mlpackage";
-    const TOKENIZER_PATH = MODEL_DIR ++ "/tokenizer.json";
-
-    step: *Step,
-    tokenizer_path: LazyPath,
-    model_path: LazyPath,
-
-    pub fn create(b: *std.Build) MpnetModel {
-        if (hasDir(MODEL_PATH)) {
-            const noop_step = b.allocator.create(Step) catch @panic("OOM");
-            noop_step.* = Step.init(.{
-                .id = .custom,
-                .name = "mpnet: model already exists",
-                .owner = b,
-            });
-            return .{
-                .step = noop_step,
-                .tokenizer_path = .{ .cwd_relative = TOKENIZER_PATH },
-                .model_path = .{ .cwd_relative = MODEL_PATH },
-            };
-        }
-
-        const gen_coreml = RunStep.create(b, "mpnet: generate CoreML model");
-        gen_coreml.setCwd(.{ .cwd_relative = "models" });
-        gen_coreml.addArgs(&.{ "./venv/bin/python", "gen-coreml.py", "sentence-transformers/all-mpnet-base-v2", "--output", "all_mpnet_base_v2" });
-
-        return .{
-            .step = &gen_coreml.step,
-            .tokenizer_path = .{ .cwd_relative = TOKENIZER_PATH },
-            .model_path = .{ .cwd_relative = MODEL_PATH },
-        };
-    }
-};
-
-fn hasDir(dir_path: []const u8) bool {
-    _ = std.fs.cwd().openDir(dir_path, .{}) catch |err| switch (err) {
-        FileNotFound => {
-            // Handle the case where the directory does not exist
-            std.debug.print("Directory '{s}' not found. Creating it now...\n", .{dir_path});
-            return false; // Or handle the error as appropriate for your build logic
-        },
-        NotDir => {
-            std.debug.print("Error: '{s}' is a file, not a directory.\n", .{dir_path});
-            return false;
-        },
-        else => |e| {
-            std.debug.print("An error occurred accessing '{s}': {any}\n", .{ dir_path, e });
-            return false;
-        },
-    };
-    return true;
-}
 
 pub const Error = error{ConflictingOptions};
 
 const std = @import("std");
 const assert = std.debug.assert;
 const Step = std.Build.Step;
-const FileNotFound = std.fs.Dir.OpenError.FileNotFound;
-const NotDir = std.fs.Dir.OpenError.NotDir;
 const RunStep = Step.Run;
 const LazyPath = std.Build.LazyPath;
 

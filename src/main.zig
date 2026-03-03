@@ -15,7 +15,11 @@ pub fn main() !void {
         embed.NLEmbedder;
 
     const embedder_ptr = try arena.allocator().create(Embedder);
-    embedder_ptr.* = try Embedder.init();
+    if (embedding_model == .mpnet_embedding) {
+        embedder_ptr.* = try embed.MpnetEmbedder.init(.{});
+    } else {
+        embedder_ptr.* = try embed.NLEmbedder.init();
+    }
 
     var db = try VectorDB.init(arena.allocator(), tmp_dir.dir, embedder_ptr.embedder());
     defer db.deinit();
@@ -70,8 +74,7 @@ pub const std_options = std.Options{
 };
 
 const std = @import("std");
-const config = @import("config");
-const embedding_model: embed.EmbeddingModel = @enumFromInt(@intFromEnum(config.embedding_model));
-const embed = @import("embed.zig");
-const vector = @import("vector.zig");
-const VectorDB = vector.VectorDB(embedding_model);
+const dve = @import("dve");
+const embed = dve.embed;
+const embedding_model = dve.embedding_model;
+const VectorDB = dve.VectorDB(embedding_model);

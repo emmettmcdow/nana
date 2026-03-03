@@ -158,7 +158,7 @@ export fn nana_search(query: [*:0]const u8, outbuf: [*c]CSearchResult, sz: c_uin
     };
 
     for (tmp_buf[0..written], 0..) |sr, i| {
-        outbuf[i] = sr.toC();
+        outbuf[i] = searchResultToC(sr);
     }
 
     return @intCast(written);
@@ -365,6 +365,24 @@ const PATH_MAX = std.posix.PATH_MAX;
 
 const nana = @import("root.zig");
 const SearchResult = nana.SearchResult;
-const CSearchResult = nana.CSearchResult;
 const SearchDetail = nana.SearchDetail;
 const CSearchDetail = nana.CSearchDetail;
+
+const CSearchResult = extern struct {
+    path: [PATH_MAX]u8,
+    start_i: c_uint,
+    end_i: c_uint,
+    similarity: f32,
+};
+
+fn searchResultToC(sr: SearchResult) CSearchResult {
+    var c_result = CSearchResult{
+        .path = std.mem.zeroes([PATH_MAX]u8),
+        .start_i = @as(c_uint, @intCast(sr.start_i)),
+        .end_i = @as(c_uint, @intCast(sr.end_i)),
+        .similarity = sr.similarity,
+    };
+    const copy_len = @min(sr.path.len, PATH_MAX - 1);
+    @memcpy(c_result.path[0..copy_len], sr.path[0..copy_len]);
+    return c_result;
+}

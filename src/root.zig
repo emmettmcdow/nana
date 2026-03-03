@@ -43,7 +43,7 @@ pub const Runtime = struct {
 
         const embedder_ptr = try allocator.create(Embedder);
         errdefer allocator.destroy(embedder_ptr);
-        embedder_ptr.* = try Embedder.init();
+        embedder_ptr.* = try initEmbedder();
 
         const vectors = try VectorDB.init(allocator, opts.basedir, embedder_ptr.embedder());
         try vectors.validate();
@@ -63,6 +63,14 @@ pub const Runtime = struct {
         return self;
     }
 
+    fn initEmbedder() !Embedder {
+        if (embedding_model == .mpnet_embedding) {
+            return embed.MpnetEmbedder.init(.{});
+        } else {
+            return embed.NLEmbedder.init();
+        }
+    }
+
     /// De-initialize the Nana Notes runtime
     pub fn deinit(self: *Runtime) void {
         self.vectors.deinit();
@@ -75,18 +83,65 @@ pub const Runtime = struct {
         self.vectors.deinit();
         self.allocator.destroy(self.embedder);
 
-        // Call vector.doctor to delete db files and re-embed all notes
-        try vector.doctor(embedding_model, self.allocator, self.basedir);
+        // 1. Delete all db files and dve id map
+        try deleteAllMeta(self.basedir);
 
-        // Create new embedder and vectordb
+        // 2. Re-embed all notes into a temporary db
+        const TmpEmbedder = Embedder;
+        const tmp_embedder_ptr = try self.allocator.create(TmpEmbedder);
+        errdefer self.allocator.destroy(tmp_embedder_ptr);
+        tmp_embedder_ptr.* = try initEmbedder();
+
+        {
+            var db = try VectorDB.init(self.allocator, self.basedir, tmp_embedder_ptr.embedder());
+            defer db.deinit();
+
+            var it = self.basedir.iterate();
+            while (try it.next()) |entry| {
+                if (entry.kind != .file) continue;
+                if (!hasNoteExtension(entry.name)) continue;
+
+                const contents = self.basedir.readFileAlloc(
+                    self.allocator,
+                    entry.name,
+                    std.math.maxInt(u32),
+                ) catch |err| {
+                    std.log.warn("Failed to read {s}: {}\n", .{ entry.name, err });
+                    continue;
+                };
+                defer self.allocator.free(contents);
+
+                db.embedText(entry.name, contents) catch |err| {
+                    std.log.warn("Failed to embed {s}: {}\n", .{ entry.name, err });
+                    continue;
+                };
+            }
+        }
+        self.allocator.destroy(tmp_embedder_ptr);
+
+        // 3. Create new embedder and vectordb for ongoing use
         const embedder_ptr = try self.allocator.create(Embedder);
         errdefer self.allocator.destroy(embedder_ptr);
-        embedder_ptr.* = try Embedder.init();
+        embedder_ptr.* = try initEmbedder();
 
         const vectors = try VectorDB.init(self.allocator, self.basedir, embedder_ptr.embedder());
 
         self.embedder = embedder_ptr;
         self.vectors = vectors;
+    }
+
+    fn deleteAllMeta(basedir: std.fs.Dir) !void {
+        var it = basedir.iterate();
+        while (try it.next()) |entry| {
+            if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".db")) {
+                basedir.deleteFile(entry.name) catch |e| {
+                    std.log.err("Failed to delete file '{s}' with error: {}", .{ entry.name, e });
+                    continue;
+                };
+            }
+        }
+        basedir.deleteFile(".dve_ids") catch {}; // zlinter-disable-current-line
+        basedir.deleteFile(".dve_ids.tmp") catch {}; // zlinter-disable-current-line
     }
 
     fn pruneOrphanedNotes(self: *Runtime) !void {
@@ -1522,13 +1577,11 @@ const expectError = std.testing.expectError;
 
 const tracy = @import("tracy");
 
-pub const CSearchResult = vector.CSearchResult;
-const embed = @import("embed.zig");
+const dve = @import("dve");
+const embed = dve.embed;
 const markdown = @import("markdown.zig");
-pub const SearchResult = vector.SearchResult;
+pub const SearchResult = dve.SearchResult;
 const util = @import("util.zig");
-const vector = @import("vector.zig");
-const config = @import("config");
-const embedding_model: embed.EmbeddingModel = @enumFromInt(@intFromEnum(config.embedding_model));
-const VectorDB = vector.VectorDB(embedding_model);
+const embedding_model = dve.embedding_model;
+const VectorDB = dve.VectorDB(embedding_model);
 const yield = std.Thread.yield;

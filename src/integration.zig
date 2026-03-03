@@ -83,19 +83,22 @@ const Embedder = switch (embedding_model) {
 
 fn testEmbedder(allocator: std.mem.Allocator) !struct { e: *Embedder, iface: embed.Embedder } {
     const e = try allocator.create(Embedder);
-    e.* = try Embedder.init();
+    if (embedding_model == .mpnet_embedding) {
+        e.* = try embed.MpnetEmbedder.init(.{});
+    } else {
+        e.* = try embed.NLEmbedder.init();
+    }
     return .{ .e = e, .iface = e.embedder() };
 }
 
 const std = @import("std");
 const testing_allocator = std.testing.allocator;
 
-const config = @import("config");
-const embed = @import("embed.zig");
-const vector = @import("vector.zig");
-const SearchResult = vector.SearchResult;
-const embedding_model: embed.EmbeddingModel = @enumFromInt(@intFromEnum(config.embedding_model));
-const TestVecDB = vector.VectorDB(embedding_model);
+const dve = @import("dve");
+const embed = dve.embed;
+const SearchResult = dve.SearchResult;
+const embedding_model = dve.embedding_model;
+const TestVecDB = dve.VectorDB(embedding_model);
 
 const EXAMPLE_NOTE_1 =
     \\Web Manager
