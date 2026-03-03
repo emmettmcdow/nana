@@ -142,8 +142,30 @@ pub const Markdown = struct {
         }
         try self.pushToken(null, null);
 
+        // self.newlinePostprocess();
         try self.unicodePostprocess();
+        self.postprocessAssertions();
         return self.tokens.items;
+    }
+
+    fn postprocessAssertions(self: *Self) void {
+        for (self.tokens.items) |token| {
+            if (token.tType != .PLAIN and token.endI > token.startI) {
+                assert(self.src[token.startI] != '\n');
+            }
+        }
+    }
+
+    fn newlinePostprocess(self: *Self) void {
+        for (self.tokens.items) |*token| {
+            while (token.endI > token.startI and self.src[token.endI - 1] == '\n') {
+                token.endI -= 1;
+            }
+            token.contents = self.src[token.startI..token.endI];
+            if (token.renderEnd > token.endI) {
+                token.renderEnd = token.endI;
+            }
+        }
     }
 
     fn unicodePostprocess(self: *Self) !void {

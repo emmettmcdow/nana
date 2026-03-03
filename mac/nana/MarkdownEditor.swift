@@ -21,6 +21,8 @@ struct MarkdownEditor: NSViewRepresentable {
         // glyphs and arranges them into lines.
         // let layoutManager = NSLayoutManager()
         let layoutManager = HidingLayoutManager()
+        layoutManager.debugTokenBorders = true
+        layoutManager.debugHidePlain = true
         // View - The "where". This controls the bounding box of the text.
         let textContainer = NSTextContainer()
 

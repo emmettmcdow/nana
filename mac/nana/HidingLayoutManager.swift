@@ -7,6 +7,54 @@ class HidingLayoutManager: NSLayoutManager {
     /// Character indices where the glyph should be substituted with a bullet `•`.
     var bulletCharIndices: Set<Int> = []
 
+    /// When true, draws a border around every token range for debugging.
+    var debugTokenBorders = false
+
+    /// When true, hides bounding boxes for PLAIN tokens in debug mode.
+    var debugHidePlain = false
+
+    /// Token debug info populated by MarkdownTextView.
+    var debugTokens: [(range: NSRange, label: String)] = []
+
+    private static let debugColors: [NSColor] = [
+        .systemRed, .systemBlue, .systemOrange, .systemPurple,
+    ]
+
+    override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
+        super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
+        guard debugTokenBorders, let tc = textContainers.first else { return }
+
+        let labelFont = NSFont.systemFont(ofSize: 8, weight: .medium)
+
+        for (i, token) in debugTokens.enumerated() {
+            if debugHidePlain && token.label == "PLAIN" { continue }
+            let color = Self.debugColors[i % Self.debugColors.count]
+            let glyphRange = self.glyphRange(forCharacterRange: token.range, actualCharacterRange: nil)
+            guard glyphRange.location != NSNotFound else { continue }
+            let rect = boundingRect(forGlyphRange: glyphRange, in: tc)
+            var adjusted = rect
+            adjusted.origin.x += origin.x
+            adjusted.origin.y += origin.y
+
+            color.setStroke()
+            let path = NSBezierPath(roundedRect: adjusted, xRadius: 3, yRadius: 3)
+            path.lineWidth = 1.0
+            path.stroke()
+
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: labelFont,
+                .foregroundColor: color,
+            ]
+            let labelStr = NSAttributedString(string: token.label, attributes: attrs)
+            let labelSize = labelStr.size()
+            let labelOrigin = NSPoint(
+                x: adjusted.maxX - labelSize.width,
+                y: adjusted.minY - labelSize.height
+            )
+            labelStr.draw(at: labelOrigin)
+        }
+    }
+
     /// Call after updating hiddenCharIndices and bulletCharIndices.
     func applyChanges(oldHidden: Set<Int>, oldBullets: Set<Int>) {
         guard let textStorage = textStorage, textStorage.length > 0 else { return }

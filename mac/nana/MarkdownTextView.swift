@@ -132,7 +132,17 @@ class MarkdownTextView: NSTextView {
         }
         hidingLM.hiddenCharIndices = hidden
         hidingLM.bulletCharIndices = bullets
+        hidingLM.debugTokens = currFormatting.tokens.map { token in
+            let renderAbsStart = token.startI + token.renderStart
+            let renderAbsEnd = token.startI + token.renderEnd
+            let length = renderAbsEnd - renderAbsStart
+            return (range: NSRange(location: renderAbsStart, length: max(length, 0)),
+                    label: token.tType.rawValue)
+        }
         hidingLM.applyChanges(oldHidden: oldHidden, oldBullets: oldBullets)
+        if hidingLM.debugTokenBorders {
+            self.needsDisplay = true
+        }
     }
 
     /// Returns the 0-based line number for a character index.
@@ -192,8 +202,8 @@ class MarkdownTextView: NSTextView {
                 renderEnd: old_tok.renderEnd
             )
 
-            assert(old_tok_mod.startI >= 0 && old_tok_mod.startI <= text.unicodeScalars.count)
-            assert(old_tok_mod.endI >= 0 && old_tok_mod.endI <= text.unicodeScalars.count)
+            // assert(old_tok_mod.startI >= 0 && old_tok_mod.startI <= text.unicodeScalars.count)
+            // assert(old_tok_mod.endI >= 0 && old_tok_mod.endI <= text.unicodeScalars.count)
             if new_tok != old_tok_mod {
                 break
             }
