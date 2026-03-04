@@ -383,6 +383,7 @@ fn searchResultToC(sr: SearchResult) CSearchResult {
         .similarity = sr.similarity,
     };
     const copy_len = @min(sr.path.len, PATH_MAX - 1);
+    if (copy_len == 0) return c_result;
     @memcpy(c_result.path[0..copy_len], sr.path[0..copy_len]);
     return c_result;
 }
