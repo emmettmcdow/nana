@@ -66,7 +66,7 @@ pub const Markdown = struct {
         return .{
             .i = 0,
             .src = "",
-            .tokens = ArrayList(Token).init(allocator),
+            .tokens = ArrayList(Token){},
             .allocator = allocator,
         };
     }
@@ -77,8 +77,8 @@ pub const Markdown = struct {
         defer parse_zone.end();
 
         self.i = 0;
-        self.tokens.deinit();
-        self.tokens = ArrayList(Token).init(self.allocator);
+        self.tokens.deinit(self.allocator);
+        self.tokens = ArrayList(Token){};
         self.src = src;
 
         while (self.i < self.src.len) {
@@ -179,12 +179,13 @@ pub const Markdown = struct {
             var copy = token;
             copy.endI = @min(self.i, self.src.len);
             copy.contents = self.src[copy.startI..copy.endI];
-            try self.tokens.append(copy);
+            try self.tokens.append(self.allocator, copy);
         }
         if (newType) |tt| {
             assert(degree != null);
             if (degree) |d| {
                 try self.tokens.append(
+                    self.allocator,
                     .{ .tType = tt, .startI = self.i, .endI = self.i + 1, .degree = d },
                 );
             }

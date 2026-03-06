@@ -362,15 +362,15 @@ pub fn diffSplit(
     new: []const u8,
     allocator: std.mem.Allocator,
 ) !std.ArrayList(Sentence) {
-    var output = std.ArrayList(Sentence).init(allocator);
-    errdefer output.deinit();
+    var output = std.ArrayList(Sentence){};
+    errdefer output.deinit(allocator);
     var split_new = Spliterator.init(new);
 
     new: while (split_new.next()) |new_s| {
         var split_old = Spliterator.init(old);
         while (split_old.next()) |old_s| {
             if (std.mem.eql(u8, old_s.contents, new_s.contents)) {
-                try output.append(Sentence{
+                try output.append(allocator, Sentence{
                     .contents = new_s.contents,
                     .new = false,
                     .off = new_s.off,
@@ -378,7 +378,7 @@ pub fn diffSplit(
                 continue :new;
             }
         }
-        try output.append(Sentence{
+        try output.append(allocator, Sentence{
             .contents = new_s.contents,
             .new = true,
             .off = new_s.off,
@@ -392,8 +392,8 @@ test "diffSplit" {
     {
         const old = "foo.bar";
         const new = "foo.baz";
-        const result = try diffSplit(old, new, std.testing.allocator);
-        defer result.deinit();
+        var result = try diffSplit(old, new, std.testing.allocator);
+        defer result.deinit(std.testing.allocator);
 
         try expectEqual(2, result.items.len);
 
@@ -406,8 +406,8 @@ test "diffSplit" {
     {
         const old = "foo.bar";
         const new = "bar.foo";
-        const result = try diffSplit(old, new, std.testing.allocator);
-        defer result.deinit();
+        var result = try diffSplit(old, new, std.testing.allocator);
+        defer result.deinit(std.testing.allocator);
 
         try expectEqual(2, result.items.len);
 
@@ -420,8 +420,8 @@ test "diffSplit" {
     {
         const old = "foo";
         const new = "baz!bar?foo";
-        const result = try diffSplit(old, new, std.testing.allocator);
-        defer result.deinit();
+        var result = try diffSplit(old, new, std.testing.allocator);
+        defer result.deinit(std.testing.allocator);
 
         try expectEqual(3, result.items.len);
 
@@ -436,8 +436,8 @@ test "diffSplit" {
     {
         const old = "";
         const new = "foo.\n!?bar";
-        const result = try diffSplit(old, new, std.testing.allocator);
-        defer result.deinit();
+        var result = try diffSplit(old, new, std.testing.allocator);
+        defer result.deinit(std.testing.allocator);
 
         try expectEqual(2, result.items.len);
 
@@ -452,8 +452,8 @@ test "diffSplit" {
     {
         const old = "foobar";
         const new = "foo.bar";
-        const result = try diffSplit(old, new, std.testing.allocator);
-        defer result.deinit();
+        var result = try diffSplit(old, new, std.testing.allocator);
+        defer result.deinit(std.testing.allocator);
 
         try expectEqual(2, result.items.len);
 

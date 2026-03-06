@@ -28,16 +28,16 @@
             .path = "../dve",
         },
         .zig_objc = .{
-            .url = "git+https://github.com/mitchellh/zig-objc#3bdbabb4f79533191a3d33a6df62b61400c40848",
-            .hash = "zig_objc-0.0.0-Ir_SpwUPAQDFk6tSkHUBvYrSBqTWCCkyyROrXDe9udTV",
+            .url = "git+https://github.com/mitchellh/zig-objc#27d0e03242e7ee6842bf8a86d2e0bb1f586a9847",
+            .hash = "zig_objc-0.0.0-Ir_Sp7oUAQC3JpeR9EGUFGcHRSx_33IehitnjBCy-CwD",
         },
         .tracy = .{
             .url = "git+https://github.com/tealsnow/zig-tracy#74c75efe3576adc47846369d4df50f4f62a17597",
             .hash = "tracy-0.0.10-Dn49m2RUAAAdadZoiLef0OCmVdUyeu5GmEzXoTAokcZl",
         },
         .zlinter = .{
-            .url = "git+https://github.com/kurtwagner/zlinter#273acdba90e7d790474ec6117f1c1f11f136547a",
-            .hash = "zlinter-0.0.1-OjQ08fNsCwC__RBWru_qzrvidRlAEJ6SMqjP6hf5SH0m",
+            .url = "git+https://github.com/kurtwagner/zlinter#59129bb0ca1efecd3b6625def6dc527cead4caac",
+            .hash = "zlinter-0.0.1-OjQ08ZOnCwBx9meqm2cUjOkYUBeTUpKhQ3ERnVPg6ARc",
         },
     },
     .paths = .{

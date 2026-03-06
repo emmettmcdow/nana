@@ -152,7 +152,7 @@ pub const Runtime = struct {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
 
-        var to_delete = std.ArrayList([]const u8).init(arena.allocator());
+        var to_delete = std.ArrayList([]const u8){};
 
         var it = self.basedir.iterate();
         while (try it.next()) |entry| {
@@ -164,7 +164,7 @@ pub const Runtime = struct {
             defer f.close();
             const stat = f.stat() catch continue;
             if (stat.size == 0) {
-                try to_delete.append(try arena.allocator().dupe(u8, entry.name));
+                try to_delete.append(arena.allocator(), try arena.allocator().dupe(u8, entry.name));
             }
         }
 
@@ -293,12 +293,17 @@ pub const Runtime = struct {
         };
         defer f.close();
 
-        const metadata = try f.metadata();
-        const modified: i64 = @intCast(@divTrunc(metadata.modified(), 1000));
-        const created: i64 = if (metadata.created()) |c|
-            @intCast(@divTrunc(c, 1000))
-        else
-            modified;
+        const fstat = try std.posix.fstat(f.handle);
+        const mtime = fstat.mtime();
+        const btime = fstat.birthtime();
+        const modified: i64 = @intCast(@divTrunc(
+            @as(i128, mtime.sec) * std.time.ns_per_s + mtime.nsec,
+            1000,
+        ));
+        const created: i64 = @intCast(@divTrunc(
+            @as(i128, btime.sec) * std.time.ns_per_s + btime.nsec,
+            1000,
+        ));
 
         return Note{
             .path = path,
@@ -318,7 +323,7 @@ pub const Runtime = struct {
         };
         defer f.close();
 
-        if (try isUnchanged(f, content)) return;
+        if (try isUnchanged(f, self.allocator, content)) return;
 
         try f.seekTo(0);
         try f.setEndPos(0);
@@ -429,7 +434,7 @@ pub const Runtime = struct {
             modified: i64,
         };
 
-        var entries = std.ArrayList(Entry).init(arena.allocator());
+        var entries = std.ArrayList(Entry){};
 
         var it = self.basedir.iterate();
         while (try it.next()) |entry| {
@@ -447,10 +452,9 @@ pub const Runtime = struct {
             const stat = f.stat() catch continue;
             if (stat.size == 0) continue;
 
-            const metadata = f.metadata() catch continue;
-            const modified: i64 = @intCast(@divTrunc(metadata.modified(), 1000));
+            const modified: i64 = @intCast(@divTrunc(stat.mtime, 1000));
 
-            try entries.append(.{
+            try entries.append(arena.allocator(), .{
                 .path = try arena.allocator().dupe(u8, entry.name),
                 .modified = modified,
             });
@@ -475,10 +479,12 @@ pub const Runtime = struct {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:parseMarkdown" });
         defer zone.end();
 
-        if (self.lastParsedMD) |ref| ref.deinit();
-        self.lastParsedMD = std.ArrayList(u8).init(self.allocator);
-        try json.stringify(try self.markdown.parse(content), .{}, self.lastParsedMD.?.writer());
-        try self.lastParsedMD.?.writer().writeByte(0);
+        if (self.lastParsedMD) |*ref| ref.deinit(self.allocator);
+        self.lastParsedMD = std.ArrayList(u8){};
+        const json_bytes = try std.json.Stringify.valueAlloc(self.allocator, try self.markdown.parse(content), .{});
+        defer self.allocator.free(json_bytes);
+        try self.lastParsedMD.?.appendSlice(self.allocator, json_bytes);
+        try self.lastParsedMD.?.append(self.allocator, 0);
         return self.lastParsedMD.?.items;
     }
 
@@ -496,16 +502,14 @@ pub const Runtime = struct {
 
         assert(buf.len == TITLE_BUF_LEN);
 
-        var reader = f.reader();
+        var read_buf: [TITLE_BUF_LEN]u8 = undefined;
+        const n = try f.read(&read_buf);
+        const file_bytes = read_buf[0..n];
 
         var pos: usize = 0;
         var skipping = true;
-        while (pos < TITLE_LEN) {
-            const c = reader.readByte() catch |err| switch (err) {
-                error.EndOfStream => break,
-                else => return err,
-            };
-
+        for (file_bytes) |c| {
+            if (pos >= TITLE_LEN) break;
             switch (c) {
                 '\n' => break,
                 '#', ' ' => {
@@ -575,32 +579,14 @@ fn allNums(path: []const u8) bool {
     return true;
 }
 
-fn isUnchanged(f: File, new_content: []const u8) !bool {
+fn isUnchanged(f: File, allocator: std.mem.Allocator, new_content: []const u8) !bool {
     const stat = try f.stat();
     if (stat.size != new_content.len) return false;
 
-    var reader = f.reader();
-
-    var i: usize = 0;
-    while (true) : (i += 1) {
-        const c = reader.readByte() catch |err| switch (err) {
-            error.EndOfStream => {
-                try f.seekTo(0);
-                return true;
-            },
-            else => {
-                try f.seekTo(0);
-                return err;
-            },
-        };
-        if (new_content[i] != c) {
-            try f.seekTo(0);
-            return false;
-        }
-    }
-
+    const existing = try f.readToEndAlloc(allocator, new_content.len);
+    defer allocator.free(existing);
     try f.seekTo(0);
-    return true;
+    return std.mem.eql(u8, existing, new_content);
 }
 
 test "no create on read" {
@@ -671,7 +657,7 @@ test "modify on write" {
 
     try rt.writeAll(path, "first");
     const n1 = try rt.get(path);
-    std.time.sleep(10 * std.time.ns_per_ms);
+    std.Thread.sleep(10 * std.time.ns_per_ms);
 
     try rt.writeAll(path, "second");
     const n2 = try rt.get(path);
@@ -823,7 +809,7 @@ test "index" {
     for (0..9) |i| {
         paths[i] = try rt.create(&path_bufs[i]);
         try rt.writeAll(paths[i], "norecycle");
-        std.time.sleep(10 * std.time.ns_per_ms);
+        std.Thread.sleep(10 * std.time.ns_per_ms);
     }
 
     var buffer: [10][]const u8 = undefined;
@@ -845,7 +831,7 @@ test "index orderby modified" {
     var path1_buf: [PATH_MAX]u8 = undefined;
     const path1 = try rt.create(&path1_buf);
     try rt.writeAll(path1, "norecycle");
-    std.time.sleep(50 * std.time.ns_per_ms);
+    std.Thread.sleep(50 * std.time.ns_per_ms);
 
     var path2_buf: [PATH_MAX]u8 = undefined;
     const path2 = try rt.create(&path2_buf);
@@ -984,7 +970,7 @@ test "import run embedding" {
     var destBuf: [PATH_MAX]u8 = undefined;
     const destPath = (try rt.import(path, &destBuf)).?;
 
-    std.time.sleep(2 * std.time.ns_per_s);
+    std.Thread.sleep(2 * std.time.ns_per_s);
 
     var buf: [1]SearchResult = undefined;
     try expectEqual(1, try rt.search("hello", &buf));
@@ -1514,7 +1500,7 @@ test "unicode endpoint checks" {
     const note_content = "heart❤️";
     try rt.writeAll(path, note_content);
 
-    std.time.sleep(2 * std.time.ns_per_s);
+    std.Thread.sleep(2 * std.time.ns_per_s);
 
     var results: [1]SearchResult = undefined;
     const n_results = try rt.search(query, &results);

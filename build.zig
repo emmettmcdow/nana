@@ -81,29 +81,28 @@ pub fn build(b: *std.Build) !void {
     ///////////////////
     // Build the Lib //
     ///////////////////
-    var baselib_platform_list = std.ArrayList(Baselib).init(b.allocator);
-    defer baselib_platform_list.deinit();
-    for (targets) |target| {
+    var baselib_platform_list: [targets.len]Baselib = undefined;
+    for (targets, 0..) |target, i| {
         const dve_dep_arch = b.dependency("dve", .{
             .target = target,
             .optimize = optimize,
             .@"debug-output" = debug,
             .@"embedding-model" = embedding_model,
         });
-        try baselib_platform_list.append(Baselib.create(.{
+        baselib_platform_list[i] = Baselib.create(.{
             .b = b,
             .target = target,
             .optimize = optimize,
             .debug = debug,
             .dve_module = dve_dep_arch.module("dve"),
-        }));
+        });
     }
 
     const outfile = "libnana.a";
     const static_lib_universal = Lipo.create(b, .{
         .name = "nana",
         .out_name = outfile,
-        .inputs = baselib_platform_list.items,
+        .inputs = &baselib_platform_list,
     });
 
     const xcframework = XCFramework.create(b, .{
@@ -125,9 +124,11 @@ pub fn build(b: *std.Build) !void {
     const native_target = b.resolveTargetQuery(.{});
     const exe = b.addExecutable(.{
         .name = "nana",
-        .root_source_file = main_file,
-        .target = native_target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = main_file,
+            .target = native_target,
+            .optimize = optimize,
+        }),
     });
     exe.root_module.addImport("nana", b.createModule(.{
         .root_source_file = root_file,
@@ -189,9 +190,11 @@ pub fn build(b: *std.Build) !void {
     const test_root = b.step("test-root", "run the tests for src/root.zig");
     {
         const t = b.addTest(.{
-            .root_source_file = root_file,
-            .target = x86_target,
-            .optimize = optimize,
+            .root_module = b.createModule(.{
+                .root_source_file = root_file,
+                .target = x86_target,
+                .optimize = optimize,
+            }),
             .filters = if (test_filter != null) filters else &.{},
         });
         t.root_module.addImport("dve", dve_module);
@@ -214,9 +217,11 @@ pub fn build(b: *std.Build) !void {
     const test_markdown = b.step("test-markdown", "run the tests for src/markdown.zig");
     {
         const t = b.addTest(.{
-            .root_source_file = markdown_file,
-            .target = x86_target,
-            .optimize = optimize,
+            .root_module = b.createModule(.{
+                .root_source_file = markdown_file,
+                .target = x86_target,
+                .optimize = optimize,
+            }),
             .filters = if (test_filter != null) filters else &.{},
         });
         t.root_module.addImport("dve", dve_module);
@@ -227,9 +232,11 @@ pub fn build(b: *std.Build) !void {
     const test_diff = b.step("test-diff", "run the tests for src/diff.zig");
     {
         const t = b.addTest(.{
-            .root_source_file = diff_file,
-            .target = x86_target,
-            .optimize = optimize,
+            .root_module = b.createModule(.{
+                .root_source_file = diff_file,
+                .target = x86_target,
+                .optimize = optimize,
+            }),
             .filters = if (test_filter != null) filters else &.{},
         });
         test_diff.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
@@ -238,9 +245,11 @@ pub fn build(b: *std.Build) !void {
     const test_util = b.step("test-util", "run the tests for src/util.zig");
     {
         const t = b.addTest(.{
-            .root_source_file = util_file,
-            .target = x86_target,
-            .optimize = optimize,
+            .root_module = b.createModule(.{
+                .root_source_file = util_file,
+                .target = x86_target,
+                .optimize = optimize,
+            }),
             .filters = if (test_filter != null) filters else &.{},
         });
         test_util.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
@@ -249,9 +258,11 @@ pub fn build(b: *std.Build) !void {
     const test_perf = b.step("perf", "Run performance benchmark tests");
     {
         const t = b.addTest(.{
-            .root_source_file = perf_file,
-            .target = x86_target,
-            .optimize = optimize,
+            .root_module = b.createModule(.{
+                .root_source_file = perf_file,
+                .target = x86_target,
+                .optimize = optimize,
+            }),
             .filters = if (test_filter != null) filters else &.{},
         });
         t.root_module.addImport("dve", dve_module);
@@ -263,9 +274,11 @@ pub fn build(b: *std.Build) !void {
     {
         const p = b.addExecutable(.{
             .name = "profile",
-            .root_source_file = profile_file,
-            .target = x86_target,
-            .optimize = optimize,
+            .root_module = b.createModule(.{
+                .root_source_file = profile_file,
+                .target = x86_target,
+                .optimize = optimize,
+            }),
         });
         p.root_module.addImport("dve", dve_module);
         addNanaDeps(depOpts(x86_deps, p), dve_module);
@@ -333,11 +346,14 @@ const Baselib = struct {
     pub fn create(opts: Baselib.Options) Baselib {
         const interface_file = opts.b.path("src/intf.zig");
 
-        const base_nana_lib = opts.b.addStaticLibrary(.{
+        const base_nana_lib = opts.b.addLibrary(.{
+            .linkage = .static,
             .name = "nana",
-            .root_source_file = interface_file,
-            .target = opts.target,
-            .optimize = opts.optimize,
+            .root_module = opts.b.createModule(.{
+                .root_source_file = interface_file,
+                .target = opts.target,
+                .optimize = opts.optimize,
+            }),
         });
         base_nana_lib.bundle_compiler_rt = true;
         base_nana_lib.root_module.addImport("dve", opts.dve_module);
