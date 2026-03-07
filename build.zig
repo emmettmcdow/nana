@@ -99,11 +99,20 @@ pub fn build(b: *std.Build) !void {
     }
 
     const outfile = "libnana.a";
-    const static_lib_universal = Lipo.create(b, .{
+    const static_lib_lipo = Lipo.create(b, .{
         .name = "nana",
         .out_name = outfile,
         .inputs = &baselib_platform_list,
     });
+    // Normalize archive format with libtool so Apple's linker (ld_new in Xcode 15+)
+    // doesn't reject it with "invalid control bits".
+    var libtool_sources = [_]LazyPath{static_lib_lipo.output};
+    const static_lib_universal = Libtool.create(b, .{
+        .name = "nana",
+        .out_name = outfile,
+        .sources = &libtool_sources,
+    });
+    static_lib_universal.step.dependOn(static_lib_lipo.step);
 
     const xcframework = XCFramework.create(b, .{
         .name = "NanaKit",
@@ -116,45 +125,6 @@ pub fn build(b: *std.Build) !void {
     const signedFW = Codesign.create(.{ .b = b, .path = xc_fw_path });
     signedFW.step.dependOn(xcframework.step);
     install_step.dependOn(signedFW.step);
-
-    ////////////////////////
-    // Standalone Binary  //
-    ////////////////////////
-    const main_file = b.path("src/main.zig");
-    const native_target = b.resolveTargetQuery(.{});
-    const exe = b.addExecutable(.{
-        .name = "nana",
-        .root_module = b.createModule(.{
-            .root_source_file = main_file,
-            .target = native_target,
-            .optimize = optimize,
-        }),
-    });
-    exe.root_module.addImport("nana", b.createModule(.{
-        .root_source_file = root_file,
-        .imports = &.{.{ .name = "dve", .module = dve_module }},
-    }));
-    addNanaDeps(.{ .b = b, .dest = exe, .target = native_target, .optimize = optimize }, dve_module);
-    b.installArtifact(exe);
-
-    // Install model files to share directory
-    b.installDirectory(.{
-        .source_dir = dve_dep.path("models/all_mpnet_base_v2/all_mpnet_base_v2.mlpackage"),
-        .install_dir = .{ .custom = "share" },
-        .install_subdir = "all_mpnet_base_v2.mlpackage",
-    });
-    install_step.dependOn(&b.addInstallFile(
-        dve_dep.path("models/all_mpnet_base_v2/tokenizer.json"),
-        "share/tokenizer.json",
-    ).step);
-
-    const run_exe = b.addRunArtifact(exe);
-    run_exe.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_exe.addArgs(args);
-    }
-    const run_step = b.step("run", "Run the standalone binary");
-    run_step.dependOn(&run_exe.step);
 
     ////////////////
     // Unit Tests //

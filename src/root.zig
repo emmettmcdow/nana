@@ -1569,5 +1569,5 @@ const markdown = @import("markdown.zig");
 pub const SearchResult = dve.SearchResult;
 const util = @import("util.zig");
 const embedding_model = dve.embedding_model;
-const VectorDB = dve.VectorDB(embedding_model);
+const VectorDB = dve.VectorEngine(embedding_model);
 const yield = std.Thread.yield;
