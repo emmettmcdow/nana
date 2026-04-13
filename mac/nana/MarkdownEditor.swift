@@ -21,7 +21,7 @@ struct MarkdownEditor: NSViewRepresentable {
         // glyphs and arranges them into lines.
         // let layoutManager = NSLayoutManager()
         let layoutManager = HidingLayoutManager()
-        layoutManager.debugTokenBorders = true
+        layoutManager.debugTokenBorders = false
         layoutManager.debugHidePlain = true
         // View - The "where". This controls the bounding box of the text.
         let textContainer = NSTextContainer()
@@ -35,13 +35,14 @@ struct MarkdownEditor: NSViewRepresentable {
         layoutManager.addTextContainer(textContainer)
 
         // Configure text container
-        textContainer.widthTracksTextView = true // Automatically tracks textView width minus textContainerInset
+        textContainer.widthTracksTextView = true  // Automatically tracks textView width minus textContainerInset
         textContainer.heightTracksTextView = false
         textContainer.lineFragmentPadding = 0
 
         // TextView is the top level object. This is the combination of our MVC described above.
-        let textView = MarkdownTextView(frame: .zero, // This will be auto-resized
-                                        textContainer: textContainer)
+        let textView = MarkdownTextView(
+            frame: .zero,  // This will be auto-resized
+            textContainer: textContainer)
         textView.setBaseStyle(new_font: font, new_palette: palette)
         textView.delegate = context.coordinator
         textView.onTextChange = { [weak coordinator = context.coordinator] newText in
@@ -57,7 +58,7 @@ struct MarkdownEditor: NSViewRepresentable {
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = false
-        scrollView.contentView.postsBoundsChangedNotifications = true // No horizontal scrolling
+        scrollView.contentView.postsBoundsChangedNotifications = true  // No horizontal scrolling
 
         return scrollView
     }
@@ -95,8 +96,10 @@ struct MarkdownEditor: NSViewRepresentable {
             guard let layoutManager = textView.layoutManager else { return }
 
             let insertionPoint = textView.selectedRange().location
-            let glyphIndex = layoutManager.glyphIndexForCharacter(at: min(insertionPoint, textView.string.count - 1))
-            var lineRect = layoutManager.lineFragmentRect(forGlyphAt: max(0, glyphIndex), effectiveRange: nil)
+            let glyphIndex = layoutManager.glyphIndexForCharacter(
+                at: min(insertionPoint, textView.string.count - 1))
+            var lineRect = layoutManager.lineFragmentRect(
+                forGlyphAt: max(0, glyphIndex), effectiveRange: nil)
 
             // Account for text container inset
             lineRect.origin.y += textView.textContainerInset.height

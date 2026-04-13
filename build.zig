@@ -57,6 +57,7 @@ pub fn build(b: *std.Build) !void {
         .@"debug-output" = debug,
         .@"embedding-model" = embedding_model,
     });
+    b.getInstallStep().dependOn(dve_dep.builder.getInstallStep());
     const dve_module = dve_dep.module("dve");
 
     // Copy model and tokenizer to mac app Resources for bundling
@@ -503,7 +504,7 @@ const Codesign = struct {
             "codesign",
             "--timestamp",
             "-s",
-            "5AE3B7EECB504FB7ED5B00BB70576647A21ADB15",
+            "70CE28838D7B7AF1711840CBD1195FF51BAC2A87",
             opts.path,
         });
 
