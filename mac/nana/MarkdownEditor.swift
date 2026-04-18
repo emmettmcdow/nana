@@ -12,54 +12,39 @@ struct MarkdownEditor: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSScrollView {
         // Create the text system components in the correct order
+        // TextKit is MVC
+
+        // Model - The "what". This is in charge of the canonical representation of the data itself
+        // and it's attributes.
         let textStorage = NSTextStorage()
-        let layoutManager = NSLayoutManager()
+        // Controller - The "how". It takes the value held in NSTextStorage and converts it into
+        // glyphs and arranges them into lines.
+        // let layoutManager = NSLayoutManager()
+        let layoutManager = HidingLayoutManager()
+        layoutManager.debugTokenBorders = false
+        layoutManager.debugHidePlain = true
+        // View - The "where". This controls the bounding box of the text.
         let textContainer = NSTextContainer()
 
-        // Connect the text system
+        // Workflow
+        // 1. Text changes in NSTextStorage
+        // 2. NSTextStorage tells NSLayoutManager about the change, which breaks it into lines to
+        //    fit inside the NSTextContainer.
+        // 3. UITextView asks NSLayoutManager to draw those glyphs.
         textStorage.addLayoutManager(layoutManager)
         layoutManager.addTextContainer(textContainer)
 
-        // Configure text container to prevent horizontal scrolling
-        textContainer.widthTracksTextView = false // We'll manage width manually to account for insets
+        // Configure text container
+        textContainer.widthTracksTextView = true  // Automatically tracks textView width minus textContainerInset
         textContainer.heightTracksTextView = false
-        textContainer.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         textContainer.lineFragmentPadding = 0
 
-        // Create MarkdownTextView with initial frame that will be auto-resized
-        let textView = MarkdownTextView(frame: .zero, textContainer: textContainer)
-
-        // Create scroll view
-        let scrollView = NSScrollView()
-        scrollView.documentView = textView
-        scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = false
-        scrollView.autohidesScrollers = false
-
-        // Ensure no horizontal scrolling
-        scrollView.contentView.postsBoundsChangedNotifications = true
-
-        // Configure text view AFTER it has a proper frame
-        textView.setPalette(palette: palette)
+        // TextView is the top level object. This is the combination of our MVC described above.
+        let textView = MarkdownTextView(
+            frame: .zero,  // This will be auto-resized
+            textContainer: textContainer)
+        textView.setBaseStyle(new_font: font, new_palette: palette)
         textView.delegate = context.coordinator
-        textView.autoresizingMask = [.width]
-        textView.minSize = NSSize(width: 0, height: 0)
-        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-
-        textView.selectedTextAttributes = [
-            NSAttributedString.Key.backgroundColor: palette.NStert(),
-        ]
-
-        // Add padding to prevent text from interfering with buttons
-        textView.textContainerInset = NSSize(width: 60, height: 30)
-        textView.typingAttributes = [
-            .font: font,
-            .foregroundColor: palette.NSfg(),
-        ]
-
-        // Set initial text content
-        textStorage.setAttributedString(NSAttributedString(string: text))
-        textView.update(text: text, font: font, palette: palette)
         textView.onTextChange = { [weak coordinator = context.coordinator] newText in
             guard let coordinator = coordinator else { return }
             DispatchQueue.main.async {
@@ -67,20 +52,22 @@ struct MarkdownEditor: NSViewRepresentable {
             }
         }
 
-        // Set up frame change observer to update text container width when resizing
-        context.coordinator.setupFrameObserver(for: scrollView, textView: textView)
+        // Wrap our textView in a NSScrollView.
+        let scrollView = NSScrollView()
+        scrollView.documentView = textView
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = false
+        scrollView.contentView.postsBoundsChangedNotifications = true  // No horizontal scrolling
 
         return scrollView
     }
 
-    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+    func updateNSView(_ scrollView: NSScrollView, context _: Context) {
         guard let textView = scrollView.documentView as? MarkdownTextView else { return }
 
-        // Ensure text container width is correct (important for first render)
-        context.coordinator.updateTextContainerWidth(scrollView: scrollView, textView: textView)
-
         // Update text/font/palette if anything changed externally
-        textView.update(text: text, font: font, palette: palette)
+        textView.update(new_string: text, new_font: font, new_palette: palette)
 
         // Scroll to and highlight search result
         if let range = highlightRange {
@@ -97,47 +84,8 @@ struct MarkdownEditor: NSViewRepresentable {
 
     class Coordinator: NSObject, NSTextViewDelegate {
         let parent: MarkdownEditor
-        private var frameObserver: NSObjectProtocol?
-
         init(_ parent: MarkdownEditor) {
             self.parent = parent
-        }
-
-        deinit {
-            if let observer = frameObserver {
-                NotificationCenter.default.removeObserver(observer)
-            }
-        }
-
-        func setupFrameObserver(for scrollView: NSScrollView, textView: NSTextView) {
-            // Update container width initially
-            updateTextContainerWidth(scrollView: scrollView, textView: textView)
-
-            // Observe frame changes
-            frameObserver = NotificationCenter.default.addObserver(
-                forName: NSView.frameDidChangeNotification,
-                object: scrollView,
-                queue: .main
-            ) { [weak textView] _ in
-                guard let textView = textView,
-                      let scrollView = textView.enclosingScrollView else { return }
-                self.updateTextContainerWidth(scrollView: scrollView, textView: textView)
-            }
-        }
-
-        func updateTextContainerWidth(scrollView: NSScrollView, textView: NSTextView) {
-            guard let textContainer = textView.textContainer else { return }
-
-            // Calculate available width: scroll view's content width minus text insets
-            let scrollViewWidth = scrollView.contentView.bounds.width
-            let horizontalInset = textView.textContainerInset.width * 2 // Inset on both sides
-            let availableWidth = max(0, scrollViewWidth - horizontalInset)
-
-            // Update text container width
-            textContainer.containerSize = NSSize(
-                width: availableWidth,
-                height: CGFloat.greatestFiniteMagnitude
-            )
         }
 
         func textDidChange(_ notification: Notification) {
@@ -148,8 +96,10 @@ struct MarkdownEditor: NSViewRepresentable {
             guard let layoutManager = textView.layoutManager else { return }
 
             let insertionPoint = textView.selectedRange().location
-            let glyphIndex = layoutManager.glyphIndexForCharacter(at: min(insertionPoint, textView.string.count - 1))
-            var lineRect = layoutManager.lineFragmentRect(forGlyphAt: max(0, glyphIndex), effectiveRange: nil)
+            let glyphIndex = layoutManager.glyphIndexForCharacter(
+                at: min(insertionPoint, textView.string.count - 1))
+            var lineRect = layoutManager.lineFragmentRect(
+                forGlyphAt: max(0, glyphIndex), effectiveRange: nil)
 
             // Account for text container inset
             lineRect.origin.y += textView.textContainerInset.height
@@ -172,11 +122,6 @@ struct MarkdownEditor: NSViewRepresentable {
                 }
                 scrollView.reflectScrolledClipView(scrollView.contentView)
             }
-        }
-
-        // Optional: Handle other text view delegate methods as needed
-        func textView(_: NSTextView, shouldChangeTextIn _: NSRange, replacementString _: String?) -> Bool {
-            return true
         }
     }
 }

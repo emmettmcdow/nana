@@ -3,24 +3,17 @@ import Foundation
 
 class MarkdownTextView: NSTextView {
     private var isUpdatingFormatting = false
-    private var storedBaseFontSize: CGFloat = 14
-    private var paletteTextColor: NSColor?
-    private var paletteBackgroundColor: NSColor?
     private var currFormatting: MarkdownFormatting = .init(tokens: [])
     var onTextChange: ((String) -> Void)?
 
-    override func awakeFromNib() {
-        super.awakeFromNib()
-        setupTextView()
+    // We must implment this, but we don't really care about it because we aren't using
+    // nibs/storyboards. This along with awakeWithNib.
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
     }
 
     override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
         super.init(frame: frameRect, textContainer: container)
-        setupTextView()
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
         setupTextView()
     }
 
@@ -40,17 +33,30 @@ class MarkdownTextView: NSTextView {
         usesFontPanel = false
         isVerticallyResizable = true
         isHorizontallyResizable = false
-        textContainerInset = NSSize(width: 8, height: 8)
+        // Padding to prevent interfering with buttons
+        // TODO: This may not be the place to manage this. Maybe want to move this higher.
+        textContainerInset = NSSize(width: 60, height: 30)
         isEditable = true
         isSelectable = true
-
-        // Set default font
-        font = NSFont.systemFont(ofSize: 14)
+        autoresizingMask = [.width]
+        minSize = NSSize(width: 0, height: 0)
+        maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        font = NSFont.systemFont(ofSize: 14) // This will be updated in setBaseStyle
 
         // Ensure the text container is properly configured
         if let container = textContainer {
+            container.widthTracksTextView = true
             container.lineFragmentPadding = 10 // Add padding to help with background rendering
         }
+    }
+
+    // Sets the base colors and font
+    func setBaseStyle(new_font: NSFont, new_palette: Palette) {
+        textColor = new_palette.NSfg()
+        backgroundColor = new_palette.NSbg()
+        insertionPointColor = new_palette.NStert()
+        selectedTextAttributes = [NSAttributedString.Key.backgroundColor: new_palette.NStert()]
+        font = new_font
     }
 
     override var acceptsFirstResponder: Bool {
@@ -83,6 +89,72 @@ class MarkdownTextView: NSTextView {
         }
     }
 
+    override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting: Bool) {
+        super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
+        if !stillSelecting {
+            updateHidingLayoutManager()
+        }
+    }
+
+    private func updateHidingLayoutManager() {
+        guard let hidingLM = layoutManager as? HidingLayoutManager else { return }
+        let text = string
+        let selectedLine = lineNumber(at: selectedRange().location, in: text)
+
+        let oldHidden = hidingLM.hiddenCharIndices
+        let oldBullets = hidingLM.bulletCharIndices
+        var hidden = Set<Int>()
+        var bullets = Set<Int>()
+        for token in currFormatting.tokens {
+            let tokenStartLine = lineNumber(at: token.startI, in: text)
+            let tokenEndLine = lineNumber(at: max(token.endI - 1, token.startI), in: text)
+            let onSelectedLine = selectedLine >= tokenStartLine && selectedLine <= tokenEndLine
+
+            if token.tType == .LINK {
+                updateLinkAttribute(for: token, selected: onSelectedLine)
+            }
+
+            if onSelectedLine { continue }
+
+            if token.tType == .UNORDERED_LIST {
+                bullets.insert(token.startI)
+            } else {
+                // Hide characters outside the render range
+                let renderAbsStart = token.startI + token.renderStart
+                let renderAbsEnd = token.startI + token.renderEnd
+                for idx in token.startI ..< renderAbsStart {
+                    hidden.insert(idx)
+                }
+                for idx in renderAbsEnd ..< token.endI {
+                    hidden.insert(idx)
+                }
+            }
+        }
+        hidingLM.hiddenCharIndices = hidden
+        hidingLM.bulletCharIndices = bullets
+        hidingLM.debugTokens = currFormatting.tokens.map { token in
+            let renderAbsStart = token.startI + token.renderStart
+            let renderAbsEnd = token.startI + token.renderEnd
+            let length = renderAbsEnd - renderAbsStart
+            return (range: NSRange(location: renderAbsStart, length: max(length, 0)),
+                    label: token.tType.rawValue)
+        }
+        hidingLM.applyChanges(oldHidden: oldHidden, oldBullets: oldBullets)
+        if hidingLM.debugTokenBorders {
+            self.needsDisplay = true
+        }
+    }
+
+    /// Returns the 0-based line number for a character index.
+    private func lineNumber(at charIndex: Int, in text: String) -> Int {
+        var line = 0
+        for (i, ch) in text.unicodeScalars.enumerated() {
+            if i >= charIndex { break }
+            if ch == "\n" { line += 1 }
+        }
+        return line
+    }
+
     private func updateMarkdownFormatting() {
         guard let textStorage = textStorage else { return }
 
@@ -99,6 +171,7 @@ class MarkdownTextView: NSTextView {
                 applyTokenFormatting(token: token, range: range, to: textStorage)
             }
             currFormatting = new_formatting
+            updateHidingLayoutManager()
             return
         }
 
@@ -124,21 +197,25 @@ class MarkdownTextView: NSTextView {
                 startI: old_tok.startI + length_change,
                 endI: old_tok.endI + length_change,
                 contents: old_tok.contents,
-                degree: old_tok.degree
+                degree: old_tok.degree,
+                renderStart: old_tok.renderStart,
+                renderEnd: old_tok.renderEnd
             )
 
-            assert(old_tok_mod.startI >= 0 && old_tok_mod.startI <= text.unicodeScalars.count)
-            assert(old_tok_mod.endI >= 0 && old_tok_mod.endI <= text.unicodeScalars.count)
+            // assert(old_tok_mod.startI >= 0 && old_tok_mod.startI <= text.unicodeScalars.count)
+            // assert(old_tok_mod.endI >= 0 && old_tok_mod.endI <= text.unicodeScalars.count)
             if new_tok != old_tok_mod {
                 break
             }
             end_offset_idx += 1
         }
-        let last_changed_token_idx = new_formatting.tokens.count - end_offset_idx
+        var last_changed_token_idx = new_formatting.tokens.count - end_offset_idx
 
         if last_changed_token_idx < first_changed_token_idx {
-            // No changes made
-            return
+            // No changes made. We still need to update all the tokens, because colors etc might
+            // need to be updated.
+            first_changed_token_idx = 0
+            last_changed_token_idx = new_formatting.tokens.count - 1
         }
 
         isUpdatingFormatting = true
@@ -147,6 +224,7 @@ class MarkdownTextView: NSTextView {
             currFormatting = new_formatting
             textStorage.endEditing()
             isUpdatingFormatting = false
+            updateHidingLayoutManager()
         }
 
         let first_changed_str_idx = new_formatting.tokens[first_changed_token_idx].startI
@@ -169,53 +247,49 @@ class MarkdownTextView: NSTextView {
     }
 
     private func resetFormattingForRange(textStorage: NSTextStorage, range: NSRange) {
-        let baseFontSize = storedBaseFontSize
-        let defaultFont = NSFont.systemFont(ofSize: baseFontSize)
-        let defaultColor = textColor ?? NSColor.textColor
         let defaultParagraphStyle = NSParagraphStyle.default
 
         // Set all default attributes in one batched operation
         let defaultAttributes: [NSAttributedString.Key: Any] = [
-            .font: defaultFont,
-            .foregroundColor: defaultColor,
-            .backgroundColor: NSColor.clear, // Explicitly set transparent background
+            .font: font!,
+            .foregroundColor: textColor!,
+            .backgroundColor: backgroundColor,
             .paragraphStyle: defaultParagraphStyle,
         ]
 
         textStorage.setAttributes(defaultAttributes, range: range)
         typingAttributes = [
-            .font: defaultFont,
-            .foregroundColor: defaultColor,
+            .font: font!,
+            .foregroundColor: textColor!,
         ]
     }
 
+    // TODO: the first font jump is large
     private func applyTokenFormatting(token: MarkdownToken, range: NSRange, to textStorage: NSTextStorage) {
         var attributes: [NSAttributedString.Key: Any] = [:]
         var mod_range: NSRange = range
-        let defaultColor = textColor ?? NSColor.textColor
-        let baseFontSize = storedBaseFontSize
 
-        let codeFont = NSFont.monospacedSystemFont(ofSize: baseFontSize, weight: .regular)
-        let listFont = NSFont.systemFont(ofSize: baseFontSize)
-        let quoteFont = NSFont.systemFont(ofSize: baseFontSize)
+        let codeFont = NSFont.monospacedSystemFont(ofSize: font!.pointSize, weight: .regular)
+        let listFont = NSFont.systemFont(ofSize: font!.pointSize)
+        let quoteFont = NSFont.systemFont(ofSize: font!.pointSize)
 
         switch token.tType {
         case .HEADER:
             let fontSize: CGFloat
             switch token.degree {
-            case 1: fontSize = baseFontSize * (24.0 / 14.0)
-            case 2: fontSize = baseFontSize * (20.0 / 14.0)
-            case 3: fontSize = baseFontSize * (17.0 / 14.0)
-            case 4: fontSize = baseFontSize * (16.0 / 14.0)
-            case 5: fontSize = baseFontSize * (15.0 / 14.0)
-            case 6: fontSize = baseFontSize * (14.0 / 14.0)
-            default: fontSize = baseFontSize
+            case 1: fontSize = font!.pointSize * (24.0 / 14.0)
+            case 2: fontSize = font!.pointSize * (20.0 / 14.0)
+            case 3: fontSize = font!.pointSize * (17.0 / 14.0)
+            case 4: fontSize = font!.pointSize * (16.0 / 14.0)
+            case 5: fontSize = font!.pointSize * (15.0 / 14.0)
+            case 6: fontSize = font!.pointSize * (14.0 / 14.0)
+            default: fontSize = font!.pointSize
             }
 
             let headerFont = NSFont.boldSystemFont(ofSize: fontSize)
 
             attributes[.font] = headerFont
-            attributes[.foregroundColor] = defaultColor
+            attributes[.foregroundColor] = textColor!
 
         case .PLAIN:
             // Default formatting (already applied)
@@ -234,17 +308,10 @@ class MarkdownTextView: NSTextView {
             attributes[.paragraphStyle] = paragraphStyle
 
         case .BLOCK_CODE:
-            // Use palette colors but make them slightly darker
-            let originalBackground = paletteBackgroundColor ?? NSColor.textBackgroundColor
-            let originalForeground = paletteTextColor ?? NSColor.textColor
-
             // Darken the background slightly for code blocks
-            let codeBackgroundColor = originalBackground.blended(withFraction: 0.15, of: NSColor.black) ?? originalBackground
-            let codeTextColor = originalForeground
-
             attributes[.font] = codeFont
-            attributes[.foregroundColor] = codeTextColor
-            attributes[.backgroundColor] = codeBackgroundColor
+            attributes[.foregroundColor] = textColor!
+            attributes[.backgroundColor] = backgroundColor.blended(withFraction: 0.15, of: NSColor.black)
 
             if NSMaxRange(range) < string.unicodeScalars.count {
                 mod_range = NSRange(location: range.location, length: range.length + 1)
@@ -263,24 +330,17 @@ class MarkdownTextView: NSTextView {
             }
 
         case .CODE:
-            // Use palette colors but make them slightly darker
-            let originalBackground = paletteBackgroundColor ?? NSColor.textBackgroundColor
-            let originalForeground = paletteTextColor ?? NSColor.textColor
-            // Darken the background slightly for code blocks
-            let codeBackgroundColor = originalBackground.blended(withFraction: 0.15, of: NSColor.black) ?? originalBackground
-            let codeTextColor = originalForeground
-
             attributes[.font] = codeFont
-            attributes[.foregroundColor] = codeTextColor
-            attributes[.backgroundColor] = codeBackgroundColor
+            attributes[.foregroundColor] = textColor!
+            attributes[.backgroundColor] = backgroundColor.blended(withFraction: 0.15, of: NSColor.black)
 
         case .UNORDERED_LIST:
             attributes[.font] = listFont
-            attributes[.foregroundColor] = defaultColor
+            attributes[.foregroundColor] = textColor!
 
         case .ORDERED_LIST:
             attributes[.font] = listFont
-            attributes[.foregroundColor] = defaultColor
+            attributes[.foregroundColor] = textColor!
 
         case .EMPHASIS:
             // Triple emphasis (bold + italic)
@@ -328,7 +388,7 @@ class MarkdownTextView: NSTextView {
         let fadeDuration = 0.9
         let fadeSteps = 30
         let fadeInterval = fadeDuration / Double(fadeSteps)
-        for step in 0...fadeSteps {
+        for step in 0 ... fadeSteps {
             DispatchQueue.main.asyncAfter(deadline: .now() + flashDuration + fadeInterval * Double(step)) { [weak self] in
                 let alpha = 0.8 * (1.0 - Double(step) / Double(fadeSteps))
                 if alpha > 0 {
@@ -341,40 +401,39 @@ class MarkdownTextView: NSTextView {
         }
     }
 
-    func update(text: String, font: NSFont, palette: Palette) {
-        let textChanged = string != text
-        let sizeChanged = storedBaseFontSize != font.pointSize
-        let fgChanged = textColor != palette.NSfg()
-        let bgChanged = backgroundColor != palette.NSbg()
+    func update(new_string: String, new_font: NSFont, new_palette: Palette) {
+        let textChanged = string != new_string
+        let formatChanged = font != new_font ||
+            textColor != new_palette.NSfg() ||
+            backgroundColor != new_palette.NSbg() ||
+            insertionPointColor != new_palette.NStert()
 
         if textChanged {
-            string = text
+            string = new_string
         }
-        if sizeChanged {
-            self.font = font
-            storedBaseFontSize = font.pointSize
-        }
-        if fgChanged || bgChanged {
-            textColor = palette.NSfg()
-            paletteTextColor = palette.NSfg()
-            backgroundColor = palette.NSbg()
-            paletteBackgroundColor = palette.NSbg()
-            insertionPointColor = palette.NStert()
+        if formatChanged {
+            setBaseStyle(new_font: new_font, new_palette: new_palette)
         }
 
-        if textChanged || sizeChanged || fgChanged || bgChanged {
+        if textChanged || formatChanged {
             updateMarkdownFormatting()
         }
     }
 
-    func setPalette(palette: Palette) {
-        textColor = palette.NSfg()
-        paletteTextColor = palette.NSfg()
+    private func updateLinkAttribute(for token: MarkdownToken, selected: Bool) {
+        guard let textStorage = textStorage else { return }
+        let range = NSRange(location: token.startI, length: token.endI - token.startI)
+        guard NSMaxRange(range) <= textStorage.length else { return }
 
-        backgroundColor = palette.NSbg()
-        paletteBackgroundColor = palette.NSbg()
-
-        insertionPointColor = palette.NStert()
+        if selected {
+            textStorage.removeAttribute(.link, range: range)
+        } else {
+            if let urlString = extractURL(from: token.contents),
+               let url = URL(string: urlString)
+            {
+                textStorage.addAttribute(.link, value: url, range: range)
+            }
+        }
     }
 
     private func extractURL(from linkContent: String) -> String? {
