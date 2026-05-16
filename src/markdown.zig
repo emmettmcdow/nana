@@ -143,8 +143,8 @@ pub const Markdown = struct {
         try self.pushToken(null, null);
 
         // self.newlinePostprocess();
-        try self.unicodePostprocess();
         self.postprocessAssertions();
+        try self.unicodePostprocess();
         return self.tokens.items;
     }
 
@@ -842,6 +842,17 @@ test "failed reset to last position" {
             .{ .tType = .PLAIN, .contents = input, .startI = i, .endI = plusEq(&i, input.len), .renderStart = 0, .renderEnd = input.len },
         }, output);
     }
+}
+
+test "unicode shifts assertion off" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var l = Markdown.init(arena.allocator());
+
+    // "é" is 2 bytes (0xC3 0xA9), followed by '\n', so byte index 2 is '\n'.
+    // After unicodePostprocess, the HEADER token's startI is codepoint 2,
+    // which previously was being used as a byte index into src — landing on '\n'.
+    _ = try l.parse("é\n# Header");
 }
 
 test "unicode handling" {
