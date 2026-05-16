@@ -300,6 +300,9 @@ struct ContentView: View {
     @State private var hover: Bool = false
     @State private var showingToast = false
     @State private var toastMessage = ""
+    #if DEBUG
+    @StateObject private var debugSettings = DebugSettings()
+    #endif
 
     @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
     @Environment(\.colorScheme) private var colorScheme
@@ -327,53 +330,65 @@ struct ContentView: View {
     var body: some View {
         let palette = Palette.forPreference(preference, colorScheme: colorScheme)
 
-        ZStack {
-            MarkdownEditor(
-                text: $notesManager.currentNote.content,
-                highlightRange: $notesManager.highlightRange,
-                palette: palette,
-                font: NSFont.systemFont(ofSize: fontSize)
-            )
-            FileList(visible: $notesManager.searchVisible, results: $notesManager.queriedNotes,
-                     onSelect: { (selected: SearchResult) in
-                         notesManager.currentNote = selected.note
-                         if selected.contentEndIndex > selected.contentStartIndex {
-                             notesManager.highlightRange = NSRange(
-                                 location: selected.contentStartIndex,
-                                 length: selected.contentEndIndex - selected.contentStartIndex
-                             )
-                         } else {
-                             notesManager.highlightRange = nil
-                         }
-                         withAnimation(.spring) {
-                             notesManager.searchVisible.toggle()
-                         }
-                     }, onChange: { (q: String) in
-                         search(q: q)
-                     }, closeList: { () in
-                         withAnimation(.spring) {
-                             notesManager.searchVisible.toggle()
-                         }
-                     })
-            HStack {
-                Spacer()
-                VStack {
+        VStack(spacing: 0) {
+            ZStack {
+                MarkdownEditor(
+                    text: $notesManager.currentNote.content,
+                    highlightRange: $notesManager.highlightRange,
+                    palette: palette,
+                    font: NSFont.systemFont(ofSize: fontSize),
+                    debugSettings: {
+                        #if DEBUG
+                        return debugSettings
+                        #else
+                        return nil
+                        #endif
+                    }()
+                )
+                FileList(visible: $notesManager.searchVisible, results: $notesManager.queriedNotes,
+                         onSelect: { (selected: SearchResult) in
+                             notesManager.currentNote = selected.note
+                             if selected.contentEndIndex > selected.contentStartIndex {
+                                 notesManager.highlightRange = NSRange(
+                                     location: selected.contentStartIndex,
+                                     length: selected.contentEndIndex - selected.contentStartIndex
+                                 )
+                             } else {
+                                 notesManager.highlightRange = nil
+                             }
+                             withAnimation(.spring) {
+                                 notesManager.searchVisible.toggle()
+                             }
+                         }, onChange: { (q: String) in
+                             search(q: q)
+                         }, closeList: { () in
+                             withAnimation(.spring) {
+                                 notesManager.searchVisible.toggle()
+                             }
+                         })
+                HStack {
                     Spacer()
-                    SearchButton(onClick: {
-                        withAnimation(.spring) {
-                            notesManager.searchVisible.toggle()
-                        }
-                    })
-                    .disabled(notesManager.searchVisible)
-                    .keyboardShortcut("s")
-                    CircularPlusButton(action: {
-                        notesManager.createNewNote()
-                        toast(msg: "Created new note")
-                    })
-                    .disabled(notesManager.searchVisible)
-                }
-            }.padding()
-            ToastView(showingToast: $showingToast, message: $toastMessage)
+                    VStack {
+                        Spacer()
+                        SearchButton(onClick: {
+                            withAnimation(.spring) {
+                                notesManager.searchVisible.toggle()
+                            }
+                        })
+                        .disabled(notesManager.searchVisible)
+                        .keyboardShortcut("s")
+                        CircularPlusButton(action: {
+                            notesManager.createNewNote()
+                            toast(msg: "Created new note")
+                        })
+                        .disabled(notesManager.searchVisible)
+                    }
+                }.padding()
+                ToastView(showingToast: $showingToast, message: $toastMessage)
+            }
+            #if DEBUG
+            DebugOverlay(settings: debugSettings)
+            #endif
         }
         .background(palette.background)
         .preferredColorScheme({

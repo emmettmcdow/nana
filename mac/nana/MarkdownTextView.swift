@@ -1,10 +1,48 @@
 import AppKit
+import Combine
 import Foundation
 
 class MarkdownTextView: NSTextView {
     private var isUpdatingFormatting = false
     private var currFormatting: MarkdownFormatting = .init(tokens: [])
     var onTextChange: ((String) -> Void)?
+
+    private var debugCancellables = Set<AnyCancellable>()
+
+    var debugSettings: DebugSettings? {
+        didSet {
+            debugCancellables.removeAll()
+            guard let ds = debugSettings else { return }
+
+            ds.$hideMarkdownChars
+                .dropFirst()
+                .sink { [weak self] newValue in
+                    guard let self, self.hideMarkdownChars != newValue else { return }
+                    self.hideMarkdownChars = newValue
+                    self.display()
+                }
+                .store(in: &debugCancellables)
+
+            ds.$showBoundingBoxes
+                .dropFirst()
+                .sink { [weak self] newValue in
+                    guard let self,
+                          let lm = self.layoutManager as? HidingLayoutManager,
+                          lm.debugTokenBorders != newValue else { return }
+                    lm.debugTokenBorders = newValue
+                    self.display()
+                }
+                .store(in: &debugCancellables)
+        }
+    }
+
+    var hideMarkdownChars: Bool = true {
+        didSet {
+            if oldValue != hideMarkdownChars {
+                updateHidingLayoutManager()
+            }
+        }
+    }
 
     // We must implment this, but we don't really care about it because we aren't using
     // nibs/storyboards. This along with awakeWithNib.
@@ -98,11 +136,27 @@ class MarkdownTextView: NSTextView {
 
     private func updateHidingLayoutManager() {
         guard let hidingLM = layoutManager as? HidingLayoutManager else { return }
-        let text = string
-        let selectedLine = lineNumber(at: selectedRange().location, in: text)
 
         let oldHidden = hidingLM.hiddenCharIndices
         let oldBullets = hidingLM.bulletCharIndices
+
+        guard hideMarkdownChars else {
+            hidingLM.hiddenCharIndices = []
+            hidingLM.bulletCharIndices = []
+            hidingLM.debugTokens = currFormatting.tokens.map { token in
+                let renderAbsStart = token.startI + token.renderStart
+                let renderAbsEnd = token.startI + token.renderEnd
+                let length = renderAbsEnd - renderAbsStart
+                return (range: NSRange(location: renderAbsStart, length: max(length, 0)),
+                        label: token.tType.rawValue)
+            }
+            hidingLM.applyChanges(oldHidden: oldHidden, oldBullets: oldBullets)
+            return
+        }
+
+        let text = string
+        let selectedLine = lineNumber(at: selectedRange().location, in: text)
+
         var hidden = Set<Int>()
         var bullets = Set<Int>()
         for token in currFormatting.tokens {
@@ -140,9 +194,6 @@ class MarkdownTextView: NSTextView {
                     label: token.tType.rawValue)
         }
         hidingLM.applyChanges(oldHidden: oldHidden, oldBullets: oldBullets)
-        if hidingLM.debugTokenBorders {
-            self.needsDisplay = true
-        }
     }
 
     /// Returns the 0-based line number for a character index.

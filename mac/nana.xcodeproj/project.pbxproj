@@ -135,6 +135,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = C0D13DAA2D6ED5B500D0032D /* Build configuration list for PBXNativeTarget "nana" */;
 			buildPhases = (
+				C0F000012E700000000001AB /* Inject Git SHA */,
 				C0D13D812D6ED5B200D0032D /* Sources */,
 				C0D13D822D6ED5B200D0032D /* Frameworks */,
 				C0D13D832D6ED5B200D0032D /* Resources */,
@@ -268,6 +269,28 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		C0F000012E700000000001AB /* Inject Git SHA */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Inject Git SHA";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "GIT_SHA=$(git -C \"$SRCROOT\" rev-parse --short HEAD 2>/dev/null || echo \"unknown\")\nOUTFILE=\"$SRCROOT/nana/BuildInfo.swift\"\nif ! grep -q \"\\\"$GIT_SHA\\\"\" \"$OUTFILE\" 2>/dev/null; then\n    sed -i '' \"s/static let gitSHA = \\\"[^\\\"]*\\\"/static let gitSHA = \\\"$GIT_SHA\\\"/\" \"$OUTFILE\"\nfi\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		C0D13D812D6ED5B200D0032D /* Sources */ = {
@@ -651,6 +674,7 @@
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
 				XROS_DEPLOYMENT_TARGET = 2.2;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 			};
 			name = Debug;
 		};
@@ -704,6 +728,7 @@
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
 				XROS_DEPLOYMENT_TARGET = 2.2;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 			};
 			name = Release;
 		};

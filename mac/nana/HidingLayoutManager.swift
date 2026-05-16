@@ -69,6 +69,8 @@ class HidingLayoutManager: NSLayoutManager {
 
         invalidateGlyphs(forCharacterRange: range, changeInLength: 0, actualCharacterRange: nil)
         invalidateLayout(forCharacterRange: range, actualCharacterRange: nil)
+        ensureGlyphs(forCharacterRange: range)
+        ensureLayout(forCharacterRange: range)
     }
 
     override func setGlyphs(

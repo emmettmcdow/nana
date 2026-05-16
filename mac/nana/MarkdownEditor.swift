@@ -9,6 +9,7 @@ struct MarkdownEditor: NSViewRepresentable {
     var palette: Palette
     var font: NSFont = .systemFont(ofSize: 14)
     var isEditable: Bool = true
+    var debugSettings: DebugSettings? = nil
 
     func makeNSView(context: Context) -> NSScrollView {
         // Create the text system components in the correct order
@@ -19,9 +20,7 @@ struct MarkdownEditor: NSViewRepresentable {
         let textStorage = NSTextStorage()
         // Controller - The "how". It takes the value held in NSTextStorage and converts it into
         // glyphs and arranges them into lines.
-        // let layoutManager = NSLayoutManager()
         let layoutManager = HidingLayoutManager()
-        layoutManager.debugTokenBorders = false
         layoutManager.debugHidePlain = true
         // View - The "where". This controls the bounding box of the text.
         let textContainer = NSTextContainer()
@@ -51,6 +50,7 @@ struct MarkdownEditor: NSViewRepresentable {
                 coordinator.parent.text = newText
             }
         }
+        textView.debugSettings = debugSettings
 
         // Wrap our textView in a NSScrollView.
         let scrollView = NSScrollView()
@@ -65,6 +65,12 @@ struct MarkdownEditor: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context _: Context) {
         guard let textView = scrollView.documentView as? MarkdownTextView else { return }
+
+        // Debug settings are observed directly by the text view via Combine;
+        // just ensure the reference is wired up (no-op after first call).
+        if textView.debugSettings !== debugSettings {
+            textView.debugSettings = debugSettings
+        }
 
         // Update text/font/palette if anything changed externally
         textView.update(new_string: text, new_font: font, new_palette: palette)
