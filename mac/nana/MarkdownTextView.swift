@@ -5,6 +5,7 @@ import Foundation
 class MarkdownTextView: NSTextView {
     private var isUpdatingFormatting = false
     private var currFormatting: MarkdownFormatting = .init(tokens: [])
+    private var baseFontSize: CGFloat = 14
     var onTextChange: ((String) -> Void)?
 
     private var debugCancellables = Set<AnyCancellable>()
@@ -95,6 +96,7 @@ class MarkdownTextView: NSTextView {
         insertionPointColor = new_palette.NStert()
         selectedTextAttributes = [NSAttributedString.Key.backgroundColor: new_palette.NStert()]
         font = new_font
+        baseFontSize = new_font.pointSize
     }
 
     override var acceptsFirstResponder: Bool {
@@ -320,21 +322,21 @@ class MarkdownTextView: NSTextView {
         var attributes: [NSAttributedString.Key: Any] = [:]
         var mod_range: NSRange = range
 
-        let codeFont = NSFont.monospacedSystemFont(ofSize: font!.pointSize, weight: .regular)
-        let listFont = NSFont.systemFont(ofSize: font!.pointSize)
-        let quoteFont = NSFont.systemFont(ofSize: font!.pointSize)
+        let codeFont = NSFont.monospacedSystemFont(ofSize: baseFontSize, weight: .regular)
+        let listFont = NSFont.systemFont(ofSize: baseFontSize)
+        let quoteFont = NSFont.systemFont(ofSize: baseFontSize)
 
         switch token.tType {
         case .HEADER:
             let fontSize: CGFloat
             switch token.degree {
-            case 1: fontSize = font!.pointSize * (24.0 / 14.0)
-            case 2: fontSize = font!.pointSize * (20.0 / 14.0)
-            case 3: fontSize = font!.pointSize * (17.0 / 14.0)
-            case 4: fontSize = font!.pointSize * (16.0 / 14.0)
-            case 5: fontSize = font!.pointSize * (15.0 / 14.0)
-            case 6: fontSize = font!.pointSize * (14.0 / 14.0)
-            default: fontSize = font!.pointSize
+            case 1: fontSize = baseFontSize * (24.0 / 14.0)
+            case 2: fontSize = baseFontSize * (20.0 / 14.0)
+            case 3: fontSize = baseFontSize * (17.0 / 14.0)
+            case 4: fontSize = baseFontSize * (16.0 / 14.0)
+            case 5: fontSize = baseFontSize * (15.0 / 14.0)
+            case 6: fontSize = baseFontSize * (14.0 / 14.0)
+            default: fontSize = baseFontSize
             }
 
             let headerFont = NSFont.boldSystemFont(ofSize: fontSize)
