@@ -13,74 +13,167 @@ import SwiftUI
         Thread.sleep(forTimeInterval: 5.0)
         return 0
     }
+
+    private func nana_deinit() -> Int32 {
+        return 0
+    }
 #else
     import NanaKit
 #endif
 
+private struct WindowConfigurator: NSViewRepresentable {
+    func makeNSView(context _: Context) -> NSView {
+        NSView()
+    }
+
+    func updateNSView(_ view: NSView, context _: Context) {
+        DispatchQueue.main.async {
+            guard let window = view.window else { return }
+            window.titlebarSeparatorStyle = .none
+            window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
+            window.toolbar?.showsBaselineSeparator = false
+        }
+    }
+}
+
+private struct TitlebarChip: NSViewRepresentable {
+    @ObservedObject var contextManager: ContextManager
+    let onSwitch: (WorkspaceContext) -> Void
+    let onAddNew: () -> Void
+
+    final class Coordinator {
+        var installed = false
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context _: Context) -> NSView {
+        NSView()
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        guard !context.coordinator.installed else { return }
+        DispatchQueue.main.async {
+            guard !context.coordinator.installed,
+                  let window = view.window else { return }
+
+            let chip = ContextChip(
+                contextManager: contextManager,
+                onSwitch: onSwitch,
+                onAddNew: onAddNew
+            )
+            let hosting = NSHostingView(rootView: chip)
+            hosting.translatesAutoresizingMaskIntoConstraints = true
+            hosting.autoresizingMask = [.height]
+            let fitting = hosting.fittingSize
+            hosting.frame = NSRect(x: 0, y: 0,
+                                   width: max(fitting.width, 80),
+                                   height: 28)
+
+            let accessory = NSTitlebarAccessoryViewController()
+            accessory.view = hosting
+            accessory.layoutAttribute = .leading
+
+            window.addTitlebarAccessoryViewController(accessory)
+            context.coordinator.installed = true
+        }
+    }
+}
+
 @main
 struct nanaApp: App {
     @State private var startupRun: Bool = false
+    @State private var switching: Bool = false
+    @State private var needsInitialContext: Bool = false
     @State private var notesManager: NotesManager?
     @State private var showingToast = false
     @State private var toastMessage = ""
     @AppStorage("initializationFailed") private var initializationFailed = false
+    @StateObject private var contextManager = ContextManager()
 
     @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
     @AppStorage("fontSize") private var fontSize: Double = 14
     @Environment(\.colorScheme) private var colorScheme
 
-    #if DEBUG
-    @State private var showingDirectoryPicker = true
-    @State private var selectedBasedir: URL?
-    #endif
-
     private nonisolated func onStartup() async {
         guard !(await startupRun) else { return }
 
-        #if DEBUG
-        guard let basedirURL = await selectedBasedir else {
-            print("No basedir selected in debug mode")
-            return
+        let ctx: WorkspaceContext? = await MainActor.run {
+            if let active = contextManager.activeContext {
+                return active
+            }
+            return contextManager.bootstrapICloudIfNeeded()
         }
-        guard basedirURL.startAccessingSecurityScopedResource() else {
-            print("DEBUG: Failed to access security scoped resource")
-            return
-        }
-        let basedir = basedirURL.path()
-        print("DEBUG: Using basedir: \(basedir)")
-        #else
-        guard let containerIdentifier = Bundle.main.object(forInfoDictionaryKey:
-            "CloudKitContainerIdentifier") as? String
-        else {
-            print("Could not get container identifier from Info.plist")
-            return
-        }
-        let filemanager = FileManager.default
-        guard let url = filemanager.url(forUbiquityContainerIdentifier: containerIdentifier) else {
-            print("Could not get url")
-            return
-        }
-        do {
-            try filemanager.startDownloadingUbiquitousItem(at: url)
-        } catch {
-            print("Could not dl url")
-            return
-        }
-        let basedir = url.path()
-        #endif
 
-        let err = nana_init(basedir)
-        print("DEBUG: nana_init returned: \(err)")
-        if err != 0 {
+        guard let ctx else {
+            await MainActor.run { needsInitialContext = true }
+            return
+        }
+
+        await initWithContext(ctx)
+    }
+
+    private nonisolated func initWithContext(_ ctx: WorkspaceContext) async {
+        let url: URL? = await MainActor.run { contextManager.startAccessing(ctx) }
+        guard let url else {
             await MainActor.run {
-                self.initializationFailed = true
-                self.startupRun = true
+                initializationFailed = true
+                startupRun = true
+                switching = false
             }
             return
         }
+
+        let basedir = url.path()
+        print("DEBUG: nana_init for context '\(ctx.displayName)' at \(basedir)")
+        let err = nana_init(basedir)
+        print("DEBUG: nana_init returned: \(err)")
+
         await MainActor.run {
-            self.notesManager = NotesManager()
-            self.startupRun = true
+            if err != 0 {
+                initializationFailed = true
+                startupRun = true
+                switching = false
+                return
+            }
+            notesManager = NotesManager()
+            startupRun = true
+            switching = false
+        }
+    }
+
+    private func switchContext(to ctx: WorkspaceContext) {
+        guard ctx.id != contextManager.activeID || notesManager == nil else { return }
+        switching = true
+        notesManager?.flushPendingSave()
+        notesManager = nil
+        contextManager.stopAccessing()
+        _ = nana_deinit()
+        contextManager.setActive(ctx.id)
+        startupRun = false
+
+        Task.detached {
+            await initWithContext(ctx)
+        }
+    }
+
+    private func presentAddContext() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a directory for the new context"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let entry = contextManager.addUserContext(url: url) else { return }
+
+        if notesManager == nil {
+            needsInitialContext = false
+            contextManager.setActive(entry.id)
+            switching = true
+            Task.detached { await initWithContext(entry) }
+        } else {
+            switchContext(to: entry)
         }
     }
 
@@ -101,32 +194,20 @@ struct nanaApp: App {
 
         WindowGroup {
             ZStack {
-                #if DEBUG
-                if showingDirectoryPicker {
+                if needsInitialContext {
                     VStack(spacing: 20) {
-                        Text("Debug Mode")
+                        Text("Welcome to nana")
                             .font(.title)
-                        Text("Select a base directory for notes")
+                        Text("Pick a directory to use as your first context")
                             .foregroundColor(.secondary)
                         Button("Choose Directory...") {
-                            let panel = NSOpenPanel()
-                            panel.canChooseFiles = false
-                            panel.canChooseDirectories = true
-                            panel.allowsMultipleSelection = false
-                            panel.message = "Select the base directory for your notes"
-                            if panel.runModal() == .OK {
-                                selectedBasedir = panel.url
-                                showingDirectoryPicker = false
-                                Task.detached {
-                                    await onStartup()
-                                }
-                            }
+                            presentAddContext()
                         }
                         .buttonStyle(.borderedProminent)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(palette.background)
-                } else if !startupRun {
+                } else if !startupRun || switching {
                     HStack {
                         VStack {
                             Spacer()
@@ -134,38 +215,29 @@ struct nanaApp: App {
                         }
                         Spacer()
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(palette.background)
-                } else if let notesManager = notesManager {
+                } else if let notesManager {
                     ContentView()
                         .environmentObject(notesManager)
                         .disabled(initializationFailed)
                 }
-                #else
-                if !startupRun {
-                    HStack {
-                        VStack {
-                            Spacer()
-                            LoadingBanana()
-                        }
-                        Spacer()
-                    }
-                    .background(palette.background)
-                } else if let notesManager = notesManager {
-                    ContentView()
-                        .environmentObject(notesManager)
-                        .disabled(initializationFailed)
-                }
-                #endif
+
                 ToastView(showingToast: $showingToast, message: $toastMessage)
             }
+            .background(palette.background)
             .disabled(initializationFailed)
-            #if !DEBUG
+            .background(WindowConfigurator())
+            .background(TitlebarChip(
+                contextManager: contextManager,
+                onSwitch: { ctx in switchContext(to: ctx) },
+                onAddNew: { presentAddContext() }
+            ))
             .onAppear {
                 Task.detached {
                     await onStartup()
                 }
             }
-            #endif
             .alert("Initialization Error",
                    isPresented: $initializationFailed) {
                 Button("OK") {}

@@ -58,6 +58,7 @@ struct MarkdownEditor: NSViewRepresentable {
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = false
+        scrollView.borderType = .noBorder
         scrollView.contentView.postsBoundsChangedNotifications = true  // No horizontal scrolling
 
         return scrollView

@@ -182,6 +182,13 @@ class NotesManager: ObservableObject {
         modified = currentNote.writeAll()
     }
 
+    /// Cancels the debounce subscription and flushes any in-flight edits synchronously.
+    /// Call before tearing down the runtime to avoid racing nana_deinit.
+    func flushPendingSave() {
+        cancellables.removeAll()
+        saveCurrentNote()
+    }
+
     func createNewNote() {
         var pathBuf = [CChar](repeating: 0, count: Int(PATH_MAX))
         let pathLen = pathBuf.withUnsafeMutableBufferPointer { buffer in
