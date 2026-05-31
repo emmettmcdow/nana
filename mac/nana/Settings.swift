@@ -117,6 +117,7 @@ struct GeneralSettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("fontSize") private var fontSize: Double = 14
     @AppStorage("initializationFailed") private var initializationFailed = false
+    @EnvironmentObject var contextManager: ContextManager
 
     @State var showFileImporter = false
     @State var files: [ImportItem] = []
@@ -124,6 +125,16 @@ struct GeneralSettingsView: View {
 
     func onProgress(files: [ImportItem]) {
         self.files = files
+    }
+
+    private func presentAddWorkspace() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a directory for the new workspace"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        _ = contextManager.addUserContext(url: url)
     }
 
     var body: some View {
@@ -193,6 +204,44 @@ struct GeneralSettingsView: View {
             }
             Tab("Data", systemImage: "document") {
                 Form {
+                    Section(header: Text("Workspaces")) {
+                        ForEach(contextManager.contexts) { ctx in
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text(ctx.displayName)
+                                    if ctx.id == contextManager.activeID {
+                                        Text("Active")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    } else if case .iCloudContainer = ctx.source {
+                                        Text("Default (iCloud)")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                Spacer()
+                                if contextManager.canRemove(ctx) {
+                                    Button(role: .destructive) {
+                                        contextManager.removeContext(ctx.id)
+                                    } label: {
+                                        Image(systemName: "trash")
+                                    }
+                                    .buttonStyle(.borderless)
+                                }
+                            }
+                        }
+                        HStack {
+                            Button {
+                                presentAddWorkspace()
+                            } label: {
+                                Label("Add Workspace...", systemImage: "plus")
+                            }
+                            Spacer()
+                            Text("Active and default workspaces can't be removed")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     Section(header: Text("Data Mangement")) {
                         HStack {
                             Button {
@@ -246,6 +295,7 @@ struct GeneralSettingsView: View {
         files: [],
         action: ""
     )
+    .environmentObject(ContextManager())
 }
 
 #Preview("Settings Import 50%") {
@@ -259,6 +309,7 @@ struct GeneralSettingsView: View {
         ],
         action: "import"
     )
+    .environmentObject(ContextManager())
 }
 
 #Preview("Settings Import Complete") {
@@ -271,4 +322,5 @@ struct GeneralSettingsView: View {
         ],
         action: "doctor"
     )
+    .environmentObject(ContextManager())
 }

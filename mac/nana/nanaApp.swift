@@ -17,6 +17,10 @@ import SwiftUI
     private func nana_deinit() -> Int32 {
         return 0
     }
+
+    private func nana_doctor() -> Int32 {
+        return 0
+    }
 #else
     import NanaKit
 #endif
@@ -129,6 +133,17 @@ struct nanaApp: App {
         print("DEBUG: nana_init for context '\(ctx.displayName)' at \(basedir)")
         let err = nana_init(basedir)
         print("DEBUG: nana_init returned: \(err)")
+
+        if err == 0 {
+            // If this workspace has never been indexed (no nana metadata present), run doctor
+            // to build embeddings for the existing markdown files in it.
+            let metadata = url.appendingPathComponent(".dve_ids")
+            if !FileManager.default.fileExists(atPath: metadata.path) {
+                print("DEBUG: no embeddings found at \(basedir), running doctor")
+                let dErr = nana_doctor()
+                print("DEBUG: nana_doctor returned: \(dErr)")
+            }
+        }
 
         await MainActor.run {
             if err != 0 {
@@ -273,6 +288,7 @@ struct nanaApp: App {
         #if os(macOS)
             Settings {
                 GeneralSettingsView()
+                    .environmentObject(contextManager)
             }
             .defaultSize(width: 600, height: 500)
         #endif

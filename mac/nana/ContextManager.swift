@@ -78,21 +78,48 @@ class ContextManager: ObservableObject {
     }
 
     /// Registers a new user-picked directory as a context, persisting a security-scoped bookmark.
+    /// Must be called with a URL freshly returned from NSOpenPanel — the panel's implicit
+    /// access grant is what allows us to capture a usable security scope into the bookmark.
     func addUserContext(url: URL) -> WorkspaceContext? {
-        guard let bookmarkData = try? url.bookmarkData(
-            options: .withSecurityScope,
-            includingResourceValuesForKeys: nil,
-            relativeTo: nil
-        ) else {
-            print("ContextManager: failed to create bookmark for \(url.path)")
+        // Activate the URL's security scope before creating the bookmark. Without this the
+        // bookmark may capture only a read-permitted scope, and later writes get sandbox-denied.
+        let didStart = url.startAccessingSecurityScopedResource()
+        defer { if didStart { url.stopAccessingSecurityScopedResource() } }
+
+        let bookmarkData: Data
+        do {
+            bookmarkData = try url.bookmarkData(
+                options: .withSecurityScope,
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+        } catch {
+            print("ContextManager: failed to create bookmark for \(url.path): \(error)")
             return nil
         }
+
         let entry = WorkspaceContext(id: UUID(),
                                      displayName: url.lastPathComponent,
                                      source: .userBookmark(bookmarkData: bookmarkData))
         contexts.append(entry)
         save()
         return entry
+    }
+
+    /// Returns true if the given context can be removed by the user.
+    /// The iCloud default context and the currently active context are protected.
+    func canRemove(_ ctx: WorkspaceContext) -> Bool {
+        if case .iCloudContainer = ctx.source { return false }
+        if ctx.id == activeID { return false }
+        return true
+    }
+
+    /// Removes the given context. No-op if the context is protected (iCloud default or active).
+    func removeContext(_ id: UUID) {
+        guard let idx = contexts.firstIndex(where: { $0.id == id }) else { return }
+        guard canRemove(contexts[idx]) else { return }
+        contexts.remove(at: idx)
+        save()
     }
 
     func setActive(_ id: UUID) {
@@ -118,18 +145,34 @@ class ContextManager: ObservableObject {
 
         case let .userBookmark(data):
             var isStale = false
-            guard let url = try? URL(
-                resolvingBookmarkData: data,
-                options: .withSecurityScope,
-                relativeTo: nil,
-                bookmarkDataIsStale: &isStale
-            ) else {
-                print("ContextManager: bookmark for \(ctx.displayName) failed to resolve")
+            let url: URL
+            do {
+                url = try URL(
+                    resolvingBookmarkData: data,
+                    options: .withSecurityScope,
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &isStale
+                )
+            } catch {
+                print("ContextManager: bookmark for \(ctx.displayName) failed to resolve: \(error)")
                 return nil
             }
             guard url.startAccessingSecurityScopedResource() else {
                 print("ContextManager: could not start security-scoped access for \(ctx.displayName)")
                 return nil
+            }
+            if isStale {
+                if let fresh = try? url.bookmarkData(
+                    options: .withSecurityScope,
+                    includingResourceValuesForKeys: nil,
+                    relativeTo: nil
+                ), let idx = contexts.firstIndex(where: { $0.id == ctx.id }) {
+                    contexts[idx].source = .userBookmark(bookmarkData: fresh)
+                    save()
+                    print("ContextManager: refreshed stale bookmark for \(ctx.displayName)")
+                } else {
+                    print("ContextManager: bookmark for \(ctx.displayName) is stale and could not be refreshed")
+                }
             }
             accessedURL = url
             accessedKind = ctx.source
