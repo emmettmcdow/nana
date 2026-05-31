@@ -488,8 +488,8 @@ pub const Runtime = struct {
         return self.lastParsedMD.?.items;
     }
 
-    /// Return the title of a note. The title is simply the first line of a note, with special
-    /// characters stripped.
+    /// Return the title of a note. The title is the first non-empty, non-metadata line of
+    /// a note, with special characters stripped.
     pub fn title(self: *Runtime, path: []const u8, buf: []u8) ![]const u8 {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:title" });
         defer zone.end();
@@ -502,13 +502,15 @@ pub const Runtime = struct {
 
         assert(buf.len == TITLE_BUF_LEN);
 
-        var read_buf: [TITLE_BUF_LEN]u8 = undefined;
+        var read_buf: [4096]u8 = undefined;
         const n = try f.read(&read_buf);
         const file_bytes = read_buf[0..n];
 
+        const start = skipMetadata(file_bytes);
+
         var pos: usize = 0;
         var skipping = true;
-        for (file_bytes) |c| {
+        for (file_bytes[start..]) |c| {
             if (pos >= TITLE_LEN) break;
             switch (c) {
                 '\n' => break,
@@ -544,6 +546,53 @@ pub const CSearchDetail = extern struct {
     content: [*]u8,
     highlights: [N_SEARCH_HIGHLIGHTS * 2]c_uint,
 };
+
+/// If `bytes` begins with a recognized metadata block, return the index just past it
+/// (with any trailing whitespace skipped). Recognized blocks:
+///   - HTML comment header:  `<!-- ... -->`  (e.g. Nikola)
+///   - YAML frontmatter:     `---` newline ... newline `---`  (Jekyll/Hugo/Obsidian)
+/// If no metadata block is found, returns 0 so the caller starts at the beginning of the file.
+fn skipMetadata(bytes: []const u8) usize {
+    var i: usize = 0;
+    while (i < bytes.len and std.ascii.isWhitespace(bytes[i])) : (i += 1) {}
+
+    if (i + 4 <= bytes.len and std.mem.eql(u8, bytes[i .. i + 4], "<!--")) {
+        var j = i + 4;
+        while (j + 3 <= bytes.len) : (j += 1) {
+            if (std.mem.eql(u8, bytes[j .. j + 3], "-->")) {
+                var k = j + 3;
+                while (k < bytes.len and std.ascii.isWhitespace(bytes[k])) : (k += 1) {}
+                return k;
+            }
+        }
+        return 0;
+    }
+
+    if (i + 4 <= bytes.len and
+        std.mem.eql(u8, bytes[i .. i + 3], "---") and
+        (bytes[i + 3] == '\n' or bytes[i + 3] == '\r'))
+    {
+        var j = i + 3;
+        while (j < bytes.len and bytes[j] != '\n') : (j += 1) {}
+        if (j < bytes.len) j += 1;
+
+        while (j < bytes.len) {
+            const line_start = j;
+            while (j < bytes.len and bytes[j] != '\n') : (j += 1) {}
+            var line_end = j;
+            while (line_end > line_start and bytes[line_end - 1] == '\r') : (line_end -= 1) {}
+            if (line_end - line_start == 3 and std.mem.eql(u8, bytes[line_start..line_end], "---")) {
+                var k = if (j < bytes.len) j + 1 else j;
+                while (k < bytes.len and std.ascii.isWhitespace(bytes[k])) : (k += 1) {}
+                return k;
+            }
+            if (j < bytes.len) j += 1;
+        }
+        return 0;
+    }
+
+    return 0;
+}
 
 const IGNORED_FILES = [_][]const u8{".DS_Store"};
 fn shouldIgnoreFile(path: []const u8) bool {
@@ -1413,6 +1462,40 @@ test "title" {
             "*************************************************************...",
             try rt.title(path, buf[0..TITLE_BUF_LEN]),
         );
+    }
+    { // Strip HTML-comment metadata block (Nikola style)
+        const content =
+            \\<!--
+            \\.. title: Malone's Maxim
+            \\.. slug: malones-maxim
+            \\.. date: 2024-07-03 19:22:54 UTC-07:00
+            \\.. tags: Communication,Speaking,Rhetoric,Engineering
+            \\.. category:
+            \\.. link:
+            \\.. description:
+            \\.. type: text
+            \\.. author: Emmett McDow
+            \\-->
+            \\# Malone's Maxim
+            \\foo
+            \\bar
+            \\baz
+        ;
+        try rt.writeAll(path, content);
+        try expectEqlStrings("Malone's Maxim", try rt.title(path, buf[0..TITLE_BUF_LEN]));
+    }
+    { // Strip YAML frontmatter (Jekyll/Hugo/Obsidian style)
+        const content =
+            \\---
+            \\title: Some Yaml Title
+            \\date: 2024-07-03
+            \\tags: [foo, bar]
+            \\---
+            \\# Real Heading
+            \\body content
+        ;
+        try rt.writeAll(path, content);
+        try expectEqlStrings("Real Heading", try rt.title(path, buf[0..TITLE_BUF_LEN]));
     }
 }
 
