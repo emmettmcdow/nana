@@ -226,6 +226,19 @@ pub fn build(b: *std.Build) !void {
         test_util.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
     }
 
+    const test_render = b.step("test-render", "run the pure-logic render tests (src/render)");
+    {
+        const t = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/render/test_root.zig"),
+                .target = x86_target,
+                .optimize = optimize,
+            }),
+            .filters = if (test_filter != null) filters else &.{},
+        });
+        test_render.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
+    }
+
     const test_perf = b.step("perf", "Run performance benchmark tests");
     {
         const t = b.addTest(.{
@@ -269,6 +282,7 @@ pub fn build(b: *std.Build) !void {
         .{ "diff.zig", test_diff },
         .{ "markdown.zig", test_markdown },
         .{ "util.zig", test_util },
+        .{ "render", test_render },
     };
     inline for (file_tests) |entry| {
         const name = entry[0];
@@ -335,6 +349,7 @@ const Baselib = struct {
             .optimize = opts.optimize,
         };
         addObjCFrameworks(dep_opts);
+        addRenderFrameworks(dep_opts);
         addTracy(dep_opts);
 
         return .{
@@ -356,6 +371,14 @@ fn addObjCFrameworks(opts: DepOptions) void {
     opts.dest.root_module.linkFramework("NaturalLanguage", .{});
     opts.dest.root_module.linkFramework("CoreML", .{});
     opts.dest.root_module.linkFramework("Foundation", .{});
+}
+
+/// Link the frameworks used by the render scaffold (src/render/canvas.zig).
+/// These are plain C APIs — no Objective-C runtime involved.
+fn addRenderFrameworks(opts: DepOptions) void {
+    opts.dest.root_module.linkFramework("CoreFoundation", .{});
+    opts.dest.root_module.linkFramework("CoreGraphics", .{});
+    opts.dest.root_module.linkFramework("CoreText", .{});
 }
 
 fn addTracy(opts: DepOptions) void {

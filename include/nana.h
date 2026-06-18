@@ -1,6 +1,7 @@
 // nana.h
 #include <stdbool.h>
-#import <Foundation/Foundation.h> 
+#import <Foundation/Foundation.h>
+#import <CoreGraphics/CoreGraphics.h>
 
 typedef NS_ENUM(NSInteger, NanaError) { 
   Success = 0,
@@ -45,3 +46,35 @@ const char * nana_title(const char *, char *);
 int nana_doctor(void);
 
 const char * nana_parse_markdown(const char *);
+
+// ── Render scaffold ───────────────────────────────────────────────────────────
+// A raylib-level immediate-mode surface. The Swift NanaCanvasView calls
+// nana_render_frame once per display refresh with a CGContext to draw into and a
+// snapshot of input for that frame.
+
+typedef struct {
+    float r, g, b, a;
+} NanaColor;
+
+typedef struct {
+    double x, y, w, h;
+} NanaRect;
+
+// Modifier bit masks for NanaInput.modifiers.
+#define NANA_MOD_SHIFT   (1u << 0)
+#define NANA_MOD_CONTROL (1u << 1)
+#define NANA_MOD_OPTION  (1u << 2)
+#define NANA_MOD_COMMAND (1u << 3)
+
+typedef struct {
+    double mouse_x;          // top-left origin, points
+    double mouse_y;
+    bool mouse_down;
+    unsigned int modifiers;  // NANA_MOD_* bitmask
+    char text_utf8[64];      // UTF-8 text typed this frame (NUL-terminated)
+    unsigned int text_len;   // byte length of text_utf8
+} NanaInput;
+
+void nana_render_init(void);
+void nana_render_frame(CGContextRef ctx, double width, double height, const NanaInput *input);
+void nana_render_deinit(void);

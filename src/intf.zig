@@ -1,3 +1,8 @@
+// Pull the render scaffold's C ABI (nana_render_*) into libnana.a.
+comptime {
+    _ = @import("render/intf.zig");
+}
+
 var rt: nana.Runtime = undefined;
 var init: bool = false;
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};

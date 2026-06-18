@@ -339,19 +339,9 @@ struct ContentView: View {
 
         VStack(spacing: 0) {
             ZStack {
-                MarkdownEditor(
-                    text: $notesManager.currentNote.content,
-                    highlightRange: $notesManager.highlightRange,
-                    palette: palette,
-                    font: NSFont.systemFont(ofSize: fontSize),
-                    debugSettings: {
-                        #if DEBUG
-                        return debugSettings
-                        #else
-                        return nil
-                        #endif
-                    }()
-                )
+                // Main editing surface: the Zig render scaffold (replaces MarkdownEditor).
+                // To fall back to the old SwiftUI/NSTextView editor, revert this one line.
+                NanaCanvas()
                 FileList(visible: $notesManager.searchVisible, results: $notesManager.queriedNotes,
                          onSelect: { (selected: SearchResult) in
                              notesManager.currentNote = selected.note
