@@ -8,7 +8,9 @@
 const canvas_mod = @import("canvas.zig");
 const input_mod = @import("input.zig");
 const app = @import("app.zig");
+const std = @import("std");
 
+const AppState = app.AppState;
 const CGContextRef = canvas_mod.CGContextRef;
 
 /// Mirror of the C `NanaInput` struct declared in include/nana.h. Field order and
@@ -22,8 +24,13 @@ const NanaInput = extern struct {
     text_len: c_uint,
 };
 
+var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+var arena = std.heap.ArenaAllocator.init(gpa.allocator());
+const GAP_BUF_SIZE = 4000; // 4Kb
+var state: ?AppState = null;
+
 export fn nana_render_init() void {
-    // No persistent render state yet. (Buffer/layout caches will live here later.)
+    state = AppState{ .gap_buf = arena.allocator().alloc(u8, GAP_BUF_SIZE) catch unreachable };
 }
 
 export fn nana_render_deinit() void {}
@@ -44,5 +51,5 @@ export fn nana_render_frame(ctx: CGContextRef, width: f64, height: f64, in: *con
         .text = in.text_utf8[0..text_len],
     };
 
-    app.frame(&canvas, input);
+    app.frame(&canvas, input, &(state.?));
 }

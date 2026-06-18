@@ -6,4 +6,5 @@
 comptime {
     _ = @import("utf.zig");
     _ = @import("geom.zig");
+    _ = @import("app.zig");
 }
