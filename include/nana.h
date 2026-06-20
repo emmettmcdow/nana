@@ -73,6 +73,7 @@ typedef struct {
     unsigned int modifiers;  // NANA_MOD_* bitmask
     char text_utf8[64];      // UTF-8 text typed this frame (NUL-terminated)
     unsigned int text_len;   // byte length of text_utf8
+    unsigned int backspaces; // count of Backspace presses this frame
 } NanaInput;
 
 void nana_render_init(void);

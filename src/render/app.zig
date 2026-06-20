@@ -12,12 +12,13 @@
 
 const geom = @import("geom.zig");
 const Canvas = @import("canvas.zig").Canvas;
-const Input = @import("input.zig").Input;
+const input = @import("input.zig");
 const std = @import("std");
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 
 const Color = geom.Color;
+const Input = input.Input;
 
 pub const AppState = struct {
     gap_buf: []u8,
@@ -46,10 +47,15 @@ pub fn frame(canvas: *Canvas, in: Input, state: *AppState) void {
 }
 
 fn handleInput(in: Input, state: *AppState) void {
-    if (in.text.len > 0) {
+    const backspaces = @min(state.cursor_i, in.backspaces);
+    state.cursor_i -= backspaces;
+    state.buf_len -= backspaces;
+
+    // Insert any text typed this frame at the cursor.
+    if (in.text.len > 0 and state.cursor_i + in.text.len <= state.gap_buf.len) {
         @memcpy(state.gap_buf[state.cursor_i .. state.cursor_i + in.text.len], in.text);
         state.cursor_i += in.text.len;
-        state.buf_len += 1;
+        state.buf_len += in.text.len;
     }
 }
 
@@ -66,4 +72,27 @@ test "handleInput hello" {
     try expectEqual(5, state.buf_len);
     try expectEqual(5, state.cursor_i);
     try expectEqualStrings("hello", state.gap_buf[0..state.buf_len]);
+}
+
+test "handleInput backspace deletes the char before the cursor" {
+    var buf: [20]u8 = undefined;
+    var state = AppState{ .gap_buf = &buf };
+
+    handleInput(.{ .text = "h" }, &state);
+    handleInput(.{ .text = "i" }, &state);
+    handleInput(.{ .backspaces = 1 }, &state);
+
+    try expectEqual(1, state.buf_len);
+    try expectEqual(1, state.cursor_i);
+    try expectEqualStrings("h", state.gap_buf[0..state.buf_len]);
+}
+
+test "handleInput backspace on empty buffer is a no-op" {
+    var buf: [20]u8 = undefined;
+    var state = AppState{ .gap_buf = &buf };
+
+    handleInput(.{ .backspaces = 3 }, &state);
+
+    try expectEqual(0, state.buf_len);
+    try expectEqual(0, state.cursor_i);
 }

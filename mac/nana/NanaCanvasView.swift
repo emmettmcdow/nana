@@ -29,6 +29,7 @@ import AppKit
         private var mouseIsDown = false
         private var modifiers: UInt32 = 0
         private var pendingText = ""
+        private var backspaceCount: UInt32 = 0
 
         override init(frame frameRect: NSRect) {
             super.init(frame: frameRect)
@@ -83,7 +84,10 @@ import AppKit
                 raw[bytes.count] = 0
             }
             input.text_len = UInt32(bytes.count)
-            pendingText = "" // consume the frame's typed text
+            pendingText = ""  // consume the frame's typed text
+
+            input.backspaces = backspaceCount
+            backspaceCount = 0  // consume the frame's backspaces
 
             nana_render_frame(ctx, Double(bounds.width), Double(bounds.height), &input)
         }
@@ -93,12 +97,13 @@ import AppKit
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
             for ta in trackingAreas { removeTrackingArea(ta) }
-            addTrackingArea(NSTrackingArea(
-                rect: bounds,
-                options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect],
-                owner: self,
-                userInfo: nil
-            ))
+            addTrackingArea(
+                NSTrackingArea(
+                    rect: bounds,
+                    options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect],
+                    owner: self,
+                    userInfo: nil
+                ))
         }
 
         override func mouseMoved(with event: NSEvent) {
@@ -120,6 +125,13 @@ import AppKit
         }
 
         override func keyDown(with event: NSEvent) {
+            // The Backspace key (labeled "delete" on Mac keyboards) is keyCode 51. It's a
+            // key press, not a modifier — count it instead of appending its control
+            // character to the text buffer.
+            if event.keyCode == 51 {
+                backspaceCount += 1
+                return
+            }
             if let chars = event.characters, !chars.isEmpty {
                 pendingText += chars
             }

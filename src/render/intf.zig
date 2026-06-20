@@ -22,6 +22,7 @@ const NanaInput = extern struct {
     modifiers: c_uint,
     text_utf8: [64]u8,
     text_len: c_uint,
+    backspaces: c_uint,
 };
 
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -49,6 +50,7 @@ export fn nana_render_frame(ctx: CGContextRef, width: f64, height: f64, in: *con
         .mouse_down = in.mouse_down,
         .modifiers = @intCast(in.modifiers),
         .text = in.text_utf8[0..text_len],
+        .backspaces = @intCast(in.backspaces),
     };
 
     app.frame(&canvas, input, &(state.?));
