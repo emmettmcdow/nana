@@ -30,8 +30,8 @@ const MAX_BUF_LEN: usize = std.math.maxInt(u32);
 const BASE_SCRATCH_SIZE = 1024 * 1024; // 1MB
 var scratch: ?[]u8 = null;
 
-// const BASE_LINE_SCRATCH_SIZE = 1024; // 1MB
-// var line_scratch: ?[][]u8 = null;
+const BASE_LINE_SCRATCH_SIZE = 1024; // 1KB
+var line_scratch: ?[][]const u8 = null;
 
 pub const AppState = struct {
     gap_buf: []u8,
@@ -48,35 +48,35 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
     // Background.
     canvas.clear(Color.rgb(0.12, 0.12, 0.14));
 
-    // A little panel.
-    canvas.fillRect(.{ .x = 40, .y = 40, .w = 360, .h = 96 }, Color.rgb(0.20, 0.20, 0.24));
+    { // scratch setup
+        if (scratch == null) {
+            scratch = try allocator.alloc(u8, BASE_SCRATCH_SIZE);
+        }
+        if (scratch.?.len <= state.text_len) {
+            defer allocator.free(scratch.?);
+            scratch = try allocator.alloc(u8, scratch.?.len << 1);
+        }
+        if (line_scratch == null) {
+            line_scratch = try allocator.alloc([]const u8, BASE_LINE_SCRATCH_SIZE);
+        }
+        if (line_scratch.?.len <= state.text_len) {
+            defer allocator.free(line_scratch.?);
+            line_scratch = try allocator.alloc([]const u8, line_scratch.?.len << 1);
+        }
+    }
+    // break full text into lines
 
-    // Headline + hint.
-    _ = canvas.drawText("hello, nana", 56, 60, 28, Color.white);
-    _ = canvas.drawText("edit src/render/app.zig to iterate", 56, 104, 13, Color.rgb(0.62, 0.62, 0.72));
+    const full_text = condenseGapBuf(scratch.?, state.*);
+    const lines = splitLines(full_text, line_scratch.?);
 
     try handleInput(allocator, in, state);
-    if (scratch == null) {
-        scratch = try allocator.alloc(u8, BASE_SCRATCH_SIZE);
-    }
-    if (scratch.?.len <= state.text_len) {
-        defer allocator.free(scratch.?);
-        scratch = try allocator.alloc(u8, scratch.?.len << 1);
-    }
     {
         const font_size: f64 = 20;
         const text_x: f64 = 56;
         const line_h = canvas.measureText("M", font_size).h;
-        const condensed = condenseGapBuf(scratch.?, state.*);
-
-        var line_splitter = std.mem.SplitIterator(u8, .any){
-            .index = 0,
-            .buffer = condensed,
-            .delimiter = "\n",
-        };
         var curr_i: usize = 0;
         var text_y: f64 = 168;
-        while (line_splitter.next()) |line| {
+        for (lines) |line| {
             _ = canvas.drawText(line, text_x, text_y, font_size, Color.rgb(0.95, 0.82, 0.40));
             if (state.cursor_i >= curr_i and state.cursor_i <= curr_i + line.len) {
                 const caret_offset = state.cursor_i - curr_i;
@@ -108,31 +108,52 @@ fn handleInput(allocator: std.mem.Allocator, in: Input, state: *AppState) !void 
             @as(i64, @intCast(state.text_len)) - cursor,
         );
 
-        if (delta > 0) {
-            // delta = 1, abc def => abcd ef
-            const n: usize = @intCast(delta);
-            // dest (cursor) precedes src (gap_end), so copy front-to-back.
-            std.mem.copyForwards(
-                u8,
-                state.gap_buf[state.cursor_i .. state.cursor_i + n],
-                state.gap_buf[state.gap_end .. state.gap_end + n],
-            );
-            state.cursor_i += n;
-            state.gap_end += n;
-        } else if (delta < 0) {
-            // delta = -1, abc def => ab cdef
-            const n: usize = @intCast(-delta);
-            // dest (gap_end) follows src (cursor), so copy back-to-front.
-            std.mem.copyBackwards(
-                u8,
-                state.gap_buf[state.gap_end - n .. state.gap_end],
-                state.gap_buf[state.cursor_i - n .. state.cursor_i],
-            );
-            state.cursor_i -= n;
-            state.gap_end -= n;
-        }
+        const target: i64 = @as(i64, @intCast(state.cursor_i)) + delta;
+        moveCursorTo(state, @intCast(target));
     } else if (in.ups != 0 or in.downs != 0) {
-        // TODO
+        const full_text = condenseGapBuf(scratch.?, state.*);
+
+        var lineno: usize = 0;
+        var cursor_line: usize = 0;
+        var cursor_col: usize = 0;
+        var curr_i: usize = 0;
+        {
+            var line_splitter = std.mem.SplitIterator(u8, .any){
+                .index = 0,
+                .buffer = full_text,
+                .delimiter = "\n",
+            };
+            while (line_splitter.next()) |line| {
+                line_scratch.?[lineno] = line;
+                if (state.cursor_i >= curr_i and state.cursor_i <= curr_i + line.len) {
+                    cursor_line = lineno;
+                    cursor_col = state.cursor_i - curr_i;
+                }
+                lineno += 1;
+                curr_i += line.len + 1; // Account for the "\n" delimiter that the splitter consumed.
+            }
+        }
+        const lines = line_scratch.?[0..lineno];
+
+        const raw_new_line: i64 = @as(i64, @intCast(cursor_line)) - @as(i64, in.ups) + @as(i64, in.downs);
+        const new_line: usize = @intCast(std.math.clamp(raw_new_line, 0, @as(i64, @intCast(lines.len - 1))));
+        // Stackless preferred column: if the cursor sits at the end of its line,
+        // stick to the end of the target line; otherwise keep the same column
+        // (clamped to the target line's length).
+        const at_line_end = cursor_col == lines[cursor_line].len;
+        const new_col: usize = if (at_line_end)
+            lines[new_line].len
+        else
+            @min(cursor_col, lines[new_line].len);
+
+        // Byte offset of the start of the target line.
+        var line_start: usize = 0;
+        for (lines[0..new_line]) |line| {
+            line_start += line.len + 1;
+        }
+        // Moving the cursor must shuffle bytes through the gap so the invariant
+        // (text before cursor at [0..cursor_i], text after at [gap_end..]) holds.
+        moveCursorTo(state, line_start + new_col);
     } else if (in.text.len > 0) {
         const new_text_len = state.text_len + in.text.len;
         if (new_text_len >= state.gap_buf.len) {
@@ -164,6 +185,47 @@ fn handleInput(allocator: std.mem.Allocator, in: Input, state: *AppState) !void 
         state.cursor_i += in.text.len;
         state.text_len += in.text.len;
     }
+}
+
+/// Move the cursor to logical text position `target`, shuffling bytes through
+/// the gap so the gap-buffer invariant holds: text before the cursor lives at
+/// `[0..cursor_i]`, text after it at `[gap_end..]`.
+fn moveCursorTo(state: *AppState, target: usize) void {
+    if (target > state.cursor_i) {
+        // abc|def => abcd|ef : dest (cursor) precedes src (gap_end), copy front-to-back.
+        const n = target - state.cursor_i;
+        std.mem.copyForwards(
+            u8,
+            state.gap_buf[state.cursor_i .. state.cursor_i + n],
+            state.gap_buf[state.gap_end .. state.gap_end + n],
+        );
+        state.cursor_i += n;
+        state.gap_end += n;
+    } else if (target < state.cursor_i) {
+        // abc|def => ab|cdef : dest (gap_end) follows src (cursor), copy back-to-front.
+        const n = state.cursor_i - target;
+        std.mem.copyBackwards(
+            u8,
+            state.gap_buf[state.gap_end - n .. state.gap_end],
+            state.gap_buf[state.cursor_i - n .. state.cursor_i],
+        );
+        state.cursor_i -= n;
+        state.gap_end -= n;
+    }
+}
+
+fn splitLines(full_text: []u8, scratch_buf: [][]const u8) [][]const u8 {
+    var lineno: usize = 0;
+    var line_splitter = std.mem.SplitIterator(u8, .any){
+        .index = 0,
+        .buffer = full_text,
+        .delimiter = "\n",
+    };
+    while (line_splitter.next()) |line| {
+        scratch_buf[lineno] = line;
+        lineno += 1;
+    }
+    return scratch_buf[0..lineno];
 }
 
 fn condenseGapBuf(buf: []u8, state: AppState) []u8 {
@@ -246,7 +308,6 @@ test "handleInput grow buffer" {
     { // Cursor at end
         var state = AppState{ .gap_buf = try testing_allocator.alloc(u8, 1) };
         try handleInput(testing_allocator, .{ .text = "hello" }, &state);
-        std.debug.print("State: {}\n", .{state});
         try expectTextContentsEquals("hello", state);
         testing_allocator.free(state.gap_buf);
     }
@@ -262,7 +323,6 @@ test "handleInput grow buffer" {
         try handleInput(testing_allocator, .{ .lefts = 1 }, &state);
         try handleInput(testing_allocator, .{ .text = "h" }, &state);
         try handleInput(testing_allocator, .{ .lefts = 1 }, &state);
-        std.debug.print("State: {}\n", .{state});
         try expectTextContentsEquals("hello", state);
         testing_allocator.free(state.gap_buf);
     }
@@ -274,4 +334,41 @@ test "handleInput grow buffer" {
         try expectTextContentsEquals("[123]", state);
         testing_allocator.free(state.gap_buf);
     }
+}
+
+test "handleInput up-down cursor" {
+    var buf: [20]u8 = undefined;
+    var state = AppState.init(&buf);
+
+    scratch = try testing_allocator.alloc(u8, BASE_SCRATCH_SIZE);
+    defer testing_allocator.free(scratch.?);
+    line_scratch = try testing_allocator.alloc([]const u8, BASE_LINE_SCRATCH_SIZE);
+    defer testing_allocator.free(line_scratch.?);
+
+    try handleInput(testing_allocator, .{ .text = "1\n" }, &state);
+    try handleInput(testing_allocator, .{ .downs = 1 }, &state);
+    try handleInput(testing_allocator, .{ .text = "3" }, &state);
+    try handleInput(testing_allocator, .{ .ups = 1 }, &state);
+    try handleInput(testing_allocator, .{ .text = "2" }, &state);
+    try handleInput(testing_allocator, .{ .downs = 1 }, &state);
+    try handleInput(testing_allocator, .{ .text = "4" }, &state);
+    try expectTextContentsEquals("12\n34", state);
+}
+
+test "handleInput up-down cursor preferred column" {
+    var buf: [20]u8 = undefined;
+    var state = AppState.init(&buf);
+
+    scratch = try testing_allocator.alloc(u8, BASE_SCRATCH_SIZE);
+    defer testing_allocator.free(scratch.?);
+    line_scratch = try testing_allocator.alloc([]const u8, BASE_LINE_SCRATCH_SIZE);
+    defer testing_allocator.free(line_scratch.?);
+
+    try handleInput(testing_allocator, .{ .text = "1234\n123\n12\n1" }, &state);
+    try handleInput(testing_allocator, .{ .ups = 100 }, &state);
+    try handleInput(testing_allocator, .{ .rights = 100 }, &state);
+    try handleInput(testing_allocator, .{ .downs = 100 }, &state);
+    try handleInput(testing_allocator, .{ .ups = 100 }, &state);
+    try handleInput(testing_allocator, .{ .text = "5" }, &state);
+    try expectTextContentsEquals("12345\n123\n12\n1", state);
 }
