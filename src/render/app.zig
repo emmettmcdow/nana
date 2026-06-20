@@ -30,6 +30,9 @@ const MAX_BUF_LEN: usize = std.math.maxInt(u32);
 const BASE_SCRATCH_SIZE = 1024 * 1024; // 1MB
 var scratch: ?[]u8 = null;
 
+// const BASE_LINE_SCRATCH_SIZE = 1024; // 1MB
+// var line_scratch: ?[][]u8 = null;
+
 pub const AppState = struct {
     gap_buf: []u8,
     text_len: usize = 0,
@@ -60,15 +63,30 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
         defer allocator.free(scratch.?);
         scratch = try allocator.alloc(u8, scratch.?.len << 1);
     }
-    const text_x: f64 = 56;
-    const text_y: f64 = 168;
-    const font_size: f64 = 20;
-    const condensed = condenseGapBuf(scratch.?, state.*);
-    _ = canvas.drawText(condensed, text_x, text_y, font_size, Color.rgb(0.95, 0.82, 0.40));
+    {
+        const font_size: f64 = 20;
+        const text_x: f64 = 56;
+        const line_h = canvas.measureText("M", font_size).h;
+        const condensed = condenseGapBuf(scratch.?, state.*);
 
-    const caret_x = text_x + canvas.measureText(condensed[0..state.cursor_i], font_size).w;
-    const line_h = canvas.measureText("M", font_size).h;
-    canvas.fillRect(.{ .x = caret_x, .y = text_y, .w = 2, .h = line_h }, Color.white);
+        var line_splitter = std.mem.SplitIterator(u8, .any){
+            .index = 0,
+            .buffer = condensed,
+            .delimiter = "\n",
+        };
+        var curr_i: usize = 0;
+        var text_y: f64 = 168;
+        while (line_splitter.next()) |line| {
+            _ = canvas.drawText(line, text_x, text_y, font_size, Color.rgb(0.95, 0.82, 0.40));
+            if (state.cursor_i >= curr_i and state.cursor_i <= curr_i + line.len) {
+                const caret_offset = state.cursor_i - curr_i;
+                const caret_x = text_x + canvas.measureText(line[0..caret_offset], font_size).w;
+                canvas.fillRect(.{ .x = caret_x, .y = text_y, .w = 2, .h = line_h }, Color.white);
+            }
+            curr_i += line.len + 1;
+            text_y += line_h;
+        }
+    }
 
     // A box that follows the cursor (turns warm while the button is held).
     const s: f64 = 18;

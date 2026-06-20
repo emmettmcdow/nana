@@ -154,6 +154,10 @@ import AppKit
                 leftCount += 1
             } else if event.keyCode == 124 {
                 rightCount += 1
+            } else if event.keyCode == 36 || event.keyCode == 76 {
+                // Return (36) and numpad Enter (76) report "\r" via `characters`;
+                // normalize to "\n" and let it flow through the normal text path.
+                pendingText += "\n"
             } else if let chars = event.characters, !chars.isEmpty {
                 pendingText += chars
             }
