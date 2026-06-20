@@ -30,6 +30,10 @@ import AppKit
         private var modifiers: UInt32 = 0
         private var pendingText = ""
         private var backspaceCount: UInt32 = 0
+        private var upCount: UInt32 = 0
+        private var downCount: UInt32 = 0
+        private var leftCount: UInt32 = 0
+        private var rightCount: UInt32 = 0
 
         override init(frame frameRect: NSRect) {
             super.init(frame: frameRect)
@@ -83,11 +87,23 @@ import AppKit
                 for (i, b) in bytes.enumerated() { raw[i] = b }
                 raw[bytes.count] = 0
             }
+
+            // For each of these types of input, we think of it in terms of "consumption". We read
+            // some data, and we are using it up.
             input.text_len = UInt32(bytes.count)
-            pendingText = ""  // consume the frame's typed text
+            pendingText = ""
 
             input.backspaces = backspaceCount
-            backspaceCount = 0  // consume the frame's backspaces
+            backspaceCount = 0
+
+            input.ups = upCount
+            upCount = 0
+            input.downs = downCount
+            downCount = 0
+            input.lefts = leftCount
+            leftCount = 0
+            input.rights = rightCount
+            rightCount = 0
 
             nana_render_frame(ctx, Double(bounds.width), Double(bounds.height), &input)
         }
@@ -130,9 +146,15 @@ import AppKit
             // character to the text buffer.
             if event.keyCode == 51 {
                 backspaceCount += 1
-                return
-            }
-            if let chars = event.characters, !chars.isEmpty {
+            } else if event.keyCode == 126 {
+                upCount += 1
+            } else if event.keyCode == 125 {
+                downCount += 1
+            } else if event.keyCode == 123 {
+                leftCount += 1
+            } else if event.keyCode == 124 {
+                rightCount += 1
+            } else if let chars = event.characters, !chars.isEmpty {
                 pendingText += chars
             }
         }

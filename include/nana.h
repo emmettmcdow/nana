@@ -74,6 +74,10 @@ typedef struct {
     char text_utf8[64];      // UTF-8 text typed this frame (NUL-terminated)
     unsigned int text_len;   // byte length of text_utf8
     unsigned int backspaces; // count of Backspace presses this frame
+    unsigned int ups;        // count of up presses this frame
+    unsigned int downs;      // count of down presses this frame
+    unsigned int lefts;      // count of left presses this frame
+    unsigned int rights;     // count of right presses this frame
 } NanaInput;
 
 void nana_render_init(void);

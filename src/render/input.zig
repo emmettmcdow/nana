@@ -20,9 +20,12 @@ pub const Input = struct {
     /// UTF-8 text entered during this frame (empty if none). Borrowed; valid only
     /// for the duration of the frame call.
     text: []const u8 = &.{},
-    /// Number of Backspace key presses during this frame. Backspace is a key press,
-    /// not a modifier — a count so key-repeat within one frame isn't lost.
+    /// Number of {backspace,up,down,left,right} key presses during this frame.
     backspaces: u32 = 0,
+    ups: u32 = 0,
+    downs: u32 = 0,
+    lefts: u32 = 0,
+    rights: u32 = 0,
 
     pub fn has(self: Input, mask: u32) bool {
         return (self.modifiers & mask) != 0;
