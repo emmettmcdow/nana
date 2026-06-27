@@ -1,0 +1,40 @@
+
+    } else if (in.ups != 0 or in.downs != 0) {
+        const full_text = condenseGapBuf(scratch.?, state.*);
+
+        var cursor_line: usize = 0;
+        var cursor_col: usize = 0;
+        const lines = { // Split lines
+            var lineno: usize = 0;
+            var line_splitter = std.mem.SplitIterator(u8, .any){
+                .index = 0,
+                .buffer = full_text,
+                .delimiter = "\n",
+            };
+            while (line_splitter.next()) |logical_line| {
+                var rendered_line_start_i: usize = 0;
+                rendered_line_splitter: while (true) {
+                    var end = logical_line.len;
+                    var rendered_line = logical_line[rendered_line_start_i..end];
+                    var line_w = canvas.measureText(rendered_line, FONT_SIZE).w;
+                    while (line_w >= (canvas.size.w - (MARGIN_PX * 2))) {
+                        assert(end > rendered_line_start_i);
+                        end -= 1;
+                        rendered_line = logical_line[rendered_line_start_i..end];
+                        line_w = canvas.measureText(rendered_line, FONT_SIZE).w;
+                    }
+                    line_scratch.?[lineno] = rendered_line;
+                    if (state.cursor_i >= rendered_line_start_i and
+                        state.cursor_i <= rendered_line_start_i + rendered_line.len) {
+                        cursor_line = lineno;
+                        cursor_col = state.cursor_i - rendered_line_start_i;
+                    }
+                    lineno += 1;
+                    rendered_line_start_i += rendered_line.len;
+                    if (rendered_line_start_i >= logical_line.len) break :rendered_line_splitter;
+                }
+            }
+            break :res line_scratch.?[0..lineno];
+        }
+
+        const raw_new_line: i64 = @as(i64, @intCast(cursor_line)) - @as(i64, in.ups) + @as(i64, in.downs);
