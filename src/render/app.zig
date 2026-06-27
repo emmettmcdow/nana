@@ -41,6 +41,8 @@ pub const AppState = struct {
     text_len: usize = 0,
     cursor_i: usize = 0,
     gap_end: usize = 0,
+    /// Index of the top visible rendered line — how far down the view is scrolled.
+    window_offset: usize = 0,
 
     pub fn init(gap_buf: []u8) AppState {
         return .{ .gap_buf = gap_buf, .gap_end = gap_buf.len };
@@ -88,9 +90,14 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
         const lines = splitLines(condenseGapBuf(scratch.?, state.*), line_scratch.?, measurer);
         const text_x: f64 = MARGIN_PX;
         const line_h = canvas.measureText("M", FONT_SIZE).h;
+        const visible_lines: usize = if (line_h > 0) @intFromFloat(canvas.size.h / line_h) else lines.len;
+        state.window_offset = scrollToCursor(state.window_offset, cursorLine(lines, state.cursor_i), visible_lines);
+
+        const top = @min(state.window_offset, lines.len);
+        const bottom = @min(top + visible_lines, lines.len);
         var text_y: f64 = 168;
         var caret_drawn = false;
-        for (lines) |line| {
+        for (lines[top..bottom]) |line| {
             _ = canvas.drawText(line.text, text_x, text_y, FONT_SIZE, Color.rgb(0.95, 0.82, 0.40));
             // At a soft-wrap boundary the cursor offset matches both the end of one
             // line and the start of the next; prefer the earlier line.
@@ -154,6 +161,27 @@ fn splitLines(full_text: []const u8, out: []Line, m: Measurer) []Line {
     return out[0..lineno];
 }
 
+/// Index of the rendered line containing `cursor_i`. At a soft-wrap boundary the
+/// offset matches two lines; the later one wins (consistent with up/down).
+fn cursorLine(lines: []const Line, cursor_i: usize) usize {
+    var result: usize = 0;
+    for (lines, 0..) |line, i| {
+        if (cursor_i >= line.start and cursor_i <= line.start + line.text.len) result = i;
+    }
+    return result;
+}
+
+/// Scroll the view just enough to keep `cursor_line` inside a viewport that is
+/// `visible_lines` tall, given the current top line `window_offset`. Returns the
+/// new top line.
+fn scrollToCursor(window_offset: usize, cursor_line: usize, visible_lines: usize) usize {
+    if (cursor_line < window_offset) return cursor_line; // above the viewport
+    if (visible_lines > 0 and cursor_line >= window_offset + visible_lines) {
+        return cursor_line - visible_lines + 1; // below the viewport
+    }
+    return window_offset; // already visible
+}
+
 fn handleInput(allocator: std.mem.Allocator, in: Input, state: *AppState, lines: []const Line) !void {
     if (in.backspaces != 0) {
         const backspaces = @min(state.cursor_i, in.backspaces);
@@ -171,14 +199,8 @@ fn handleInput(allocator: std.mem.Allocator, in: Input, state: *AppState, lines:
         const target: i64 = @as(i64, @intCast(state.cursor_i)) + delta;
         moveCursorTo(state, @intCast(target));
     } else if (in.ups != 0 or in.downs != 0) {
-        var cursor_line: usize = 0;
-        var cursor_col: usize = 0;
-        for (lines, 0..) |line, i| {
-            if (state.cursor_i >= line.start and state.cursor_i <= line.start + line.text.len) {
-                cursor_line = i;
-                cursor_col = state.cursor_i - line.start;
-            }
-        }
+        const cursor_line = cursorLine(lines, state.cursor_i);
+        const cursor_col = state.cursor_i - lines[cursor_line].start;
 
         const raw_new_line: i64 = @as(i64, @intCast(cursor_line)) - @as(i64, in.ups) + @as(i64, in.downs);
         const new_line: usize = @intCast(std.math.clamp(raw_new_line, 0, @as(i64, @intCast(lines.len - 1))));
@@ -328,6 +350,22 @@ test "splitLines start offsets account for newlines across wraps" {
     try expectEqualStrings("d", lines[1].text);
     try expectEqual(5, lines[2].start); // past the 'd' (4) and the '\n' (5)
     try expectEqualStrings("ef", lines[2].text);
+}
+
+test "scrollToCursor scrolls down to reveal a cursor below the viewport" {
+    // 3-tall viewport at the top (offset 0); cursor on line 5 is off the bottom.
+    // Top line shifts so line 5 is the last visible: 5 - 3 + 1 = 3.
+    try expectEqual(3, scrollToCursor(0, 5, 3));
+}
+
+test "scrollToCursor scrolls up to reveal a cursor above the viewport" {
+    // Scrolled to line 4 (showing 4..6); cursor on line 1 is above ⇒ top = 1.
+    try expectEqual(1, scrollToCursor(4, 1, 3));
+}
+
+test "scrollToCursor leaves the offset alone when the cursor is already visible" {
+    // Showing lines 2..4; cursor on line 3 is within ⇒ unchanged.
+    try expectEqual(2, scrollToCursor(2, 3, 3));
 }
 
 test "handleInput hello" {
