@@ -18,6 +18,7 @@ const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const testing_allocator = std.testing.allocator;
 const assert = std.debug.assert;
+const mod_shift = input.mod_shift;
 
 const Color = geom.Color;
 const Input = input.Input;
@@ -36,6 +37,9 @@ var line_scratch: ?[]Line = null;
 const FONT_SIZE: f64 = 200;
 const MARGIN_PX: f64 = 100;
 
+const TEXT_COLOR: Color = Color.rgb(0.95, 0.82, 0.40);
+const HIGHLIGHT_COLOR: Color = .{ .r = TEXT_COLOR.r, .g = TEXT_COLOR.g, .b = TEXT_COLOR.b, .a = 0.25 };
+
 pub const AppState = struct {
     gap_buf: []u8,
     text_len: usize = 0,
@@ -43,9 +47,13 @@ pub const AppState = struct {
     gap_end: usize = 0,
     /// Index of the top visible rendered line — how far down the view is scrolled.
     window_offset: usize = 0,
+    selection_anchor: ?usize = null,
 
     pub fn init(gap_buf: []u8) AppState {
         return .{ .gap_buf = gap_buf, .gap_end = gap_buf.len };
+    }
+    fn assertInvariant(self: AppState) void {
+        assert(self.text_len == self.cursor_i + (self.gap_buf.len - self.gap_end));
     }
 };
 
@@ -95,18 +103,70 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
 
         const top = @min(state.window_offset, lines.len);
         const bottom = @min(top + visible_lines, lines.len);
-        var text_y: f64 = 168;
+        var text_y: f64 = MARGIN_PX;
         var caret_drawn = false;
         for (lines[top..bottom]) |line| {
-            _ = canvas.drawText(line.text, text_x, text_y, FONT_SIZE, Color.rgb(0.95, 0.82, 0.40));
-            // At a soft-wrap boundary the cursor offset matches both the end of one
-            // line and the start of the next; prefer the earlier line.
-            if (!caret_drawn and state.cursor_i >= line.start and state.cursor_i <= line.start + line.text.len) {
-                const caret_offset = state.cursor_i - line.start;
-                const caret_x = text_x + canvas.measureText(line.text[0..caret_offset], FONT_SIZE).w;
-                canvas.fillRect(.{ .x = caret_x, .y = text_y, .w = 2, .h = line_h }, Color.white);
-                caret_drawn = true;
+            { // selection rendering
+                const cursor_in_line = state.cursor_i >= line.start and state.cursor_i <= line.start + line.text.len;
+                const anchor_in_line = state.selection_anchor != null and state.selection_anchor.? >= line.start and state.selection_anchor.? <= line.start + line.text.len;
+                if (cursor_in_line and !caret_drawn) {
+                    // At a soft-wrap boundary the cursor offset matches both the end
+                    // of one line and the start of the next; prefer the earlier line.
+                    const caret_offset = state.cursor_i - line.start;
+                    const caret_x = text_x + canvas.measureText(line.text[0..caret_offset], FONT_SIZE).w;
+                    canvas.fillRect(.{ .x = caret_x, .y = text_y, .w = 2, .h = line_h }, Color.white);
+                    caret_drawn = true;
+                }
+                if (cursor_in_line and anchor_in_line) {
+                    if (state.selection_anchor) |anchor| {
+                        const anchor_offset: usize = anchor - line.start;
+                        const caret_offset = state.cursor_i - line.start;
+                        const caret_x = text_x + canvas.measureText(line.text[0..caret_offset], FONT_SIZE).w;
+                        var box_start_x: f64 = undefined;
+                        var selection_w: f64 = undefined;
+                        if (anchor_offset < caret_offset) {
+                            selection_w = canvas.measureText(line.text[anchor_offset..caret_offset], FONT_SIZE).w;
+                            box_start_x = caret_x - selection_w;
+                        } else {
+                            selection_w = canvas.measureText(line.text[caret_offset..anchor_offset], FONT_SIZE).w;
+                            box_start_x = caret_x;
+                        }
+                        canvas.fillRect(.{ .x = box_start_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
+                    } else unreachable;
+                } else if (cursor_in_line and state.selection_anchor != null) {
+                    // Selection anchor is on another line
+                    if (state.selection_anchor.? < state.cursor_i) {
+                        const caret_offset = state.cursor_i - line.start;
+                        const selection_w: f64 = canvas.measureText(line.text[0..caret_offset], FONT_SIZE).w;
+                        canvas.fillRect(.{ .x = text_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
+                    } else {
+                        const caret_offset = state.cursor_i - line.start;
+                        const selection_w: f64 = canvas.measureText(line.text[caret_offset..line.text.len], FONT_SIZE).w;
+                        const caret_x = text_x + canvas.measureText(line.text[0..caret_offset], FONT_SIZE).w;
+                        canvas.fillRect(.{ .x = caret_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
+                    }
+                } else if (anchor_in_line) {
+                    // Cursor is on another line
+                    if (state.selection_anchor.? < state.cursor_i) {
+                        const anchor_offset = state.selection_anchor.? - line.start;
+                        const selection_w: f64 = canvas.measureText(line.text[anchor_offset..line.text.len], FONT_SIZE).w;
+                        const anchor_x = text_x + canvas.measureText(line.text[0..anchor_offset], FONT_SIZE).w;
+                        canvas.fillRect(.{ .x = anchor_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
+                    } else {
+                        const anchor_offset = state.selection_anchor.? - line.start;
+                        const selection_w: f64 = canvas.measureText(line.text[0..anchor_offset], FONT_SIZE).w;
+                        canvas.fillRect(.{ .x = text_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
+                    }
+                } else if (state.selection_anchor != null and
+                    line.start > @min(state.selection_anchor.?, state.cursor_i) and
+                    (line.start + line.text.len) < @max(state.selection_anchor.?, state.cursor_i))
+                {
+                    // Line is between the anchor and cursor
+                    const selection_w: f64 = canvas.measureText(line.text[0..line.text.len], FONT_SIZE).w;
+                    canvas.fillRect(.{ .x = text_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
+                }
             }
+            _ = canvas.drawText(line.text, text_x, text_y, FONT_SIZE, TEXT_COLOR);
             text_y += line_h;
         }
     }
@@ -183,38 +243,112 @@ fn scrollToCursor(window_offset: usize, cursor_line: usize, visible_lines: usize
 }
 
 fn handleInput(allocator: std.mem.Allocator, in: Input, state: *AppState, lines: []const Line) !void {
+    state.assertInvariant();
     if (in.backspaces != 0) {
-        const backspaces = @min(state.cursor_i, in.backspaces);
-        state.cursor_i -= backspaces;
-        state.text_len -= backspaces;
-    } else if (in.lefts != 0 or in.rights != 0) {
-        const cursor: i64 = @intCast(state.cursor_i);
-        const raw_movement: i64 = @as(i64, in.rights) - @as(i64, in.lefts);
-        const delta: i64 = std.math.clamp(
-            raw_movement,
-            -cursor,
-            @as(i64, @intCast(state.text_len)) - cursor,
-        );
+        if (state.selection_anchor) |anchor| {
+            if (state.cursor_i > anchor) {
+                // Selection is in the before-cursor region; drop it by moving the
+                // cursor back to the anchor (extends the gap leftward).
+                const backspaces = state.cursor_i - anchor;
+                state.cursor_i = anchor;
+                state.text_len -= backspaces;
+            } else {
+                // Selection is in the tail; drop it by advancing the gap end past it.
+                const backspaces = anchor - state.cursor_i;
+                state.gap_end += backspaces;
+                state.text_len -= backspaces;
+            }
+            state.selection_anchor = null;
+        } else {
+            const backspaces = @min(state.cursor_i, in.backspaces);
+            state.cursor_i -= backspaces;
+            state.text_len -= backspaces;
+        }
+    } else if ((in.lefts | in.rights | in.ups | in.downs) != 0) {
+        const horz_pressed = (in.lefts | in.rights) != 0;
+        const vert_pressed = (in.ups | in.downs) != 0;
+        const shift_pressed = (in.modifiers & mod_shift) != 0;
+        const has_anchor = state.selection_anchor != null;
 
-        const target: i64 = @as(i64, @intCast(state.cursor_i)) + delta;
-        moveCursorTo(state, @intCast(target));
-    } else if (in.ups != 0 or in.downs != 0) {
-        const cursor_line = cursorLine(lines, state.cursor_i);
-        const cursor_col = state.cursor_i - lines[cursor_line].start;
+        if (shift_pressed and !has_anchor) {
+            state.selection_anchor = state.cursor_i;
+        }
 
-        const raw_new_line: i64 = @as(i64, @intCast(cursor_line)) - @as(i64, in.ups) + @as(i64, in.downs);
-        const new_line: usize = @intCast(std.math.clamp(raw_new_line, 0, @as(i64, @intCast(lines.len - 1))));
-        // Stackless preferred column: if the cursor sits at the end of its line,
-        // stick to the end of the target line; otherwise keep the same column
-        // (clamped to the target line's length).
-        const at_line_end = cursor_col == lines[cursor_line].text.len;
-        const new_col: usize = if (at_line_end)
-            lines[new_line].text.len
-        else
-            @min(cursor_col, lines[new_line].text.len);
+        const target: usize = if (has_anchor and horz_pressed and !shift_pressed) collapse: {
+            defer state.selection_anchor = null;
+            if (in.lefts != 0) {
+                break :collapse @min(state.cursor_i, state.selection_anchor.?);
+            } else {
+                assert(in.rights != 0);
+                break :collapse @max(state.cursor_i, state.selection_anchor.?);
+            }
+        } else if (horz_pressed) leftright: {
+            const cursor: i64 = @intCast(state.cursor_i);
+            const raw_movement: i64 = @as(i64, in.rights) - @as(i64, in.lefts);
+            const delta: i64 = std.math.clamp(
+                raw_movement,
+                -cursor,
+                @as(i64, @intCast(state.text_len)) - cursor,
+            );
 
-        moveCursorTo(state, lines[new_line].start + new_col);
+            break :leftright @as(usize, @intCast(@as(i64, @intCast(state.cursor_i)) + delta));
+        } else updown: {
+            assert(vert_pressed);
+            if (!shift_pressed and state.selection_anchor != null) state.selection_anchor = null;
+            const cursor_line = cursorLine(lines, state.cursor_i);
+            const cursor_col = state.cursor_i - lines[cursor_line].start;
+
+            const raw_new_line: i64 = @as(i64, @intCast(cursor_line)) - @as(i64, in.ups) + @as(i64, in.downs);
+            const new_line: usize = @intCast(std.math.clamp(raw_new_line, 0, @as(i64, @intCast(lines.len - 1))));
+            // Stackless preferred column: if the cursor sits at the end of its line,
+            // stick to the end of the target line; otherwise keep the same column
+            // (clamped to the target line's length).
+            const at_line_end = cursor_col == lines[cursor_line].text.len;
+            const new_col: usize = if (at_line_end)
+                lines[new_line].text.len
+            else
+                @min(cursor_col, lines[new_line].text.len);
+
+            break :updown lines[new_line].start + new_col;
+        };
+        { // Move the cursor and adjust the gap buf
+            if (target > state.cursor_i) {
+                // abc|def => abcd|ef : dest (cursor) precedes src (gap_end), copy front-to-back.
+                const n = target - state.cursor_i;
+                std.mem.copyForwards(
+                    u8,
+                    state.gap_buf[state.cursor_i .. state.cursor_i + n],
+                    state.gap_buf[state.gap_end .. state.gap_end + n],
+                );
+                state.cursor_i += n;
+                state.gap_end += n;
+            } else if (target < state.cursor_i) {
+                // abc|def => ab|cdef : dest (gap_end) follows src (cursor), copy back-to-front.
+                const n = state.cursor_i - target;
+                std.mem.copyBackwards(
+                    u8,
+                    state.gap_buf[state.gap_end - n .. state.gap_end],
+                    state.gap_buf[state.cursor_i - n .. state.cursor_i],
+                );
+                state.cursor_i -= n;
+                state.gap_end -= n;
+            }
+        }
     } else if (in.text.len > 0) {
+        if (state.selection_anchor) |anchor| {
+            if (anchor > state.cursor_i) {
+                // Selection is in the tail; drop it by advancing the gap end past it.
+                const removed = anchor - state.cursor_i;
+                state.gap_end += removed;
+                state.text_len -= removed;
+            } else {
+                // Selection is in the before-cursor region; drop it by moving the
+                // cursor back to the anchor (extends the gap leftward).
+                state.text_len -= state.cursor_i - anchor;
+                state.cursor_i = anchor;
+            }
+            state.selection_anchor = null;
+        }
         const new_text_len = state.text_len + in.text.len;
         if (new_text_len >= state.gap_buf.len) {
             // grow the underlying buffer
@@ -241,40 +375,19 @@ fn handleInput(allocator: std.mem.Allocator, in: Input, state: *AppState, lines:
             state.gap_buf = new_buf;
             state.gap_end = new_gap_end;
         }
-        @memcpy(state.gap_buf[state.cursor_i .. state.cursor_i + in.text.len], in.text);
-        state.cursor_i += in.text.len;
-        state.text_len += in.text.len;
-    }
-}
-
-/// Move the cursor to logical text position `target`, shuffling bytes through
-/// the gap so the gap-buffer invariant holds: text before the cursor lives at
-/// `[0..cursor_i]`, text after it at `[gap_end..]`.
-fn moveCursorTo(state: *AppState, target: usize) void {
-    if (target > state.cursor_i) {
-        // abc|def => abcd|ef : dest (cursor) precedes src (gap_end), copy front-to-back.
-        const n = target - state.cursor_i;
-        std.mem.copyForwards(
-            u8,
-            state.gap_buf[state.cursor_i .. state.cursor_i + n],
-            state.gap_buf[state.gap_end .. state.gap_end + n],
-        );
-        state.cursor_i += n;
-        state.gap_end += n;
-    } else if (target < state.cursor_i) {
-        // abc|def => ab|cdef : dest (gap_end) follows src (cursor), copy back-to-front.
-        const n = state.cursor_i - target;
-        std.mem.copyBackwards(
-            u8,
-            state.gap_buf[state.gap_end - n .. state.gap_end],
-            state.gap_buf[state.cursor_i - n .. state.cursor_i],
-        );
-        state.cursor_i -= n;
-        state.gap_end -= n;
+        // Insert only real document content; drop control/non-printable bytes
+        for (in.text) |byte| {
+            const is_control_byte = (byte < 0x20 and byte != '\n') or byte == 0x7f;
+            if (is_control_byte) continue;
+            state.gap_buf[state.cursor_i] = byte;
+            state.cursor_i += 1;
+            state.text_len += 1;
+        }
     }
 }
 
 fn condenseGapBuf(buf: []u8, state: AppState) []u8 {
+    state.assertInvariant();
     @memcpy(buf[0..state.cursor_i], state.gap_buf[0..state.cursor_i]);
     const tail_len = state.gap_buf.len - state.gap_end;
     if (tail_len > 0) {
@@ -381,6 +494,17 @@ test "handleInput hello" {
     try expectTextContentsEquals("hello", state);
 }
 
+test "handleInput type at end of line in middle of document" {
+    var buf: [20]u8 = undefined;
+    var state = AppState.init(&buf);
+
+    try feed(&state, .{ .text = "abc\ndef\nghi" });
+    try expectTextContentsEquals("abc\ndef\nghi", state);
+    try feed(&state, .{ .ups = 1 });
+    try feed(&state, .{ .text = "X" });
+    try expectTextContentsEquals("abc\ndefX\nghi", state);
+}
+
 test "handleInput backspace deletes the char before the cursor" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
@@ -424,13 +548,13 @@ test "handleInput move cursor left and right" {
 
 test "handleInput grow buffer" {
     { // Cursor at end
-        var state = AppState{ .gap_buf = try testing_allocator.alloc(u8, 1) };
+        var state = AppState.init(try testing_allocator.alloc(u8, 1));
         try feed(&state, .{ .text = "hello" });
         try expectTextContentsEquals("hello", state);
         testing_allocator.free(state.gap_buf);
     }
     { // Cursor at beginning
-        var state = AppState{ .gap_buf = try testing_allocator.alloc(u8, 1) };
+        var state = AppState.init(try testing_allocator.alloc(u8, 1));
         try feed(&state, .{ .text = "o" });
         try feed(&state, .{ .lefts = 1 });
         try feed(&state, .{ .text = "l" });
@@ -445,7 +569,7 @@ test "handleInput grow buffer" {
         testing_allocator.free(state.gap_buf);
     }
     { // Cursor in middle
-        var state = AppState{ .gap_buf = try testing_allocator.alloc(u8, 1) };
+        var state = AppState.init(try testing_allocator.alloc(u8, 1));
         try feed(&state, .{ .text = "[]" }); // Size is now 4
         try feed(&state, .{ .lefts = 1 });
         try feed(&state, .{ .text = "123" }); // Size is now 8
@@ -500,4 +624,192 @@ test "handleInput up across a soft-wrapped line" {
     // (offset 3), between 'c' and 'd'.
     try feed(&state, .{ .text = "X" });
     try expectTextContentsEquals("abcXdef", state);
+}
+
+test "selection: plain movement never creates a selection" {
+    var buf: [20]u8 = undefined;
+    var state = AppState.init(&buf);
+    try feed(&state, .{ .text = "abc" });
+
+    try feed(&state, .{ .lefts = 1 });
+    try expectEqual(@as(?usize, null), state.selection_anchor);
+    try expectEqual(2, state.cursor_i);
+}
+
+test "selection: shift+right starts and extends a selection" {
+    var buf: [20]u8 = undefined;
+    var state = AppState.init(&buf);
+    try feed(&state, .{ .text = "abc" });
+    try feed(&state, .{ .lefts = 3 }); // cursor at 0
+
+    try feed(&state, .{ .rights = 1, .modifiers = mod_shift });
+    try expectEqual(@as(?usize, 0), state.selection_anchor);
+    try expectEqual(1, state.cursor_i);
+
+    try feed(&state, .{ .rights = 1, .modifiers = mod_shift });
+    try expectEqual(@as(?usize, 0), state.selection_anchor); // anchor stays put
+    try expectEqual(2, state.cursor_i); // range [0,2] = "ab"
+}
+
+test "selection: shift+left extends leftward (anchor right of cursor)" {
+    var buf: [20]u8 = undefined;
+    var state = AppState.init(&buf);
+    try feed(&state, .{ .text = "abc" }); // cursor at 3
+
+    try feed(&state, .{ .lefts = 2, .modifiers = mod_shift });
+    try expectEqual(@as(?usize, 3), state.selection_anchor);
+    try expectEqual(1, state.cursor_i); // range [1,3] = "bc"
+}
+
+test "selection: a plain right collapses to the right edge" {
+    var buf: [20]u8 = undefined;
+    var state = AppState.init(&buf);
+    try feed(&state, .{ .text = "abc" });
+    try feed(&state, .{ .lefts = 3 }); // cursor 0
+    try feed(&state, .{ .rights = 2, .modifiers = mod_shift }); // range [0,2]
+
+    try feed(&state, .{ .rights = 1 }); // plain
+    try expectEqual(@as(?usize, null), state.selection_anchor);
+    try expectEqual(2, state.cursor_i); // right edge, no extra step
+}
+
+test "selection: a plain left collapses to the left edge" {
+    var buf: [20]u8 = undefined;
+    var state = AppState.init(&buf);
+    try feed(&state, .{ .text = "abc" }); // cursor 3
+    try feed(&state, .{ .lefts = 2, .modifiers = mod_shift }); // range [1,3], cursor 1
+
+    try feed(&state, .{ .lefts = 1 }); // plain
+    try expectEqual(@as(?usize, null), state.selection_anchor);
+    try expectEqual(1, state.cursor_i); // left edge, no extra step
+}
+
+test "selection: typing replaces the selected range" {
+    var buf: [20]u8 = undefined;
+    var state = AppState.init(&buf);
+    try feed(&state, .{ .text = "abc" });
+    try feed(&state, .{ .lefts = 3 }); // cursor 0
+    try feed(&state, .{ .rights = 2, .modifiers = mod_shift }); // select "ab"
+
+    try feed(&state, .{ .text = "X" });
+    try expectTextContentsEquals("Xc", state);
+    try expectEqual(@as(?usize, null), state.selection_anchor);
+    try expectEqual(1, state.cursor_i); // after inserted "X"
+}
+
+test "selection: backspace deletes the selected range" {
+    var buf: [20]u8 = undefined;
+    var state = AppState.init(&buf);
+    try feed(&state, .{ .text = "abc" });
+    try feed(&state, .{ .lefts = 3 }); // cursor 0
+    try feed(&state, .{ .rights = 2, .modifiers = mod_shift }); // select "ab"
+
+    try feed(&state, .{ .backspaces = 1 });
+    try expectTextContentsEquals("c", state);
+    try expectEqual(@as(?usize, null), state.selection_anchor);
+    try expectEqual(0, state.cursor_i);
+}
+
+test "selection: backspace deletes a leftward selection too" {
+    var buf: [20]u8 = undefined;
+    var state = AppState.init(&buf);
+    try feed(&state, .{ .text = "abc" }); // cursor 3
+    try feed(&state, .{ .lefts = 2, .modifiers = mod_shift }); // select "bc": anchor 3, cursor 1
+
+    try feed(&state, .{ .backspaces = 1 });
+    try expectTextContentsEquals("a", state);
+    try expectEqual(@as(?usize, null), state.selection_anchor);
+    try expectEqual(1, state.cursor_i); // range start
+}
+
+test "selection: shift+down extends across lines" {
+    var buf: [20]u8 = undefined;
+    var state = AppState.init(&buf);
+    try feed(&state, .{ .text = "ab\ncd" }); // cursor at end (5)
+    try feed(&state, .{ .lefts = 5 }); // cursor 0
+
+    try feed(&state, .{ .downs = 1, .modifiers = mod_shift });
+    try expectEqual(@as(?usize, 0), state.selection_anchor);
+    try expectEqual(3, state.cursor_i); // down one line from col 0 ⇒ offset 3
+}
+
+test "selection: plain up/down resets the anchor" {
+    var buf: [20]u8 = undefined;
+    var state = AppState.init(&buf);
+    try feed(&state, .{ .text = "ab\ncd" });
+    try feed(&state, .{ .lefts = 5 }); // cursor 0
+
+    // shift+down selects; a plain down clears the anchor.
+    try feed(&state, .{ .downs = 1, .modifiers = mod_shift });
+    try expectEqual(@as(?usize, 0), state.selection_anchor);
+    try feed(&state, .{ .downs = 1 });
+    try expectEqual(@as(?usize, null), state.selection_anchor);
+
+    // shift+up selects again; a plain up clears the anchor.
+    try feed(&state, .{ .ups = 1, .modifiers = mod_shift });
+    try expectEqual(@as(?usize, 3), state.selection_anchor);
+    try feed(&state, .{ .ups = 1 });
+    try expectEqual(@as(?usize, null), state.selection_anchor);
+}
+
+test "selection: backspace on a leftward selection keeps trailing text" {
+    var buf: [20]u8 = undefined;
+    var state = AppState.init(&buf);
+    try feed(&state, .{ .text = "abcde" });
+    try feed(&state, .{ .lefts = 2 }); // cursor at 3, trailing "de" after it
+
+    // Select "bc" leftward: anchor 3 (right edge), cursor 1 (left edge).
+    try feed(&state, .{ .lefts = 2, .modifiers = mod_shift });
+    try expectEqual(@as(?usize, 3), state.selection_anchor);
+    try expectEqual(1, state.cursor_i);
+
+    try feed(&state, .{ .backspaces = 1 });
+    try expectTextContentsEquals("ade", state); // "bc" gone, "de" preserved
+    try expectEqual(@as(?usize, null), state.selection_anchor);
+    try expectEqual(1, state.cursor_i);
+}
+
+test "selection: typing over a leftward selection keeps trailing text" {
+    var buf: [20]u8 = undefined;
+    var state = AppState.init(&buf);
+    try feed(&state, .{ .text = "abcde" });
+    try feed(&state, .{ .lefts = 2 }); // cursor at 3, trailing "de" after it
+
+    // Select "bc" leftward: anchor 3 (right edge), cursor 1 (left edge).
+    try feed(&state, .{ .lefts = 2, .modifiers = mod_shift });
+
+    try feed(&state, .{ .text = "X" });
+    try expectTextContentsEquals("aXde", state); // "bc" replaced, "de" preserved
+    try expectEqual(@as(?usize, null), state.selection_anchor);
+    try expectEqual(2, state.cursor_i); // after inserted "X"
+}
+
+test "selection: shift+up selection then backspace keeps trailing text" {
+    var buf: [20]u8 = undefined;
+    var state = AppState.init(&buf);
+    try feed(&state, .{ .text = "ab\ncd\nef" }); // cursor at end (8)
+    try feed(&state, .{ .ups = 1 }); // cursor on the "cd" line (offset 5)
+
+    // shift+up makes an upward (leftward) selection with "ef" trailing after it.
+    try feed(&state, .{ .ups = 1, .modifiers = mod_shift });
+    try feed(&state, .{ .backspaces = 1 });
+    try expectTextContentsEquals("ab\nef", state);
+    try expectEqual(@as(?usize, null), state.selection_anchor);
+}
+
+test "handleInput ignores non-alphanumeric input we don't define" {
+    var buf: [20]u8 = undefined;
+    var state = AppState.init(&buf);
+
+    // Keys we don't explicitly handle (escape, forward-delete, NUL, bell) arrive
+    // through `in.text` as control characters and must not be inserted into the
+    // document. (Characters we do support — letters, digits, punctuation, '\n' —
+    // are covered by the other handleInput tests.)
+    try feed(&state, .{ .text = "\x1b" }); // escape
+    try feed(&state, .{ .text = "\x7f" }); // forward delete
+    try feed(&state, .{ .text = "\x00" }); // NUL
+    try feed(&state, .{ .text = "\x07" }); // bell
+
+    try expectEqual(0, state.text_len);
+    try expectTextContentsEquals("", state);
 }

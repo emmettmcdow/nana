@@ -59,7 +59,9 @@ export fn nana_render_init() void {
         \\ line 20
     ;
     @memcpy(state.?.gap_buf[0..text.len], text);
-    state.?.gap_end = text.len;
+    // Cursor starts at the end of the seeded text, so the tail is empty: leave
+    // `gap_end` at `gap_buf.len` (set by AppState.init). Setting it to `text.len`
+    // would collapse the gap and treat the rest of the buffer as document tail.
     state.?.cursor_i = text.len;
     state.?.text_len = text.len;
 }
