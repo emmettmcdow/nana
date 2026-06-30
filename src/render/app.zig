@@ -48,6 +48,7 @@ pub const AppState = struct {
     /// Index of the top visible rendered line — how far down the view is scrolled.
     window_offset: usize = 0,
     selection_anchor: ?usize = null,
+    mouse_was_down: bool = false,
 
     pub fn init(gap_buf: []u8) AppState {
         return .{ .gap_buf = gap_buf, .gap_end = gap_buf.len };
@@ -67,6 +68,21 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
     // Background.
     canvas.clear(Color.rgb(0.12, 0.12, 0.14));
 
+    { // debug
+        var buf: [64]u8 = undefined;
+        const font_size: f64 = 24.0;
+        _ = canvas.drawText(
+            std.fmt.bufPrint(&buf, "mouse: ({d}, {d})", .{
+                @as(i64, @intFromFloat(in.mouse.x)),
+                @as(i64, @intFromFloat(in.mouse.y)),
+            }) catch unreachable,
+            0,
+            canvas.size.h - font_size,
+            font_size,
+            TEXT_COLOR,
+        );
+    }
+
     { // scratch setup
         if (scratch == null) {
             scratch = try allocator.alloc(u8, BASE_SCRATCH_SIZE);
@@ -85,19 +101,20 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
     }
     const measurer = Measurer{
         .content_w = canvas.size.w - (MARGIN_PX * 2),
+        .line_h = canvas.measureText("M", FONT_SIZE).h,
         .ctx = canvas,
         .widthFn = measureWithCanvas,
     };
 
     { // Calculate the displayed text and handle inputs
         const shown = splitLines(condenseGapBuf(scratch.?, state.*), line_scratch.?, measurer);
-        try handleInput(allocator, in, state, shown);
+        try handleInput(allocator, in, state, shown, measurer);
     }
 
     { // Render pass
         const lines = splitLines(condenseGapBuf(scratch.?, state.*), line_scratch.?, measurer);
         const text_x: f64 = MARGIN_PX;
-        const line_h = canvas.measureText("M", FONT_SIZE).h;
+        const line_h = measurer.line_h;
         const visible_lines: usize = if (line_h > 0) @intFromFloat(canvas.size.h / line_h) else lines.len;
         state.window_offset = scrollToCursor(state.window_offset, cursorLine(lines, state.cursor_i), visible_lines);
 
@@ -174,6 +191,7 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
 
 const Measurer = struct {
     content_w: f64,
+    line_h: f64,
     ctx: *anyopaque,
     widthFn: *const fn (ctx: *anyopaque, text: []const u8) f64,
 
@@ -242,9 +260,45 @@ fn scrollToCursor(window_offset: usize, cursor_line: usize, visible_lines: usize
     return window_offset; // already visible
 }
 
-fn handleInput(allocator: std.mem.Allocator, in: Input, state: *AppState, lines: []const Line) !void {
+fn handleInput(allocator: std.mem.Allocator, in: Input, state: *AppState, lines: []const Line, measurer: Measurer) !void {
     state.assertInvariant();
-    if (in.backspaces != 0) {
+    var cursor_target: ?usize = null;
+    if (in.mouse_down) {
+        const mouse_offset: usize = cursor: { // point to offset
+            var lineno: usize = lines.len - 1;
+            var curr_y: f64 = MARGIN_PX;
+            for (state.window_offset..lines.len) |i| {
+                if (in.mouse.y < curr_y + measurer.line_h) {
+                    lineno = i;
+                    break;
+                }
+                curr_y += measurer.line_h;
+            }
+            var col: usize = lines[lineno].text.len;
+            var curr_x: f64 = MARGIN_PX;
+            for (0..lines[lineno].text.len) |i| {
+                const char_width = measurer.width(lines[lineno].text[i .. i + 1]);
+                if (in.mouse.x < curr_x + (char_width / 2.0)) {
+                    col = i;
+                    break;
+                }
+                curr_x += char_width;
+            }
+            break :cursor lines[lineno].start + col;
+        };
+        if (state.mouse_was_down) {
+            cursor_target = mouse_offset;
+        } else {
+            state.mouse_was_down = true;
+            state.selection_anchor = mouse_offset;
+            cursor_target = mouse_offset;
+        }
+    } else if (!in.mouse_down and state.mouse_was_down) { // Click release
+        state.mouse_was_down = false;
+        // A click (press+release without moving) leaves an empty selection;
+        // collapse it so only a real drag keeps the anchor.
+        if (state.selection_anchor == state.cursor_i) state.selection_anchor = null;
+    } else if (in.backspaces != 0) {
         if (state.selection_anchor) |anchor| {
             if (state.cursor_i > anchor) {
                 // Selection is in the before-cursor region; drop it by moving the
@@ -274,7 +328,7 @@ fn handleInput(allocator: std.mem.Allocator, in: Input, state: *AppState, lines:
             state.selection_anchor = state.cursor_i;
         }
 
-        const target: usize = if (has_anchor and horz_pressed and !shift_pressed) collapse: {
+        cursor_target = if (has_anchor and horz_pressed and !shift_pressed) collapse: {
             defer state.selection_anchor = null;
             if (in.lefts != 0) {
                 break :collapse @min(state.cursor_i, state.selection_anchor.?);
@@ -311,29 +365,6 @@ fn handleInput(allocator: std.mem.Allocator, in: Input, state: *AppState, lines:
 
             break :updown lines[new_line].start + new_col;
         };
-        { // Move the cursor and adjust the gap buf
-            if (target > state.cursor_i) {
-                // abc|def => abcd|ef : dest (cursor) precedes src (gap_end), copy front-to-back.
-                const n = target - state.cursor_i;
-                std.mem.copyForwards(
-                    u8,
-                    state.gap_buf[state.cursor_i .. state.cursor_i + n],
-                    state.gap_buf[state.gap_end .. state.gap_end + n],
-                );
-                state.cursor_i += n;
-                state.gap_end += n;
-            } else if (target < state.cursor_i) {
-                // abc|def => ab|cdef : dest (gap_end) follows src (cursor), copy back-to-front.
-                const n = state.cursor_i - target;
-                std.mem.copyBackwards(
-                    u8,
-                    state.gap_buf[state.gap_end - n .. state.gap_end],
-                    state.gap_buf[state.cursor_i - n .. state.cursor_i],
-                );
-                state.cursor_i -= n;
-                state.gap_end -= n;
-            }
-        }
     } else if (in.text.len > 0) {
         if (state.selection_anchor) |anchor| {
             if (anchor > state.cursor_i) {
@@ -384,6 +415,29 @@ fn handleInput(allocator: std.mem.Allocator, in: Input, state: *AppState, lines:
             state.text_len += 1;
         }
     }
+    if (cursor_target) |target| { // Move the cursor and adjust the gap buf
+        if (target > state.cursor_i) {
+            // abc|def => abcd|ef : dest (cursor) precedes src (gap_end), copy front-to-back.
+            const n = target - state.cursor_i;
+            std.mem.copyForwards(
+                u8,
+                state.gap_buf[state.cursor_i .. state.cursor_i + n],
+                state.gap_buf[state.gap_end .. state.gap_end + n],
+            );
+            state.cursor_i += n;
+            state.gap_end += n;
+        } else if (target < state.cursor_i) {
+            // abc|def => ab|cdef : dest (gap_end) follows src (cursor), copy back-to-front.
+            const n = state.cursor_i - target;
+            std.mem.copyBackwards(
+                u8,
+                state.gap_buf[state.gap_end - n .. state.gap_end],
+                state.gap_buf[state.cursor_i - n .. state.cursor_i],
+            );
+            state.cursor_i -= n;
+            state.gap_end -= n;
+        }
+    }
 }
 
 fn condenseGapBuf(buf: []u8, state: AppState) []u8 {
@@ -416,16 +470,17 @@ fn fakeWidth(_: *anyopaque, text: []const u8) f64 {
 }
 
 fn testMeasurer(content_w: f64) Measurer {
-    return .{ .content_w = content_w, .ctx = &fake_ctx, .widthFn = fakeWidth };
+    return .{ .content_w = content_w, .line_h = 1, .ctx = &fake_ctx, .widthFn = fakeWidth };
 }
 
 /// Drive `handleInput` the way `frame` does, but with the fake measurer
 fn feed(state: *AppState, in: Input) !void {
     var doc_buf: [1024]u8 = undefined;
     var line_buf: [256]Line = undefined;
+    const measurer = testMeasurer(1_000_000);
     const doc = condenseGapBuf(&doc_buf, state.*);
-    const lines = splitLines(doc, &line_buf, testMeasurer(1_000_000));
-    try handleInput(testing_allocator, in, state, lines);
+    const lines = splitLines(doc, &line_buf, measurer);
+    try handleInput(testing_allocator, in, state, lines, measurer);
 }
 
 test "splitLines breaks on newlines" {
@@ -618,7 +673,7 @@ test "handleInput up across a soft-wrapped line" {
         .{ .start = 0, .text = "abc" },
         .{ .start = 3, .text = "def" },
     };
-    try handleInput(testing_allocator, .{ .ups = 1 }, &state, &lines);
+    try handleInput(testing_allocator, .{ .ups = 1 }, &state, &lines, testMeasurer(1_000_000));
 
     // Cursor sat at the end of the 2nd visual line ⇒ lands at the end of the 1st
     // (offset 3), between 'c' and 'd'.
@@ -812,4 +867,131 @@ test "handleInput ignores non-alphanumeric input we don't define" {
 
     try expectEqual(0, state.text_len);
     try expectTextContentsEquals("", state);
+}
+
+// ─── Mouse selection (NOT YET IMPLEMENTED — these define the contract) ────────
+//
+// handleInput ignores the mouse today, so these are red until hit-testing lands.
+//
+// Coordinate model (matches the render pass + `testMeasurer`): text origin is
+// (MARGIN_PX, MARGIN_PX); `fakeWidth` is 1 unit per byte and `line_h` is 1, so for
+// a click at (x, y):
+//   column = clamp(x - MARGIN_PX, 0, line.text.len)
+//   line   = window_offset + (y - MARGIN_PX) / line_h     (clamped to last line)
+//   offset = line.start + column
+//
+// Interaction model (standard editor behaviour):
+//   * Press (button transitions to down): caret moves to the hit offset and a
+//     fresh selection is anchored there.
+//   * Drag (button held, pointer moved): caret follows the pointer; the anchor
+//     stays at the press offset, so the selection spans [press, current].
+//   * Click (press then release without moving): the empty selection collapses —
+//     `selection_anchor` becomes null and the caret sits at the click offset.
+// The tests assert the observable state after a complete gesture, not mid-drag.
+
+const X0 = MARGIN_PX; // x of column 0
+const Y0 = MARGIN_PX; // y of the first visible line (line_h == 1 under testMeasurer)
+
+test "mouse: drag selects a range" {
+    var buf: [20]u8 = undefined;
+    var state = AppState.init(&buf);
+    try feed(&state, .{ .text = "abcde" });
+
+    try feed(&state, .{ .mouse = .{ .x = X0 + 1, .y = Y0 }, .mouse_down = true }); // press at offset 1
+    try expectEqual(@as(?usize, 1), state.selection_anchor);
+    try expectEqual(1, state.cursor_i);
+
+    try feed(&state, .{ .mouse = .{ .x = X0 + 4, .y = Y0 }, .mouse_down = true }); // drag to offset 4
+    try expectEqual(@as(?usize, 1), state.selection_anchor);
+    try expectEqual(4, state.cursor_i);
+
+    try feed(&state, .{ .mouse = .{ .x = X0 + 4, .y = Y0 }, .mouse_down = false }); // release
+    try expectEqual(@as(?usize, 1), state.selection_anchor);
+    try expectEqual(4, state.cursor_i);
+}
+
+test "mouse: a click places the caret and clears the selection" {
+    var buf: [20]u8 = undefined;
+    var state = AppState.init(&buf);
+    try feed(&state, .{ .text = "abcde" });
+    try feed(&state, .{ .lefts = 2, .modifiers = mod_shift }); // keyboard-select [3,5]
+
+    try feed(&state, .{ .mouse = .{ .x = X0 + 1, .y = Y0 }, .mouse_down = true }); // click offset 1
+    try feed(&state, .{ .mouse = .{ .x = X0 + 1, .y = Y0 }, .mouse_down = false });
+
+    try expectEqual(@as(?usize, null), state.selection_anchor);
+    try expectEqual(1, state.cursor_i);
+}
+
+test "mouse: a click lands on the correct line in a multi-line document" {
+    var buf: [20]u8 = undefined;
+    var state = AppState.init(&buf);
+    try feed(&state, .{ .text = "ab\ncd" }); // lines: {0,"ab"}, {3,"cd"}
+
+    // Click column 1 of the second visual line → offset 4 (between 'c' and 'd').
+    try feed(&state, .{ .mouse = .{ .x = X0 + 1, .y = Y0 + 1 }, .mouse_down = true });
+    try feed(&state, .{ .mouse = .{ .x = X0 + 1, .y = Y0 + 1 }, .mouse_down = false });
+
+    try expectEqual(@as(?usize, null), state.selection_anchor);
+    try expectEqual(4, state.cursor_i);
+}
+
+test "mouse: a fresh click discards a prior mouse selection" {
+    var buf: [20]u8 = undefined;
+    var state = AppState.init(&buf);
+    try feed(&state, .{ .text = "abcde" });
+
+    // Drag-select [1,4].
+    try feed(&state, .{ .mouse = .{ .x = X0 + 1, .y = Y0 }, .mouse_down = true });
+    try feed(&state, .{ .mouse = .{ .x = X0 + 4, .y = Y0 }, .mouse_down = true });
+    try feed(&state, .{ .mouse = .{ .x = X0 + 4, .y = Y0 }, .mouse_down = false });
+
+    // A new click elsewhere must start over, not extend from the old anchor.
+    try feed(&state, .{ .mouse = .{ .x = X0, .y = Y0 }, .mouse_down = true }); // click offset 0
+    try feed(&state, .{ .mouse = .{ .x = X0, .y = Y0 }, .mouse_down = false });
+
+    try expectEqual(@as(?usize, null), state.selection_anchor);
+    try expectEqual(0, state.cursor_i);
+}
+
+test "mouse: caret tracks the pointer while held, anchor stays put" {
+    var buf: [20]u8 = undefined;
+    var state = AppState.init(&buf);
+    try feed(&state, .{ .text = "abcde" });
+
+    try feed(&state, .{ .mouse = .{ .x = X0 + 1, .y = Y0 }, .mouse_down = true }); // press at offset 1
+    try expectEqual(@as(?usize, 1), state.selection_anchor);
+
+    // Caret follows the pointer across several held frames; the anchor never moves,
+    // and the selection can flip to the left of the anchor.
+    try feed(&state, .{ .mouse = .{ .x = X0 + 4, .y = Y0 }, .mouse_down = true });
+    try expectEqual(@as(?usize, 1), state.selection_anchor);
+    try expectEqual(4, state.cursor_i);
+
+    try feed(&state, .{ .mouse = .{ .x = X0, .y = Y0 }, .mouse_down = true });
+    try expectEqual(@as(?usize, 1), state.selection_anchor);
+    try expectEqual(0, state.cursor_i); // selection now [0,1], anchor still 1
+
+    try feed(&state, .{ .mouse = .{ .x = X0 + 3, .y = Y0 }, .mouse_down = true });
+    try expectEqual(@as(?usize, 1), state.selection_anchor);
+    try expectEqual(3, state.cursor_i);
+}
+
+test "mouse: clicks outside the text clamp to the nearest row and column" {
+    var buf: [20]u8 = undefined;
+    var state = AppState.init(&buf);
+    try feed(&state, .{ .text = "ab\ncd" }); // lines: {0,"ab"}, {3,"cd"}
+
+    const Click = struct { x: f64, y: f64, want: usize };
+    const cases = [_]Click{
+        .{ .x = X0 + 999, .y = Y0 + 999, .want = 5 }, // below + right → end of last line
+        .{ .x = X0 - 999, .y = Y0 - 999, .want = 0 }, // above + left  → start of first line
+        .{ .x = X0 - 999, .y = Y0 + 1, .want = 3 }, // left of line 2  → its column 0
+        .{ .x = X0 + 999, .y = Y0, .want = 2 }, // right of line 1     → its last column
+    };
+    for (cases) |c| {
+        try feed(&state, .{ .mouse = .{ .x = c.x, .y = c.y }, .mouse_down = true });
+        try feed(&state, .{ .mouse = .{ .x = c.x, .y = c.y }, .mouse_down = false });
+        try expectEqual(c.want, state.cursor_i);
+    }
 }

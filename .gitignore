@@ -6,6 +6,7 @@ mac/nana/Resources
 *.db
 PROJECT-NOTES.md
 TODO*
+.claude/
 
 node_modules/
 mac/nana.xcodeproj/xcuserdata/

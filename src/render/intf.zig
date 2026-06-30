@@ -78,7 +78,7 @@ export fn nana_render_frame(ctx: CGContextRef, width: f64, height: f64, in: *con
     const text_len: usize = @min(@as(usize, in.text_len), max_len);
 
     const input = input_mod.Input{
-        .mouse = .{ .x = in.mouse_x, .y = in.mouse_y },
+        .mouse = .{ .x = @max(in.mouse_x, 0), .y = @max(in.mouse_y, 0) },
         .mouse_down = in.mouse_down,
         .modifiers = @intCast(in.modifiers),
         .text = in.text_utf8[0..text_len],
