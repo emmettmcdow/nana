@@ -7,4 +7,5 @@ comptime {
     _ = @import("utf.zig");
     _ = @import("geom.zig");
     _ = @import("app.zig");
+    _ = @import("markdown.zig");
 }

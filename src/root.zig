@@ -1648,7 +1648,7 @@ const tracy = @import("tracy");
 
 const dve = @import("dve");
 const embed = dve.embed;
-const markdown = @import("markdown.zig");
+const markdown = @import("render/markdown.zig");
 pub const SearchResult = dve.SearchResult;
 const util = @import("util.zig");
 const embedding_model = dve.embedding_model;

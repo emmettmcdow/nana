@@ -45,7 +45,6 @@ pub fn build(b: *std.Build) !void {
     const diff_file = b.path("src/dmp.zig");
     const perf_file = b.path("src/perf_benchmark.zig");
     const profile_file = b.path("src/profile.zig");
-    const markdown_file = b.path("src/markdown.zig");
     const util_file = b.path("src/util.zig");
 
     ///////////////////////////
@@ -185,21 +184,6 @@ pub fn build(b: *std.Build) !void {
         test_root.dependOn(&run.step);
     }
 
-    const test_markdown = b.step("test-markdown", "run the tests for src/markdown.zig");
-    {
-        const t = b.addTest(.{
-            .root_module = b.createModule(.{
-                .root_source_file = markdown_file,
-                .target = x86_target,
-                .optimize = optimize,
-            }),
-            .filters = if (test_filter != null) filters else &.{},
-        });
-        t.root_module.addImport("dve", dve_module);
-        addTracy(depOpts(x86_deps, t));
-        test_markdown.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
-    }
-
     const test_diff = b.step("test-diff", "run the tests for src/diff.zig");
     {
         const t = b.addTest(.{
@@ -280,7 +264,6 @@ pub fn build(b: *std.Build) !void {
     const file_tests = .{
         .{ "root.zig", test_root },
         .{ "diff.zig", test_diff },
-        .{ "markdown.zig", test_markdown },
         .{ "util.zig", test_util },
         .{ "render", test_render },
     };

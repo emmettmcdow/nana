@@ -1038,9 +1038,30 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
+const builtin = @import("builtin");
 const expect = std.expect;
 const expectEqualDeep = std.testing.expectEqualDeep;
 const expectEqualSlices = std.testing.expectEqualSlices;
 const utf8CountCodepoints = std.unicode.utf8CountCodepoints;
 
-const tracy = @import("tracy");
+const tracy = if (builtin.is_test)
+stub: {
+    break :stub struct {
+        pub const StubZone = struct {
+            pub fn end(self: StubZone) void {
+                _ = self;
+                return;
+            }
+        };
+        pub const StubArgs = struct {
+            name: []const u8,
+        };
+        pub fn beginZone(file: std.builtin.SourceLocation, args: StubArgs) StubZone {
+            _ = file;
+            _ = args;
+            return StubZone{};
+        }
+    };
+} else t: {
+    break :t @import("tracy");
+};
