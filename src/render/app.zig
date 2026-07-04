@@ -45,6 +45,11 @@ var md_parser: ?Markdown = null;
 // (splitLines, tokenAt) needs at least one, so fall back to this.
 const EMPTY_DOC_TOKENS: []const Token = &.{.{ .tType = .PLAIN, .startI = 0, .endI = 0, .contents = "" }};
 
+// Wall-clock duration of the previous `frame` call, used to report the FPS we
+// would hit if Swift weren't capping us at 60. Displayed a frame late (the debug
+// text is drawn before this frame's own time is known), which is fine at 60 Hz.
+var last_frame_ns: u64 = 0;
+
 const FONT_SIZE: f64 = 20;
 const MARGIN_PX: f64 = 100;
 
@@ -78,16 +83,29 @@ const Line = struct {
 };
 
 pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *AppState) !void {
+    // Time the whole frame so we can report the uncapped FPS. Recorded via defer
+    // so it captures every path out of the function.
+    var frame_timer = std.time.Timer.start() catch null;
+    defer if (frame_timer) |*t| {
+        last_frame_ns = t.read();
+    };
+
     // Background.
     canvas.clear(Color.rgb(0.12, 0.12, 0.14));
 
     { // debug
-        var buf: [64]u8 = undefined;
+        var buf: [96]u8 = undefined;
         const font_size: f64 = 24.0;
+        // Uncapped FPS from the previous frame's duration (0 on the first frame).
+        const fps: u64 = if (last_frame_ns > 0)
+            @intFromFloat(1_000_000_000.0 / @as(f64, @floatFromInt(last_frame_ns)))
+        else
+            0;
         _ = canvas.drawText(
-            std.fmt.bufPrint(&buf, "mouse: ({d}, {d})", .{
+            std.fmt.bufPrint(&buf, "mouse: ({d}, {d})  |  FPS {d} (capped at 60)", .{
                 @as(i64, @intFromFloat(in.mouse.x)),
                 @as(i64, @intFromFloat(in.mouse.y)),
+                fps,
             }) catch unreachable,
             0,
             canvas.size.h - font_size,
