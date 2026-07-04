@@ -19,6 +19,7 @@ const expectEqualStrings = std.testing.expectEqualStrings;
 const testing_allocator = std.testing.allocator;
 const assert = std.debug.assert;
 const markdown = @import("markdown.zig");
+const Markdown = markdown.Markdown;
 const Token = markdown.Token;
 const mod_shift = input.mod_shift;
 
@@ -64,6 +65,7 @@ const Line = struct {
     /// byte offset relative to the start of the document
     start: usize,
     text: []const u8,
+    tokens: []Token = &.{},
 };
 
 pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *AppState) !void {
@@ -231,32 +233,30 @@ fn heightWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, st
 /// it is returned. Each `Line.text` aliases `full_text`.
 fn splitLines(full_text: []const u8, tokens: []const Token, out: []Line, m: Measurer) []Line {
     var lineno: usize = 0;
-    var logical_start: usize = 0;
-    var line_splitter = std.mem.SplitIterator(u8, .any){
-        .index = 0,
-        .buffer = full_text,
-        .delimiter = "\n",
-    };
-    while (line_splitter.next()) |logical_line| {
-        var rendered_line_start_i: usize = 0;
-        rendered_line_splitter: while (true) {
-            var end = logical_line.len;
-            var rendered_line = logical_line[rendered_line_start_i..end];
-            while (m.width(rendered_line, tokens, rendered_line_start_i, end) >= m.content_w) {
-                assert(end > rendered_line_start_i);
-                end -= 1;
-                rendered_line = logical_line[rendered_line_start_i..end];
+    out[lineno].start = 0;
+    var last_token = tokens[0];
+    for (tokens) |token| {
+        last_token = token;
+        for (token.contents, 0..) |c, token_off| {
+            if (c == '\n') {
+                out[lineno].text = full_text[out[lineno].start .. token.startI + token_off];
+                lineno += 1;
+                out[lineno].start = token.startI + token_off + 1;
+                out[lineno].text = "";
+                continue;
             }
-            out[lineno] = .{
-                .start = logical_start + rendered_line_start_i,
-                .text = rendered_line,
-            };
-            lineno += 1;
-            rendered_line_start_i += rendered_line.len;
-            if (rendered_line_start_i >= logical_line.len) break :rendered_line_splitter;
+            const text_including_new_char = full_text[out[lineno].start .. token.startI + token_off + 1];
+            if (m.width(text_including_new_char, tokens, out[lineno].start, token.startI + token_off) >= m.content_w) {
+                out[lineno].text = full_text[out[lineno].start .. token.startI + token_off];
+                lineno += 1;
+                out[lineno].start = token.startI + token_off;
+                out[lineno].text = full_text[token.startI + token_off .. token.startI + token_off + 1];
+                continue;
+            }
         }
-        logical_start += logical_line.len + 1; // +1 for the '\n' the splitter consumed.
     }
+    out[lineno].text = full_text[out[lineno].start .. last_token.startI + last_token.contents.len];
+    lineno += 1;
     return out[0..lineno];
 }
 
@@ -557,6 +557,17 @@ test "splitLines breaks on newlines" {
     try expectEqualStrings("cd", lines[1].text);
 }
 
+test "splitLines deal with trailing newline" {
+    var out: [8]Line = undefined;
+    const text = "ab\n";
+    const lines = splitLines(text, &.{plainTokenize(text)}, &out, testMeasurer(1_000_000));
+    try expectEqual(2, lines.len);
+    try expectEqual(0, lines[0].start);
+    try expectEqualStrings("ab", lines[0].text);
+    try expectEqual(3, lines[1].start);
+    try expectEqualStrings("", lines[1].text);
+}
+
 test "splitLines soft-wraps a run wider than content_w" {
     var out: [8]Line = undefined;
     // fakeWidth == byte count; content_w 4 ⇒ at most 3 bytes per line.
@@ -592,18 +603,11 @@ test "splitLines handle multiple tokens" {
 
     const contents: []const u8 = "foo**bar**baz";
     const tokens = try parser.parse(contents);
-    const lines = splitLines(tokens, &out, testMeasurer(1_000_000));
+    const lines = splitLines(contents, tokens, &out, testMeasurer(1_000_000));
 
     try expectEqual(1, lines.len);
     const line = lines[0];
-    try expectEqual(3, line.tokens.len);
-
-    try expectEqual(line.tokens[0].tType, markdown.TokenType.PLAIN);
-    try expectEqualStrings("foo", line.tokens[0].contents);
-    try expectEqual(line.tokens[1].tType, markdown.TokenType.BOLD);
-    try expectEqualStrings("**bar**", line.tokens[1].contents);
-    try expectEqual(line.tokens[2].tType, markdown.TokenType.PLAIN);
-    try expectEqualStrings("baz", line.tokens[2].contents);
+    try expectEqualStrings(contents, line.text);
 }
 
 test "scrollToCursor scrolls down to reveal a cursor below the viewport" {
