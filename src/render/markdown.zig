@@ -75,6 +75,10 @@ pub const Markdown = struct {
         };
     }
 
+    pub fn deinit(self: *Self) void {
+        self.tokens.deinit(self.allocator);
+    }
+
     /// Parses the 'src'. Calling this invalidates(frees) the last returned list of tokens.
     pub fn parse(self: *Self, src: []const u8) ![]Token {
         const parse_zone = tracy.beginZone(@src(), .{ .name = "markdown.zig:parse" });

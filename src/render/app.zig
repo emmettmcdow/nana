@@ -18,6 +18,8 @@ const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const testing_allocator = std.testing.allocator;
 const assert = std.debug.assert;
+const markdown = @import("markdown.zig");
+const Token = markdown.Token;
 const mod_shift = input.mod_shift;
 
 const Color = geom.Color;
@@ -101,18 +103,22 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
     }
     const measurer = Measurer{
         .content_w = canvas.size.w - (MARGIN_PX * 2),
-        .line_h = canvas.measureText("M", FONT_SIZE).h,
         .ctx = canvas,
-        .widthFn = measureWithCanvas,
+        .widthFn = widthWithCanvas,
+        .heightFn = heightWithCanvas,
     };
 
     { // Calculate the displayed text and handle inputs
-        const shown = splitLines(condenseGapBuf(scratch.?, state.*), line_scratch.?, measurer);
-        try handleInput(allocator, in, state, shown, measurer);
+        const full_text = condenseGapBuf(scratch.?, state.*);
+        const tokens: []const Token = &.{plainTokenize(full_text)};
+        const lines = splitLines(full_text, tokens, line_scratch.?, measurer);
+        try handleInput(allocator, in, state, lines, tokens, measurer);
     }
 
     { // Render pass
-        const lines = splitLines(condenseGapBuf(scratch.?, state.*), line_scratch.?, measurer);
+        const full_text = condenseGapBuf(scratch.?, state.*);
+        const tokens: []const Token = &.{plainTokenize(full_text)};
+        const lines = splitLines(full_text, tokens, line_scratch.?, measurer);
         const text_x: f64 = MARGIN_PX;
         const line_h = measurer.line_h;
         const visible_lines: usize = if (line_h > 0) @intFromFloat(canvas.size.h / line_h) else lines.len;
@@ -191,24 +197,39 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
 
 const Measurer = struct {
     content_w: f64,
-    line_h: f64,
     ctx: *anyopaque,
-    widthFn: *const fn (ctx: *anyopaque, text: []const u8) f64,
+    widthFn: *const fn (ctx: *anyopaque, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64,
+    heightFn: *const fn (ctx: *anyopaque, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64,
 
-    fn width(self: Measurer, text: []const u8) f64 {
-        return self.widthFn(self.ctx, text);
+    fn width(self: Measurer, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64 {
+        return self.widthFn(self.ctx, text, tokens, start_i, end_i);
+    }
+
+    fn height(self: Measurer, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64 {
+        return self.heightFn(self.ctx, text, tokens, start_i, end_i);
     }
 };
 
-fn measureWithCanvas(ctx: *anyopaque, text: []const u8) f64 {
+fn widthWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64 {
+    _ = tokens;
+    _ = start_i;
+    _ = end_i;
     const canvas: *Canvas = @ptrCast(@alignCast(ctx));
     return canvas.measureText(text, FONT_SIZE).w;
+}
+
+fn heightWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64 {
+    _ = tokens;
+    _ = start_i;
+    _ = end_i;
+    const canvas: *Canvas = @ptrCast(@alignCast(ctx));
+    return canvas.measureText(text, FONT_SIZE).h;
 }
 
 /// Split `full_text` into rendered lines: hard breaks on '\n', soft wraps when a
 /// run would reach `m.content_w`. Lines are written into `out` and a sub-slice of
 /// it is returned. Each `Line.text` aliases `full_text`.
-fn splitLines(full_text: []const u8, out: []Line, m: Measurer) []Line {
+fn splitLines(full_text: []const u8, tokens: []const Token, out: []Line, m: Measurer) []Line {
     var lineno: usize = 0;
     var logical_start: usize = 0;
     var line_splitter = std.mem.SplitIterator(u8, .any){
@@ -221,7 +242,7 @@ fn splitLines(full_text: []const u8, out: []Line, m: Measurer) []Line {
         rendered_line_splitter: while (true) {
             var end = logical_line.len;
             var rendered_line = logical_line[rendered_line_start_i..end];
-            while (m.width(rendered_line) >= m.content_w) {
+            while (m.width(rendered_line, tokens, rendered_line_start_i, end) >= m.content_w) {
                 assert(end > rendered_line_start_i);
                 end -= 1;
                 rendered_line = logical_line[rendered_line_start_i..end];
@@ -260,7 +281,14 @@ fn scrollToCursor(window_offset: usize, cursor_line: usize, visible_lines: usize
     return window_offset; // already visible
 }
 
-fn handleInput(allocator: std.mem.Allocator, in: Input, state: *AppState, lines: []const Line, measurer: Measurer) !void {
+fn handleInput(
+    allocator: std.mem.Allocator,
+    in: Input,
+    state: *AppState,
+    lines: []const Line,
+    tokens: []const Token,
+    measurer: Measurer,
+) !void {
     state.assertInvariant();
     var cursor_target: ?usize = null;
     if (in.mouse_down) {
@@ -268,16 +296,17 @@ fn handleInput(allocator: std.mem.Allocator, in: Input, state: *AppState, lines:
             var lineno: usize = lines.len - 1;
             var curr_y: f64 = MARGIN_PX;
             for (state.window_offset..lines.len) |i| {
-                if (in.mouse.y < curr_y + measurer.line_h) {
+                const line_h = measurer.height(lines[i].text, tokens, lines[i].start, lines[i].start + lines[i].text.len);
+                if (in.mouse.y < curr_y + line_h) {
                     lineno = i;
                     break;
                 }
-                curr_y += measurer.line_h;
+                curr_y += line_h;
             }
             var col: usize = lines[lineno].text.len;
             var curr_x: f64 = MARGIN_PX;
             for (0..lines[lineno].text.len) |i| {
-                const char_width = measurer.width(lines[lineno].text[i .. i + 1]);
+                const char_width = measurer.width(lines[lineno].text[i .. i + 1], tokens, lines[lineno].start + i, lines[lineno].start + i + 1);
                 if (in.mouse.x < curr_x + (char_width / 2.0)) {
                     col = i;
                     break;
@@ -465,12 +494,44 @@ fn expectTextContentsEquals(expected: []const u8, state: AppState) !void {
 
 var fake_ctx: u8 = 0;
 
-fn fakeWidth(_: *anyopaque, text: []const u8) f64 {
+fn fakeWidth(
+    _: *anyopaque,
+    text: []const u8,
+    tokens: []const Token,
+    start_i: usize,
+    end_i: usize,
+) f64 {
+    _ = tokens;
+    _ = start_i;
+    _ = end_i;
     return @floatFromInt(text.len);
 }
 
+fn fakeHeight(
+    _: *anyopaque,
+    text: []const u8,
+    tokens: []const Token,
+    start_i: usize,
+    end_i: usize,
+) f64 {
+    _ = tokens;
+    _ = text;
+    _ = start_i;
+    _ = end_i;
+    return 1;
+}
+
 fn testMeasurer(content_w: f64) Measurer {
-    return .{ .content_w = content_w, .line_h = 1, .ctx = &fake_ctx, .widthFn = fakeWidth };
+    return .{
+        .content_w = content_w,
+        .ctx = &fake_ctx,
+        .widthFn = fakeWidth,
+        .heightFn = fakeHeight,
+    };
+}
+
+fn plainTokenize(full_text: []const u8) Token {
+    return Token{ .tType = .PLAIN, .startI = 0, .endI = full_text.len, .contents = full_text };
 }
 
 /// Drive `handleInput` the way `frame` does, but with the fake measurer
@@ -479,13 +540,15 @@ fn feed(state: *AppState, in: Input) !void {
     var line_buf: [256]Line = undefined;
     const measurer = testMeasurer(1_000_000);
     const doc = condenseGapBuf(&doc_buf, state.*);
-    const lines = splitLines(doc, &line_buf, measurer);
-    try handleInput(testing_allocator, in, state, lines, measurer);
+    const tokens = &.{plainTokenize(doc)};
+    const lines = splitLines(doc, tokens, &line_buf, measurer);
+    try handleInput(testing_allocator, in, state, lines, tokens, measurer);
 }
 
 test "splitLines breaks on newlines" {
     var out: [8]Line = undefined;
-    const lines = splitLines("ab\ncd", &out, testMeasurer(1_000_000));
+    const text = "ab\ncd";
+    const lines = splitLines(text, &.{plainTokenize(text)}, &out, testMeasurer(1_000_000));
 
     try expectEqual(2, lines.len);
     try expectEqual(0, lines[0].start);
@@ -497,7 +560,8 @@ test "splitLines breaks on newlines" {
 test "splitLines soft-wraps a run wider than content_w" {
     var out: [8]Line = undefined;
     // fakeWidth == byte count; content_w 4 ⇒ at most 3 bytes per line.
-    const lines = splitLines("abcdef", &out, testMeasurer(4));
+    const text = "abcdef";
+    const lines = splitLines(text, &.{plainTokenize(text)}, &out, testMeasurer(4));
 
     try expectEqual(2, lines.len);
     try expectEqual(0, lines[0].start);
@@ -509,7 +573,8 @@ test "splitLines soft-wraps a run wider than content_w" {
 test "splitLines start offsets account for newlines across wraps" {
     var out: [8]Line = undefined;
     // "abcd\nef": first logical line wraps (3 per line), then a hard break.
-    const lines = splitLines("abcd\nef", &out, testMeasurer(4));
+    const text = "abcd\nef";
+    const lines = splitLines(text, &.{plainTokenize(text)}, &out, testMeasurer(4));
 
     try expectEqual(3, lines.len);
     try expectEqual(0, lines[0].start);
@@ -518,6 +583,27 @@ test "splitLines start offsets account for newlines across wraps" {
     try expectEqualStrings("d", lines[1].text);
     try expectEqual(5, lines[2].start); // past the 'd' (4) and the '\n' (5)
     try expectEqualStrings("ef", lines[2].text);
+}
+
+test "splitLines handle multiple tokens" {
+    var out: [8]Line = undefined;
+    var parser = Markdown.init(testing_allocator);
+    defer parser.deinit();
+
+    const contents: []const u8 = "foo**bar**baz";
+    const tokens = try parser.parse(contents);
+    const lines = splitLines(tokens, &out, testMeasurer(1_000_000));
+
+    try expectEqual(1, lines.len);
+    const line = lines[0];
+    try expectEqual(3, line.tokens.len);
+
+    try expectEqual(line.tokens[0].tType, markdown.TokenType.PLAIN);
+    try expectEqualStrings("foo", line.tokens[0].contents);
+    try expectEqual(line.tokens[1].tType, markdown.TokenType.BOLD);
+    try expectEqualStrings("**bar**", line.tokens[1].contents);
+    try expectEqual(line.tokens[2].tType, markdown.TokenType.PLAIN);
+    try expectEqualStrings("baz", line.tokens[2].contents);
 }
 
 test "scrollToCursor scrolls down to reveal a cursor below the viewport" {
@@ -664,7 +750,8 @@ test "handleInput up across a soft-wrapped line" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
 
-    try feed(&state, .{ .text = "abcdef" }); // cursor at end (offset 6)
+    const contents = "abcdef";
+    try feed(&state, .{ .text = contents }); // cursor at end (offset 6)
 
     // "abcdef" laid out as two soft-wrapped visual lines (no '\n' between them).
     // Hand-built, so this navigation is exercised with zero font dependency — only
@@ -673,7 +760,14 @@ test "handleInput up across a soft-wrapped line" {
         .{ .start = 0, .text = "abc" },
         .{ .start = 3, .text = "def" },
     };
-    try handleInput(testing_allocator, .{ .ups = 1 }, &state, &lines, testMeasurer(1_000_000));
+    try handleInput(
+        testing_allocator,
+        .{ .ups = 1 },
+        &state,
+        &lines,
+        &.{plainTokenize(contents)},
+        testMeasurer(1_000_000),
+    );
 
     // Cursor sat at the end of the 2nd visual line ⇒ lands at the end of the 1st
     // (offset 3), between 'c' and 'd'.
