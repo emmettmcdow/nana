@@ -278,7 +278,11 @@ fn fontSizeAt(tokens: []const Token, i: usize) f64 {
 fn widthWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64 {
     _ = end_i;
     const canvas: *Canvas = @ptrCast(@alignCast(ctx));
-    return canvas.measureText(text, fontSizeAt(tokens, start_i)).w;
+    // An empty line (e.g. a blank line after a trailing '\n') still occupies a
+    // full row and needs a visible caret, so measure a placeholder glyph for its
+    // height rather than the empty string, which measures to zero.
+    const measured = if (text.len == 0) " " else text;
+    return canvas.measureText(measured, fontSizeAt(tokens, start_i)).w;
 }
 
 fn heightWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64 {
