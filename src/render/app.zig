@@ -37,7 +37,15 @@ var scratch: ?[]u8 = null;
 const BASE_LINE_SCRATCH_SIZE = 1024; // max rendered lines before regrow
 var line_scratch: ?[]Line = null;
 
-const FONT_SIZE: f64 = 200;
+// Persisted across frames so the token list isn't reallocated from scratch each
+// refresh. `parse` frees and rebuilds its internal list on every call.
+var md_parser: ?Markdown = null;
+
+// The parser yields zero tokens for an empty document; the rest of the pipeline
+// (splitLines, tokenAt) needs at least one, so fall back to this.
+const EMPTY_DOC_TOKENS: []const Token = &.{.{ .tType = .PLAIN, .startI = 0, .endI = 0, .contents = "" }};
+
+const FONT_SIZE: f64 = 20;
 const MARGIN_PX: f64 = 100;
 
 const TEXT_COLOR: Color = Color.rgb(0.95, 0.82, 0.40);
@@ -103,6 +111,9 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
             defer allocator.free(line_scratch.?);
             line_scratch = try allocator.alloc(Line, line_scratch.?.len << 1);
         }
+        if (md_parser == null) {
+            md_parser = Markdown.init(allocator);
+        }
     }
     const measurer = Measurer{
         .content_w = canvas.size.w - (MARGIN_PX * 2),
@@ -113,14 +124,14 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
 
     { // Calculate the displayed text and handle inputs
         const full_text = condenseGapBuf(scratch.?, state.*);
-        const tokens: []const Token = &.{plainTokenize(full_text)};
+        const tokens = try tokenize(full_text);
         const lines = splitLines(full_text, tokens, line_scratch.?, measurer);
         try handleInput(allocator, in, state, lines, tokens, measurer);
     }
 
     { // Render pass
         const full_text = condenseGapBuf(scratch.?, state.*);
-        const tokens: []const Token = &.{plainTokenize(full_text)};
+        const tokens = try tokenize(full_text);
         const lines = splitLines(full_text, tokens, line_scratch.?, measurer);
         const text_x: f64 = MARGIN_PX;
 
@@ -133,6 +144,7 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
         var caret_drawn = false;
         for (lines[top..lines.len]) |line| {
             const line_h = line.h;
+            const line_font_size = fontSizeAt(tokens, line.start);
             if (text_y + line_h >= writable_text_area_h) break;
             { // selection rendering
                 const cursor_in_line = state.cursor_i >= line.start and state.cursor_i <= line.start + line.text.len;
@@ -194,7 +206,7 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                     canvas.fillRect(.{ .x = text_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
                 }
             }
-            _ = canvas.drawText(line.text, text_x, text_y, FONT_SIZE, TEXT_COLOR);
+            _ = canvas.drawText(line.text, text_x, text_y, line_font_size, TEXT_COLOR);
             text_y += line_h;
         }
     }
@@ -215,20 +227,50 @@ const Measurer = struct {
     }
 };
 
+/// Font-size multiplier for a markdown token, relative to the base `FONT_SIZE`.
+/// Headers scale up by level; everything else renders at the base size.
+fn sizeMultiplier(token: Token) f64 {
+    return switch (token.tType) {
+        .HEADER => switch (token.degree) {
+            1 => 2.0,
+            2 => 1.75,
+            3 => 1.5,
+            4 => 1.25,
+            5 => 1.1,
+            else => 1.0,
+        },
+        else => 1.0,
+    };
+}
+
+/// The token whose source range [startI, endI) covers `i`; falls back to the
+/// last token (e.g. for the caret position just past the end of the text).
+fn tokenAt(tokens: []const Token, i: usize) Token {
+    for (tokens) |t| {
+        if (i >= t.startI and i < t.endI) return t;
+    }
+    return tokens[tokens.len - 1];
+}
+
+/// The base font size scaled for whichever token covers source offset `i`.
+fn fontSizeAt(tokens: []const Token, i: usize) f64 {
+    return FONT_SIZE * sizeMultiplier(tokenAt(tokens, i));
+}
+
 fn widthWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64 {
-    _ = tokens;
-    _ = start_i;
     _ = end_i;
     const canvas: *Canvas = @ptrCast(@alignCast(ctx));
-    return canvas.measureText(text, FONT_SIZE).w;
+    return canvas.measureText(text, fontSizeAt(tokens, start_i)).w;
 }
 
 fn heightWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64 {
-    _ = tokens;
-    _ = start_i;
     _ = end_i;
     const canvas: *Canvas = @ptrCast(@alignCast(ctx));
-    return canvas.measureText(text, FONT_SIZE).h;
+    // An empty line (e.g. a blank line after a trailing '\n') still occupies a
+    // full row and needs a visible caret, so measure a placeholder glyph for its
+    // height rather than the empty string, which measures to zero.
+    const measured = if (text.len == 0) " " else text;
+    return canvas.measureText(measured, fontSizeAt(tokens, start_i)).h;
 }
 
 /// Split `full_text` into rendered lines: hard breaks on '\n', soft wraps when a
@@ -548,6 +590,13 @@ fn testMeasurer(content_w: f64) Measurer {
 
 fn plainTokenize(full_text: []const u8) Token {
     return Token{ .tType = .PLAIN, .startI = 0, .endI = full_text.len, .contents = full_text };
+}
+
+/// Parse `full_text` into markdown tokens via the persisted parser, falling back
+/// to a single plain token for an empty document (which the parser returns none for).
+fn tokenize(full_text: []const u8) ![]const Token {
+    const parsed = try md_parser.?.parse(full_text);
+    return if (parsed.len == 0) EMPTY_DOC_TOKENS else parsed;
 }
 
 /// Drive `handleInput` the way `frame` does, but with the fake measurer
