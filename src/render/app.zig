@@ -65,7 +65,8 @@ const Line = struct {
     /// byte offset relative to the start of the document
     start: usize,
     text: []const u8,
-    tokens: []Token = &.{},
+    h: f64 = 0,
+    w: f64 = 0,
 };
 
 pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *AppState) !void {
@@ -122,15 +123,17 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
         const tokens: []const Token = &.{plainTokenize(full_text)};
         const lines = splitLines(full_text, tokens, line_scratch.?, measurer);
         const text_x: f64 = MARGIN_PX;
-        const line_h = measurer.line_h;
-        const visible_lines: usize = if (line_h > 0) @intFromFloat(canvas.size.h / line_h) else lines.len;
-        state.window_offset = scrollToCursor(state.window_offset, cursorLine(lines, state.cursor_i), visible_lines);
+
+        const writable_text_area_h = canvas.size.h - (MARGIN_PX * 2);
+
+        state.window_offset = scrollToCursor(lines, state.window_offset, cursorLine(lines, state.cursor_i), writable_text_area_h);
 
         const top = @min(state.window_offset, lines.len);
-        const bottom = @min(top + visible_lines, lines.len);
         var text_y: f64 = MARGIN_PX;
         var caret_drawn = false;
-        for (lines[top..bottom]) |line| {
+        for (lines[top..lines.len]) |line| {
+            const line_h = line.h;
+            if (text_y + line_h >= writable_text_area_h) break;
             { // selection rendering
                 const cursor_in_line = state.cursor_i >= line.start and state.cursor_i <= line.start + line.text.len;
                 const anchor_in_line = state.selection_anchor != null and state.selection_anchor.? >= line.start and state.selection_anchor.? <= line.start + line.text.len;
@@ -138,7 +141,7 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                     // At a soft-wrap boundary the cursor offset matches both the end
                     // of one line and the start of the next; prefer the earlier line.
                     const caret_offset = state.cursor_i - line.start;
-                    const caret_x = text_x + canvas.measureText(line.text[0..caret_offset], FONT_SIZE).w;
+                    const caret_x = text_x + measurer.width(line.text[0..caret_offset], tokens, line.start, line.start + caret_offset);
                     canvas.fillRect(.{ .x = caret_x, .y = text_y, .w = 2, .h = line_h }, Color.white);
                     caret_drawn = true;
                 }
@@ -146,14 +149,14 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                     if (state.selection_anchor) |anchor| {
                         const anchor_offset: usize = anchor - line.start;
                         const caret_offset = state.cursor_i - line.start;
-                        const caret_x = text_x + canvas.measureText(line.text[0..caret_offset], FONT_SIZE).w;
+                        const caret_x = text_x + measurer.width(line.text[0..caret_offset], tokens, line.start, line.start + caret_offset);
                         var box_start_x: f64 = undefined;
                         var selection_w: f64 = undefined;
                         if (anchor_offset < caret_offset) {
-                            selection_w = canvas.measureText(line.text[anchor_offset..caret_offset], FONT_SIZE).w;
+                            selection_w = measurer.width(line.text[anchor_offset..caret_offset], tokens, line.start + anchor_offset, line.start + caret_offset);
                             box_start_x = caret_x - selection_w;
                         } else {
-                            selection_w = canvas.measureText(line.text[caret_offset..anchor_offset], FONT_SIZE).w;
+                            selection_w = measurer.width(line.text[caret_offset..anchor_offset], tokens, line.start + caret_offset, line.start + anchor_offset);
                             box_start_x = caret_x;
                         }
                         canvas.fillRect(.{ .x = box_start_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
@@ -162,24 +165,24 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                     // Selection anchor is on another line
                     if (state.selection_anchor.? < state.cursor_i) {
                         const caret_offset = state.cursor_i - line.start;
-                        const selection_w: f64 = canvas.measureText(line.text[0..caret_offset], FONT_SIZE).w;
+                        const selection_w: f64 = measurer.width(line.text[0..caret_offset], tokens, line.start, line.start + caret_offset);
                         canvas.fillRect(.{ .x = text_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
                     } else {
                         const caret_offset = state.cursor_i - line.start;
-                        const selection_w: f64 = canvas.measureText(line.text[caret_offset..line.text.len], FONT_SIZE).w;
-                        const caret_x = text_x + canvas.measureText(line.text[0..caret_offset], FONT_SIZE).w;
+                        const selection_w: f64 = measurer.width(line.text[caret_offset..line.text.len], tokens, line.start + caret_offset, line.start + line.text.len);
+                        const caret_x = text_x + measurer.width(line.text[0..caret_offset], tokens, line.start, line.start + caret_offset);
                         canvas.fillRect(.{ .x = caret_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
                     }
                 } else if (anchor_in_line) {
                     // Cursor is on another line
                     if (state.selection_anchor.? < state.cursor_i) {
                         const anchor_offset = state.selection_anchor.? - line.start;
-                        const selection_w: f64 = canvas.measureText(line.text[anchor_offset..line.text.len], FONT_SIZE).w;
-                        const anchor_x = text_x + canvas.measureText(line.text[0..anchor_offset], FONT_SIZE).w;
+                        const selection_w: f64 = measurer.width(line.text[anchor_offset..line.text.len], tokens, line.start + anchor_offset, line.start + line.text.len);
+                        const anchor_x = text_x + measurer.width(line.text[0..anchor_offset], tokens, line.start, line.start + anchor_offset);
                         canvas.fillRect(.{ .x = anchor_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
                     } else {
                         const anchor_offset = state.selection_anchor.? - line.start;
-                        const selection_w: f64 = canvas.measureText(line.text[0..anchor_offset], FONT_SIZE).w;
+                        const selection_w: f64 = measurer.width(line.text[0..anchor_offset], tokens, line.start, line.start + anchor_offset);
                         canvas.fillRect(.{ .x = text_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
                     }
                 } else if (state.selection_anchor != null and
@@ -187,7 +190,7 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                     (line.start + line.text.len) < @max(state.selection_anchor.?, state.cursor_i))
                 {
                     // Line is between the anchor and cursor
-                    const selection_w: f64 = canvas.measureText(line.text[0..line.text.len], FONT_SIZE).w;
+                    const selection_w: f64 = measurer.width(line.text[0..line.text.len], tokens, line.start, line.start + line.text.len);
                     canvas.fillRect(.{ .x = text_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
                 }
             }
@@ -257,6 +260,10 @@ fn splitLines(full_text: []const u8, tokens: []const Token, out: []Line, m: Meas
     }
     out[lineno].text = full_text[out[lineno].start .. last_token.startI + last_token.contents.len];
     lineno += 1;
+    for (out[0..lineno]) |*line| {
+        line.h = m.height(line.text, tokens, line.start, line.start + line.text.len);
+        line.w = m.width(line.text, tokens, line.start, line.start + line.text.len);
+    }
     return out[0..lineno];
 }
 
@@ -271,14 +278,23 @@ fn cursorLine(lines: []const Line, cursor_i: usize) usize {
 }
 
 /// Scroll the view just enough to keep `cursor_line` inside a viewport that is
-/// `visible_lines` tall, given the current top line `window_offset`. Returns the
-/// new top line.
-fn scrollToCursor(window_offset: usize, cursor_line: usize, visible_lines: usize) usize {
+/// `screen_h` pixels tall, given the current top line `window_offset`.
+fn scrollToCursor(lines: []const Line, window_offset: usize, cursor_line: usize, screen_h: f64) usize {
     if (cursor_line < window_offset) return cursor_line; // above the viewport
-    if (visible_lines > 0 and cursor_line >= window_offset + visible_lines) {
-        return cursor_line - visible_lines + 1; // below the viewport
+
+    var stacked: f64 = 0;
+    var i = window_offset;
+    while (i <= cursor_line) : (i += 1) stacked += lines[i].h;
+    if (stacked <= screen_h) return window_offset; // Already in view
+
+    // Below the viewport
+    stacked = lines[cursor_line].h;
+    var top = cursor_line;
+    while (top > 0 and stacked + lines[top - 1].h <= screen_h) {
+        top -= 1;
+        stacked += lines[top].h;
     }
-    return window_offset; // already visible
+    return top;
 }
 
 fn handleInput(
@@ -610,20 +626,55 @@ test "splitLines handle multiple tokens" {
     try expectEqualStrings(contents, line.text);
 }
 
+test "splitLines output dimensions" {
+    var out: [8]Line = undefined;
+    const text = "1\n12\n123";
+    const lines = splitLines(text, &.{plainTokenize(text)}, &out, testMeasurer(4));
+
+    try expectEqual(3, lines.len);
+    try expectEqual(1, lines[0].h);
+    try expectEqual(1, lines[0].w);
+    try expectEqual(1, lines[1].h);
+    try expectEqual(2, lines[1].w);
+    try expectEqual(1, lines[2].h);
+    try expectEqual(3, lines[2].w);
+}
+
+/// `n` unit-height lines, for exercising scrollToCursor's line-count logic
+/// independent of measured heights.
+fn unitLines(comptime n: usize) [n]Line {
+    var lines: [n]Line = undefined;
+    for (&lines, 0..) |*line, i| line.* = .{ .start = i, .text = "", .h = 1, .w = 0 };
+    return lines;
+}
+
 test "scrollToCursor scrolls down to reveal a cursor below the viewport" {
-    // 3-tall viewport at the top (offset 0); cursor on line 5 is off the bottom.
-    // Top line shifts so line 5 is the last visible: 5 - 3 + 1 = 3.
-    try expectEqual(3, scrollToCursor(0, 5, 3));
+    // 3px-tall viewport at the top (offset 0) with unit-height lines; cursor on
+    // line 5 is off the bottom. Top shifts so line 5 is last visible: 5 - 3 + 1 = 3.
+    var lines = unitLines(6);
+    try expectEqual(3, scrollToCursor(&lines, 0, 5, 3));
 }
 
 test "scrollToCursor scrolls up to reveal a cursor above the viewport" {
     // Scrolled to line 4 (showing 4..6); cursor on line 1 is above ⇒ top = 1.
-    try expectEqual(1, scrollToCursor(4, 1, 3));
+    var lines = unitLines(6);
+    try expectEqual(1, scrollToCursor(&lines, 4, 1, 3));
 }
 
 test "scrollToCursor leaves the offset alone when the cursor is already visible" {
     // Showing lines 2..4; cursor on line 3 is within ⇒ unchanged.
-    try expectEqual(2, scrollToCursor(2, 3, 3));
+    var lines = unitLines(6);
+    try expectEqual(2, scrollToCursor(&lines, 2, 3, 3));
+}
+
+test "scrollToCursor accounts for variable line heights when scrolling down" {
+    // Lines are 2px tall except a 4px line 3. A 6px viewport at offset 0 shows
+    // lines 0..2 (2+2+2=6); cursor on line 3 pushes the top down. From line 3
+    // (4px) only line 2 (2px) also fits within 6px ⇒ top = 2.
+    var lines = unitLines(5);
+    for (&lines) |*line| line.h = 2;
+    lines[3].h = 4;
+    try expectEqual(2, scrollToCursor(&lines, 0, 3, 6));
 }
 
 test "handleInput hello" {
