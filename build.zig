@@ -371,6 +371,11 @@ fn addTracy(opts: DepOptions) void {
         .optimize = opts.optimize,
         .tracy_enable = tracy_enable,
         .tracy_callstack = 62,
+        // On-demand: the Tracy client collects nothing until a `tracy` server
+        // connects. Without this the client buffers profiling data from startup
+        // and, with no server attached, grows unbounded (multi-GB in seconds at
+        // 60fps). Must match dve's tracy options exactly or the module collides.
+        .tracy_on_demand = true,
     });
     opts.dest.root_module.addImport("tracy", tracy_dep.module("tracy"));
     if (!tracy_enable) return;
