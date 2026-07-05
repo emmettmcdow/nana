@@ -114,20 +114,18 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
         );
     }
 
-    { // scratch setup
+    { // scratch setup / init
         if (scratch == null) {
             scratch = try allocator.alloc(u8, BASE_SCRATCH_SIZE);
-        }
-        if (scratch.?.len <= state.text_len) {
-            defer allocator.free(scratch.?);
-            scratch = try allocator.alloc(u8, scratch.?.len << 1);
         }
         if (line_scratch == null) {
             line_scratch = try allocator.alloc(Line, BASE_LINE_SCRATCH_SIZE);
         }
-        if (line_scratch.?.len <= state.text_len) {
-            defer allocator.free(line_scratch.?);
-            line_scratch = try allocator.alloc(Line, line_scratch.?.len << 1);
+        while (scratch.?.len <= state.text_len) {
+            scratch = try allocator.realloc(scratch.?, scratch.?.len << 1);
+        }
+        while (line_scratch.?.len <= state.text_len) {
+            line_scratch = try allocator.realloc(line_scratch.?, line_scratch.?.len << 1);
         }
         if (md_parser == null) {
             md_parser = Markdown.init(allocator);
