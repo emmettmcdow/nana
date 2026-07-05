@@ -36,26 +36,25 @@ var state: ?AppState = null;
 export fn nana_render_init() void {
     state = AppState.init(gpa.allocator().alloc(u8, GAP_BUF_SIZE) catch unreachable);
     const text: []const u8 =
-        \\ line 1
-        \\ line 2
-        \\ line 3
-        \\ line 4
-        \\ line 5
-        \\ line 6
-        \\ line 7
-        \\ line 8
-        \\ line 9
-        \\ line 10
-        \\ line 11
-        \\ line 12
-        \\ line 13
-        \\ line 14
-        \\ line 15
-        \\ line 16
-        \\ line 17
-        \\ line 18
-        \\ line 19
-        \\ line 20
+        \\# Header 1
+        \\Here is some __italicized text__.
+        \\## Header 2
+        \\Here is some **bold text**.
+        \\### Header 3
+        \\Here is some ***emphasized text***.
+        \\Here is a [link](https://google.com).
+        \\#### Header 4
+        \\Here is a `code snippet`.
+        \\##### Header 5
+        \\The following is a quote:
+        \\> you miss every shot you don't take.
+        \\> - michael scott
+        \\###### Header 6
+        \\Here is a code block:
+        \\```bash
+        \\$ curl ifconfig.me
+        \\2601:645:8400:2fb0:5832:3f5a:ba00:29b
+        \\```
     ;
     @memcpy(state.?.gap_buf[0..text.len], text);
     // Cursor starts at the end of the seeded text, so the tail is empty: leave
