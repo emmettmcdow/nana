@@ -7,15 +7,6 @@
 
 import Foundation
 import SwiftUI
-import UniformTypeIdentifiers
-
-#if DISABLE_NANAKIT
-    private func nana_doctor() -> Int32 {
-        return 0 // Success
-    }
-#else
-    import NanaKit
-#endif
 
 enum AppColorScheme: String, CaseIterable, Identifiable, Codable {
     case light = "Light"
@@ -77,23 +68,13 @@ struct StylePreview: View {
 
     var body: some View {
         let palette = Palette.forPreference(preference, colorScheme: colorScheme)
-        ZStack {
-            HStack {
-                VStack {
-                    Text("The quick brown fox jumped over the lazy dog")
-                        .font(.system(size: sz))
-                    Spacer()
-                }
+        HStack {
+            VStack(alignment: .leading) {
+                Text("The quick brown fox jumped over the lazy dog")
+                    .font(.system(size: sz))
                 Spacer()
             }
-            HStack {
-                Spacer()
-                VStack {
-                    Spacer()
-                    SearchButton(onClick: {})
-                    CircularPlusButton(action: {})
-                }
-            }
+            Spacer()
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -112,215 +93,34 @@ struct StylePreview: View {
 }
 
 struct GeneralSettingsView: View {
-    @AppStorage("skipHighlights") private var skipHighlights: Bool = false
     @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("fontSize") private var fontSize: Double = 14
-    @AppStorage("initializationFailed") private var initializationFailed = false
-    @EnvironmentObject var contextManager: ContextManager
-
-    @State var showFileImporter = false
-    @State var files: [ImportItem] = []
-    @State var action: String = ""
-
-    func onProgress(files: [ImportItem]) {
-        self.files = files
-    }
-
-    private func presentAddWorkspace() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.message = "Choose a directory for the new workspace"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        _ = contextManager.addUserContext(url: url)
-    }
 
     var body: some View {
-        TabView {
-            Tab("Appearance", systemImage: "paintpalette") {
-                Form {
-                    Section(header: Text("Font and Color")) {
-                        Picker("Color Scheme:", selection: $preference) {
-                            ForEach(ColorSchemePreference.allCases) { option in
-                                Text(option.description).tag(option)
-                            }
-                        }
-                        .pickerStyle(.inline)
-                        Stepper("Font Size: \(fontSize.formatted())px",
-                                value: $fontSize,
-                                in: 1 ... 64)
-                    }
-                    Section(header: Text("Preview")) {
-                        StylePreview(sz: fontSize)
-                            .padding()
+        Form {
+            Section(header: Text("Font and Color")) {
+                Picker("Color Scheme:", selection: $preference) {
+                    ForEach(ColorSchemePreference.allCases) { option in
+                        Text(option.description).tag(option)
                     }
                 }
-                .formStyle(.grouped)
+                .pickerStyle(.inline)
+                Stepper("Font Size: \(fontSize.formatted())px",
+                        value: $fontSize,
+                        in: 1 ... 64)
             }
-            Tab("Search", systemImage: "magnifyingglass") {
-                Form {
-                    Section(header: Text("Display")) {
-                        Toggle("Disable match highlighting", isOn: $skipHighlights)
-                            .help("Toggle this to show or hide sections of search results which matched the query.")
-                    }
-                }
-                .formStyle(.grouped)
-            }
-            Tab("Shortcuts", systemImage: "keyboard") {
-                Form {
-                    Section(header: Text("Control")) {
-                        HStack {
-                            Text("New Note:")
-                            Spacer()
-                            Text("⌘p").bold().monospaced()
-                        }
-                        HStack {
-                            Text("Search:")
-                            Spacer()
-                            Text("⌘s").bold().monospaced()
-                        }
-                        HStack {
-                            Text("Exit Search:")
-                            Spacer()
-                            Text("esc").bold().monospaced()
-                        }
-                    }
-                    Section(header: Text("Display")) {
-                        HStack {
-                            Text("Increase Font Size:")
-                            Spacer()
-                            Text("⌘+").bold().monospaced()
-                        }
-                        HStack {
-                            Text("Decrease Font Size:")
-                            Spacer()
-                            Text("⌘-").bold().monospaced()
-                        }
-                    }
-                }
-                .formStyle(.grouped)
-            }
-            Tab("Data", systemImage: "document") {
-                Form {
-                    Section(header: Text("Workspaces")) {
-                        ForEach(contextManager.contexts) { ctx in
-                            HStack {
-                                VStack(alignment: .leading) {
-                                    Text(ctx.displayName)
-                                    if ctx.id == contextManager.activeID {
-                                        Text("Active")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    } else if case .iCloudContainer = ctx.source {
-                                        Text("Default (iCloud)")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                Spacer()
-                                if contextManager.canRemove(ctx) {
-                                    Button(role: .destructive) {
-                                        contextManager.removeContext(ctx.id)
-                                    } label: {
-                                        Image(systemName: "trash")
-                                    }
-                                    .buttonStyle(.borderless)
-                                }
-                            }
-                        }
-                        HStack {
-                            Button {
-                                presentAddWorkspace()
-                            } label: {
-                                Label("Add Workspace...", systemImage: "plus")
-                            }
-                            Spacer()
-                            Text("Active and default workspaces can't be removed")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    Section(header: Text("Data Mangement")) {
-                        HStack {
-                            Button {
-                                action = "import"
-                                showFileImporter = true
-                            } label: {
-                                Label("Import Obsidian Vault",
-                                      systemImage: "square.and.arrow.down")
-                            }
-                            .fileImporter(
-                                isPresented: $showFileImporter,
-                                allowedContentTypes: [.directory],
-                                allowsMultipleSelection: false
-                            ) { result in
-                                Task {
-                                    try await import_from_dir(result: result,
-                                                              onProgress: onProgress)
-                                }
-                            }
-                            Spacer()
-                            Text("Load Obsidian notes into nana")
-                        }
-                        HStack {
-                            Button {
-                                action = "doctor"
-                                Task {
-                                    await import_from_doctor(onProgress: onProgress)
-                                    initializationFailed = false
-                                }
-                            } label: {
-                                Label("Doctor", systemImage: "stethoscope")
-                            }
-                            Spacer()
-                            Text("Fix problems with your data")
-                        }
-                    }
-                    Progress(action: action,
-                             files: files)
-                }
-                .formStyle(.grouped)
+            Section(header: Text("Preview")) {
+                StylePreview(sz: fontSize)
+                    .padding()
             }
         }
-        .frame(minWidth: 250, maxWidth: .infinity, minHeight: 400, maxHeight: .infinity)
+        .formStyle(.grouped)
+        .frame(minWidth: 250, maxWidth: .infinity, minHeight: 300, maxHeight: .infinity)
         .preferredColorScheme(nil)
     }
 }
 
 #Preview("Settings") {
-    GeneralSettingsView(
-        showFileImporter: false,
-        files: [],
-        action: ""
-    )
-    .environmentObject(ContextManager())
-}
-
-#Preview("Settings Import 50%") {
-    GeneralSettingsView(
-        showFileImporter: false,
-        files: [
-            ImportItem(filename: "note1.md", message: "", status: .success),
-            ImportItem(filename: "note2.md", message: "", status: .success),
-            ImportItem(filename: "note4.md", message: "", status: .queued),
-            ImportItem(filename: "note5.md", message: "", status: .queued),
-        ],
-        action: "import"
-    )
-    .environmentObject(ContextManager())
-}
-
-#Preview("Settings Import Complete") {
-    GeneralSettingsView(
-        showFileImporter: false,
-        files: [
-            ImportItem(filename: "note1.md", message: "", status: .success),
-            ImportItem(filename: "note2.md", message: "Skippity", status: .skip),
-            ImportItem(filename: "note3.md", message: "Faility", status: .fail),
-        ],
-        action: "doctor"
-    )
-    .environmentObject(ContextManager())
+    GeneralSettingsView()
 }

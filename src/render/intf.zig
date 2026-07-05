@@ -30,12 +30,11 @@ const NanaInput = extern struct {
 };
 
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-var arena = std.heap.ArenaAllocator.init(gpa.allocator());
 const GAP_BUF_SIZE = 4000; // 4Kb
 var state: ?AppState = null;
 
 export fn nana_render_init() void {
-    state = AppState.init(arena.allocator().alloc(u8, GAP_BUF_SIZE) catch unreachable);
+    state = AppState.init(gpa.allocator().alloc(u8, GAP_BUF_SIZE) catch unreachable);
     const text: []const u8 =
         \\ line 1
         \\ line 2
@@ -89,5 +88,5 @@ export fn nana_render_frame(ctx: CGContextRef, width: f64, height: f64, in: *con
         .rights = @intCast(in.rights),
     };
 
-    app.frame(arena.allocator(), &canvas, input, &(state.?)) catch unreachable;
+    app.frame(gpa.allocator(), &canvas, input, &(state.?)) catch unreachable;
 }
