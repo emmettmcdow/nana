@@ -219,8 +219,11 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                     line.start > @min(state.selection_anchor.?, state.cursor_i) and
                     (line.start + line.text.len) < @max(state.selection_anchor.?, state.cursor_i))
                 {
-                    // Line is between the anchor and cursor
-                    const selection_w: f64 = measurer.width(line.text[0..line.text.len], tokens, line.start, line.start + line.text.len);
+                    // Line is between the anchor and cursor.
+                    const selection_w: f64 = if (line.text.len == 0)
+                        measurer.width(" ", tokens, line.start, line.start + 1) // still render empty lines aas selected.
+                    else
+                        measurer.width(line.text[0..line.text.len], tokens, line.start, line.start + line.text.len);
                     canvas.fillRect(.{ .x = text_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
                 }
             }
@@ -278,11 +281,7 @@ fn fontSizeAt(tokens: []const Token, i: usize) f64 {
 fn widthWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64 {
     _ = end_i;
     const canvas: *Canvas = @ptrCast(@alignCast(ctx));
-    // An empty line (e.g. a blank line after a trailing '\n') still occupies a
-    // full row and needs a visible caret, so measure a placeholder glyph for its
-    // height rather than the empty string, which measures to zero.
-    const measured = if (text.len == 0) " " else text;
-    return canvas.measureText(measured, fontSizeAt(tokens, start_i)).w;
+    return canvas.measureText(text, fontSizeAt(tokens, start_i)).w;
 }
 
 fn heightWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64 {
