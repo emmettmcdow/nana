@@ -37,6 +37,9 @@ var scratch: ?[]u8 = null;
 const BASE_LINE_SCRATCH_SIZE = 1024; // max rendered lines before regrow
 var line_scratch: ?[]Line = null;
 
+const BASE_FRAG_SCRATCH_SIZE = 1024; // max rendered fragments before regrow
+var frag_scratch: ?[]Fragment = null;
+
 // Persisted across frames so the token list isn't reallocated from scratch each
 // refresh. `parse` frees and rebuilds its internal list on every call.
 var md_parser: ?Markdown = null;
@@ -80,6 +83,23 @@ const Line = struct {
     text: []const u8,
     h: f64 = 0,
     w: f64 = 0,
+    /// Half-open range [frag_start, frag_end) into the fragment scratch buffer:
+    /// the styled runs that make up this row, in left-to-right order. Defaulted so
+    /// hand-built `Line` literals in tests keep compiling.
+    frag_start: usize = 0,
+    frag_end: usize = 0,
+};
+
+/// One token's slice on a single visual row — the unit the render loop draws.
+/// A row is a sequence of fragments; a token that spans rows (soft-wrap, block
+/// code) contributes one fragment per row. `tok` is the styling context; when
+/// tokens become hierarchical it will resolve to a stack, but callers ask through
+/// `fontSizeForToken` so they won't change. `[start, end)` are document offsets
+/// into `full_text`, in the same unit as `Line.start`.
+const Fragment = struct {
+    tok: usize,
+    start: usize,
+    end: usize,
 };
 
 pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *AppState) !void {
@@ -121,11 +141,18 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
         if (line_scratch == null) {
             line_scratch = try allocator.alloc(Line, BASE_LINE_SCRATCH_SIZE);
         }
+        if (frag_scratch == null) {
+            frag_scratch = try allocator.alloc(Fragment, BASE_FRAG_SCRATCH_SIZE);
+        }
         while (scratch.?.len <= state.text_len) {
             scratch = try allocator.realloc(scratch.?, scratch.?.len << 1);
         }
         while (line_scratch.?.len <= state.text_len) {
             line_scratch = try allocator.realloc(line_scratch.?, line_scratch.?.len << 1);
+        }
+        // Fragment count is bounded by row/token intersections, itself ≤ text_len.
+        while (frag_scratch.?.len <= state.text_len) {
+            frag_scratch = try allocator.realloc(frag_scratch.?, frag_scratch.?.len << 1);
         }
         if (md_parser == null) {
             md_parser = Markdown.init(allocator);
@@ -141,14 +168,14 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
     { // Calculate the displayed text and handle inputs
         const full_text = condenseGapBuf(scratch.?, state.*);
         const tokens = try tokenize(full_text);
-        const lines = splitLines(full_text, tokens, line_scratch.?, measurer);
+        const lines = splitLines(full_text, tokens, line_scratch.?, frag_scratch.?, measurer);
         try handleInput(allocator, in, state, lines, tokens, measurer);
     }
 
     { // Render pass
         const full_text = condenseGapBuf(scratch.?, state.*);
         const tokens = try tokenize(full_text);
-        const lines = splitLines(full_text, tokens, line_scratch.?, measurer);
+        const lines = splitLines(full_text, tokens, line_scratch.?, frag_scratch.?, measurer);
         const text_x: f64 = MARGIN_PX;
 
         const writable_text_area_h = canvas.size.h - (MARGIN_PX * 2);
@@ -160,7 +187,6 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
         var caret_drawn = false;
         for (lines[top..lines.len]) |line| {
             const line_h = line.h;
-            const line_font_size = fontSizeAt(tokens, line.start);
             if (text_y + line_h >= writable_text_area_h) break;
             { // selection rendering
                 const cursor_in_line = state.cursor_i >= line.start and state.cursor_i <= line.start + line.text.len;
@@ -225,7 +251,14 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                     canvas.fillRect(.{ .x = text_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
                 }
             }
-            _ = canvas.drawText(line.text, text_x, text_y, line_font_size, TEXT_COLOR);
+            // Draw each styled run at its own font size, advancing x by the width
+            // the canvas reports. Selection/caret rendering above still measures
+            // `line.text` in source space, so this only affects glyph drawing.
+            var frag_x = text_x;
+            for (frag_scratch.?[line.frag_start..line.frag_end]) |frag| {
+                const shown = full_text[frag.start..frag.end];
+                frag_x += canvas.drawText(shown, frag_x, text_y, fontSizeForToken(tokens, frag.tok), TEXT_COLOR).w;
+            }
             text_y += line_h;
         }
     }
@@ -276,6 +309,13 @@ fn fontSizeAt(tokens: []const Token, i: usize) f64 {
     return FONT_SIZE * sizeMultiplier(tokenAt(tokens, i));
 }
 
+/// The base font size scaled for the token a fragment belongs to. This is the
+/// single seam for "how does this run look": when tokens gain hierarchy, `tok`
+/// becomes a path and this folds the ancestor chain — callers stay unchanged.
+fn fontSizeForToken(tokens: []const Token, tok: usize) f64 {
+    return FONT_SIZE * sizeMultiplier(tokens[tok]);
+}
+
 fn widthWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64 {
     _ = end_i;
     const canvas: *Canvas = @ptrCast(@alignCast(ctx));
@@ -292,35 +332,76 @@ fn heightWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, st
     return canvas.measureText(measured, fontSizeAt(tokens, start_i)).h;
 }
 
+/// Appends `[from, to)` as a fragment of token `tok`, skipping empty runs (a token
+/// that ends exactly on a row break, or the degenerate empty-document token).
+fn pushFragment(frags: []Fragment, count: *usize, tok: usize, from: usize, to: usize) void {
+    if (to <= from) return;
+    frags[count.*] = .{ .tok = tok, .start = from, .end = to };
+    count.* += 1;
+}
+
 /// Split `full_text` into rendered lines: hard breaks on '\n', soft wraps when a
 /// run would reach `m.content_w`. Lines are written into `out` and a sub-slice of
 /// it is returned. Each `Line.text` aliases `full_text`.
-fn splitLines(full_text: []const u8, tokens: []const Token, out: []Line, m: Measurer) []Line {
+///
+/// Alongside the lines, each row's styled runs are written to `frags`; a `Line`
+/// points at its runs via `frag_start`/`frag_end`. A run is closed at every row
+/// break and every token boundary, so each fragment belongs to exactly one token
+/// and one row, and a row's fragments tile its `text` exactly.
+fn splitLines(full_text: []const u8, tokens: []const Token, out: []Line, frags: []Fragment, m: Measurer) []Line {
     var lineno: usize = 0;
     out[lineno].start = 0;
+
+    var frag_count: usize = 0;
+    var line_frag_start: usize = 0; // first fragment index of the current row
+    var frag_from: usize = 0; // start offset of the run being accumulated
+    var frag_tok: usize = 0; // token index of that run
+
     var last_token = tokens[0];
-    for (tokens) |token| {
+    for (tokens, 0..) |token, ti| {
         last_token = token;
+        // Token boundary: close the previous token's run on this row (contiguous
+        // tokens mean it ends exactly where this one starts), then open this token's.
+        pushFragment(frags, &frag_count, frag_tok, frag_from, token.startI);
+        frag_tok = ti;
+        frag_from = token.startI;
+
         for (token.contents, 0..) |c, token_off| {
+            const off = token.startI + token_off;
             if (c == '\n') {
-                out[lineno].text = full_text[out[lineno].start .. token.startI + token_off];
+                out[lineno].text = full_text[out[lineno].start..off];
+                pushFragment(frags, &frag_count, frag_tok, frag_from, off);
+                out[lineno].frag_start = line_frag_start;
+                out[lineno].frag_end = frag_count;
                 lineno += 1;
-                out[lineno].start = token.startI + token_off + 1;
+                out[lineno].start = off + 1;
                 out[lineno].text = "";
+                line_frag_start = frag_count;
+                frag_from = off + 1; // same token, resumes past the newline
                 continue;
             }
-            const text_including_new_char = full_text[out[lineno].start .. token.startI + token_off + 1];
-            if (m.width(text_including_new_char, tokens, out[lineno].start, token.startI + token_off) >= m.content_w) {
-                out[lineno].text = full_text[out[lineno].start .. token.startI + token_off];
+            const text_including_new_char = full_text[out[lineno].start .. off + 1];
+            if (m.width(text_including_new_char, tokens, out[lineno].start, off) >= m.content_w) {
+                out[lineno].text = full_text[out[lineno].start..off];
+                pushFragment(frags, &frag_count, frag_tok, frag_from, off);
+                out[lineno].frag_start = line_frag_start;
+                out[lineno].frag_end = frag_count;
                 lineno += 1;
-                out[lineno].start = token.startI + token_off;
-                out[lineno].text = full_text[token.startI + token_off .. token.startI + token_off + 1];
+                out[lineno].start = off;
+                out[lineno].text = full_text[off .. off + 1];
+                line_frag_start = frag_count;
+                frag_from = off; // same token, the wrapped char begins the next row
                 continue;
             }
         }
     }
-    out[lineno].text = full_text[out[lineno].start .. last_token.startI + last_token.contents.len];
+    const doc_end = last_token.startI + last_token.contents.len;
+    out[lineno].text = full_text[out[lineno].start..doc_end];
+    pushFragment(frags, &frag_count, frag_tok, frag_from, doc_end);
+    out[lineno].frag_start = line_frag_start;
+    out[lineno].frag_end = frag_count;
     lineno += 1;
+
     for (out[0..lineno]) |*line| {
         line.h = m.height(line.text, tokens, line.start, line.start + line.text.len);
         line.w = m.width(line.text, tokens, line.start, line.start + line.text.len);
@@ -622,17 +703,19 @@ fn tokenize(full_text: []const u8) ![]const Token {
 fn feed(state: *AppState, in: Input) !void {
     var doc_buf: [1024]u8 = undefined;
     var line_buf: [256]Line = undefined;
+    var frag_buf: [256]Fragment = undefined;
     const measurer = testMeasurer(1_000_000);
     const doc = condenseGapBuf(&doc_buf, state.*);
     const tokens = &.{plainTokenize(doc)};
-    const lines = splitLines(doc, tokens, &line_buf, measurer);
+    const lines = splitLines(doc, tokens, &line_buf, &frag_buf, measurer);
     try handleInput(testing_allocator, in, state, lines, tokens, measurer);
 }
 
 test "splitLines breaks on newlines" {
     var out: [8]Line = undefined;
+    var frags: [16]Fragment = undefined;
     const text = "ab\ncd";
-    const lines = splitLines(text, &.{plainTokenize(text)}, &out, testMeasurer(1_000_000));
+    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(1_000_000));
 
     try expectEqual(2, lines.len);
     try expectEqual(0, lines[0].start);
@@ -643,8 +726,9 @@ test "splitLines breaks on newlines" {
 
 test "splitLines deal with trailing newline" {
     var out: [8]Line = undefined;
+    var frags: [16]Fragment = undefined;
     const text = "ab\n";
-    const lines = splitLines(text, &.{plainTokenize(text)}, &out, testMeasurer(1_000_000));
+    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(1_000_000));
     try expectEqual(2, lines.len);
     try expectEqual(0, lines[0].start);
     try expectEqualStrings("ab", lines[0].text);
@@ -656,7 +740,8 @@ test "splitLines soft-wraps a run wider than content_w" {
     var out: [8]Line = undefined;
     // fakeWidth == byte count; content_w 4 ⇒ at most 3 bytes per line.
     const text = "abcdef";
-    const lines = splitLines(text, &.{plainTokenize(text)}, &out, testMeasurer(4));
+    var frags: [16]Fragment = undefined;
+    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(4));
 
     try expectEqual(2, lines.len);
     try expectEqual(0, lines[0].start);
@@ -669,7 +754,8 @@ test "splitLines start offsets account for newlines across wraps" {
     var out: [8]Line = undefined;
     // "abcd\nef": first logical line wraps (3 per line), then a hard break.
     const text = "abcd\nef";
-    const lines = splitLines(text, &.{plainTokenize(text)}, &out, testMeasurer(4));
+    var frags: [16]Fragment = undefined;
+    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(4));
 
     try expectEqual(3, lines.len);
     try expectEqual(0, lines[0].start);
@@ -687,17 +773,28 @@ test "splitLines handle multiple tokens" {
 
     const contents: []const u8 = "foo**bar**baz";
     const tokens = try parser.parse(contents);
-    const lines = splitLines(contents, tokens, &out, testMeasurer(1_000_000));
+    var frags: [16]Fragment = undefined;
+    const lines = splitLines(contents, tokens, &out, &frags, testMeasurer(1_000_000));
 
     try expectEqual(1, lines.len);
     const line = lines[0];
     try expectEqualStrings(contents, line.text);
+
+    // One row, three tokens ⇒ three fragments that tile the row's text.
+    try expectEqual(3, line.frag_end - line.frag_start);
+    try expectEqualStrings("foo", contents[frags[0].start..frags[0].end]);
+    try expectEqualStrings("**bar**", contents[frags[1].start..frags[1].end]);
+    try expectEqualStrings("baz", contents[frags[2].start..frags[2].end]);
+    try expectEqual(0, frags[0].tok);
+    try expectEqual(1, frags[1].tok);
+    try expectEqual(2, frags[2].tok);
 }
 
 test "splitLines output dimensions" {
     var out: [8]Line = undefined;
     const text = "1\n12\n123";
-    const lines = splitLines(text, &.{plainTokenize(text)}, &out, testMeasurer(4));
+    var frags: [16]Fragment = undefined;
+    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(4));
 
     try expectEqual(3, lines.len);
     try expectEqual(1, lines[0].h);
@@ -706,6 +803,58 @@ test "splitLines output dimensions" {
     try expectEqual(2, lines[1].w);
     try expectEqual(1, lines[2].h);
     try expectEqual(3, lines[2].w);
+}
+
+test "splitLines fragments tile each line's text" {
+    var out: [8]Line = undefined;
+    var frags: [16]Fragment = undefined;
+    const text = "ab\ncd";
+    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(1_000_000));
+
+    for (lines) |line| {
+        // Concatenating a row's fragment slices reconstructs the row's text, in order.
+        var rebuilt_len: usize = 0;
+        var expect_off: usize = line.start;
+        for (frags[line.frag_start..line.frag_end]) |frag| {
+            try expectEqual(expect_off, frag.start); // contiguous, no gaps/overlaps
+            try expectEqualStrings(
+                text[frag.start..frag.end],
+                line.text[rebuilt_len .. rebuilt_len + (frag.end - frag.start)],
+            );
+            rebuilt_len += frag.end - frag.start;
+            expect_off = frag.end;
+        }
+        try expectEqual(line.text.len, rebuilt_len);
+    }
+}
+
+test "splitLines soft-wrap splits one token into a fragment per row" {
+    var out: [8]Line = undefined;
+    var frags: [16]Fragment = undefined;
+    // Single plain token "abcdef" wraps into "abc" / "def" at content_w 4.
+    const text = "abcdef";
+    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(4));
+
+    try expectEqual(2, lines.len);
+    try expectEqual(1, lines[0].frag_end - lines[0].frag_start);
+    try expectEqual(1, lines[1].frag_end - lines[1].frag_start);
+    // Both rows reference the same (only) token.
+    try expectEqual(0, frags[lines[0].frag_start].tok);
+    try expectEqual(0, frags[lines[1].frag_start].tok);
+    try expectEqualStrings("abc", text[frags[lines[0].frag_start].start..frags[lines[0].frag_start].end]);
+    try expectEqualStrings("def", text[frags[lines[1].frag_start].start..frags[lines[1].frag_start].end]);
+}
+
+test "splitLines empty row has no fragments" {
+    var out: [8]Line = undefined;
+    var frags: [16]Fragment = undefined;
+    // Trailing newline yields an empty second row.
+    const text = "ab\n";
+    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(1_000_000));
+
+    try expectEqual(2, lines.len);
+    try expectEqual(1, lines[0].frag_end - lines[0].frag_start); // "ab"
+    try expectEqual(0, lines[1].frag_end - lines[1].frag_start); // empty row draws nothing
 }
 
 /// `n` unit-height lines, for exercising scrollToCursor's line-count logic
