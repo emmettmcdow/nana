@@ -83,28 +83,22 @@ const Line = struct {
     text: []const u8,
     h: f64 = 0,
     w: f64 = 0,
-    /// Half-open range [frag_start, frag_end) into the fragment scratch buffer:
-    /// the styled runs that make up this row, in left-to-right order. Defaulted so
-    /// hand-built `Line` literals in tests keep compiling.
+    /// End-exclusive range into the fragment buffer: styled runs constitute this line.
     frag_start: usize = 0,
     frag_end: usize = 0,
 };
 
-/// One token's slice on a single visual row — the unit the render loop draws.
-/// A row is a sequence of fragments; a token that spans rows (soft-wrap, block
-/// code) contributes one fragment per row. `tok` is the styling context; when
-/// tokens become hierarchical it will resolve to a stack, but callers ask through
-/// `fontSizeForToken` so they won't change. `[start, end)` are document offsets
-/// into `full_text`, in the same unit as `Line.start`.
+/// A token's slice of one visual row, the render loop quanta. Frags don't cross line bounds.
 const Fragment = struct {
+    /// Index into Token buffer specifying the styling.
     tok: usize,
+    // Index into the full text buffers.
     start: usize,
     end: usize,
 };
 
 pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *AppState) !void {
-    // Time the whole frame so we can report the uncapped FPS. Recorded via defer
-    // so it captures every path out of the function.
+    // debug: fps calculation
     var frame_timer = std.time.Timer.start() catch null;
     defer if (frame_timer) |*t| {
         last_frame_ns = t.read();
@@ -251,15 +245,15 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                     canvas.fillRect(.{ .x = text_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
                 }
             }
-            // Draw each styled run at its own font size, advancing x by the width
-            // the canvas reports. Selection/caret rendering above still measures
-            // `line.text` in source space, so this only affects glyph drawing.
-            var frag_x = text_x;
-            for (frag_scratch.?[line.frag_start..line.frag_end]) |frag| {
-                const shown = full_text[frag.start..frag.end];
-                frag_x += canvas.drawText(shown, frag_x, text_y, fontSizeForToken(tokens, frag.tok), TEXT_COLOR).w;
+            { // Draw Text
+                var frag_x = text_x;
+                const frags = frag_scratch.?[line.frag_start..line.frag_end];
+                for (frags) |frag| {
+                    const shown = full_text[frag.start..frag.end];
+                    frag_x += canvas.drawText(shown, frag_x, text_y, fontSizeForToken(tokens[frag.tok]), TEXT_COLOR).w;
+                }
+                text_y += line_h;
             }
-            text_y += line_h;
         }
     }
 }
@@ -279,10 +273,9 @@ const Measurer = struct {
     }
 };
 
-/// Font-size multiplier for a markdown token, relative to the base `FONT_SIZE`.
-/// Headers scale up by level; everything else renders at the base size.
-fn sizeMultiplier(token: Token) f64 {
-    return switch (token.tType) {
+/// Font-size for a markdown token.
+fn fontSizeForToken(token: Token) f64 {
+    const mult: f64 = switch (token.tType) {
         .HEADER => switch (token.degree) {
             1 => 2.0,
             2 => 1.75,
@@ -293,27 +286,18 @@ fn sizeMultiplier(token: Token) f64 {
         },
         else => 1.0,
     };
+    return FONT_SIZE * mult;
 }
 
-/// The token whose source range [startI, endI) covers `i`; falls back to the
-/// last token (e.g. for the caret position just past the end of the text).
-fn tokenAt(tokens: []const Token, i: usize) Token {
-    for (tokens) |t| {
-        if (i >= t.startI and i < t.endI) return t;
-    }
-    return tokens[tokens.len - 1];
-}
-
-/// The base font size scaled for whichever token covers source offset `i`.
+/// The font size for whichever token covers source offset `i`.
 fn fontSizeAt(tokens: []const Token, i: usize) f64 {
-    return FONT_SIZE * sizeMultiplier(tokenAt(tokens, i));
-}
-
-/// The base font size scaled for the token a fragment belongs to. This is the
-/// single seam for "how does this run look": when tokens gain hierarchy, `tok`
-/// becomes a path and this folds the ancestor chain — callers stay unchanged.
-fn fontSizeForToken(tokens: []const Token, tok: usize) f64 {
-    return FONT_SIZE * sizeMultiplier(tokens[tok]);
+    const token: Token = bt: {
+        for (tokens) |t| {
+            if (i >= t.startI and i < t.endI) break :bt t;
+        }
+        break :bt tokens[tokens.len - 1];
+    };
+    return fontSizeForToken(token);
 }
 
 fn widthWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64 {
