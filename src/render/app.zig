@@ -309,29 +309,18 @@ fn widthWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, sta
 fn heightWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64 {
     _ = end_i;
     const canvas: *Canvas = @ptrCast(@alignCast(ctx));
-    // An empty line (e.g. a blank line after a trailing '\n') still occupies a
-    // full row and needs a visible caret, so measure a placeholder glyph for its
-    // height rather than the empty string, which measures to zero.
+    // An empty line (e.g. a blank line after a trailing '\n') still occupies vertical space.
     const measured = if (text.len == 0) " " else text;
     return canvas.measureText(measured, fontSizeAt(tokens, start_i)).h;
 }
 
-/// Appends `[from, to)` as a fragment of token `tok`, skipping empty runs (a token
-/// that ends exactly on a row break, or the degenerate empty-document token).
 fn pushFragment(frags: []Fragment, count: *usize, tok: usize, from: usize, to: usize) void {
     if (to <= from) return;
     frags[count.*] = .{ .tok = tok, .start = from, .end = to };
     count.* += 1;
 }
 
-/// Split `full_text` into rendered lines: hard breaks on '\n', soft wraps when a
-/// run would reach `m.content_w`. Lines are written into `out` and a sub-slice of
-/// it is returned. Each `Line.text` aliases `full_text`.
-///
-/// Alongside the lines, each row's styled runs are written to `frags`; a `Line`
-/// points at its runs via `frag_start`/`frag_end`. A run is closed at every row
-/// break and every token boundary, so each fragment belongs to exactly one token
-/// and one row, and a row's fragments tile its `text` exactly.
+/// Split `full_text` into renderable fragments bounded by lines.
 fn splitLines(full_text: []const u8, tokens: []const Token, out: []Line, frags: []Fragment, m: Measurer) []Line {
     var lineno: usize = 0;
     out[lineno].start = 0;
@@ -403,8 +392,7 @@ fn cursorLine(lines: []const Line, cursor_i: usize) usize {
     return result;
 }
 
-/// Scroll the view just enough to keep `cursor_line` inside a viewport that is
-/// `screen_h` pixels tall, given the current top line `window_offset`.
+/// Scroll enough to put `cursor_line` inside a `screen_h`px window, starting from `window_offset`.
 fn scrollToCursor(lines: []const Line, window_offset: usize, cursor_line: usize, screen_h: f64) usize {
     if (cursor_line < window_offset) return cursor_line; // above the viewport
 
@@ -466,14 +454,12 @@ fn handleInput(
         }
     } else if (!in.mouse_down and state.mouse_was_down) { // Click release
         state.mouse_was_down = false;
-        // A click (press+release without moving) leaves an empty selection;
-        // collapse it so only a real drag keeps the anchor.
+        // A click leaves an empty selection; collapse it so only a real drag keeps the anchor.
         if (state.selection_anchor == state.cursor_i) state.selection_anchor = null;
     } else if (in.backspaces != 0) {
         if (state.selection_anchor) |anchor| {
             if (state.cursor_i > anchor) {
-                // Selection is in the before-cursor region; drop it by moving the
-                // cursor back to the anchor (extends the gap leftward).
+                // Sel. is in the pre-cursor area; drop it by moving the cursor back to the anchor.
                 const backspaces = state.cursor_i - anchor;
                 state.cursor_i = anchor;
                 state.text_len -= backspaces;
@@ -544,8 +530,7 @@ fn handleInput(
                 state.gap_end += removed;
                 state.text_len -= removed;
             } else {
-                // Selection is in the before-cursor region; drop it by moving the
-                // cursor back to the anchor (extends the gap leftward).
+                // Sel. is in the pre-cursor region; drop it by moving the cursor to the anchor.
                 state.text_len -= state.cursor_i - anchor;
                 state.cursor_i = anchor;
             }
