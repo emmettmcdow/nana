@@ -30,6 +30,14 @@ pub const Rect = struct {
     }
 };
 
+/// A font request. The canvas resolves the trait flags to a concrete face; nothing above
+/// canvas.zig needs to know what the family is called.
+pub const Font = struct {
+    size: f64,
+    bold: bool = false,
+    italic: bool = false,
+};
+
 pub const Color = struct {
     r: f32,
     g: f32,

@@ -72,9 +72,20 @@ extern fn CGContextFillRect(c: CGContextRef, rect: CGRect) void;
 extern fn CGContextSetTextPosition(c: CGContextRef, x: f64, y: f64) void;
 extern fn CGContextSetTextMatrix(c: CGContextRef, t: CGAffineTransform) void;
 
-/// Default font family. Menlo is a good monospace default for a text editor;
-/// swap freely while iterating in app.zig.
-const default_font: []const u8 = "Menlo";
+/// Font faces, by PostScript name. Menlo is a good monospace default for a text editor and
+/// ships with all four styles; swap the family freely while iterating in app.zig.
+const face_regular: []const u8 = "Menlo-Regular";
+const face_bold: []const u8 = "Menlo-Bold";
+const face_italic: []const u8 = "Menlo-Italic";
+const face_bold_italic: []const u8 = "Menlo-BoldItalic";
+
+/// The face satisfying a font request's trait flags.
+fn faceName(font: geom.Font) []const u8 {
+    if (font.bold and font.italic) return face_bold_italic;
+    if (font.bold) return face_bold;
+    if (font.italic) return face_italic;
+    return face_regular;
+}
 
 pub const Canvas = struct {
     ctx: CGContextRef,
@@ -96,9 +107,9 @@ pub const Canvas = struct {
 
     /// Draw a single line of UTF-8 text. (x, y) is the top-left of the text box.
     /// Returns the typographic size of the drawn text.
-    pub fn drawText(self: *Canvas, utf8: []const u8, x: f64, y: f64, font_size: f64, color: geom.Color) geom.Size {
+    pub fn drawText(self: *Canvas, utf8: []const u8, x: f64, y: f64, font: geom.Font, color: geom.Color) geom.Size {
         if (utf8.len == 0) return geom.Size.zero;
-        const line = makeLine(utf8, font_size, color) orelse return geom.Size.zero;
+        const line = makeLine(utf8, font, color) orelse return geom.Size.zero;
         defer CFRelease(line);
 
         var ascent: f64 = 0;
@@ -116,10 +127,10 @@ pub const Canvas = struct {
     }
 
     /// Measure a line of UTF-8 text without drawing it.
-    pub fn measureText(self: *Canvas, utf8: []const u8, font_size: f64) geom.Size {
+    pub fn measureText(self: *Canvas, utf8: []const u8, font: geom.Font) geom.Size {
         _ = self;
         if (utf8.len == 0) return geom.Size.zero;
-        const line = makeLine(utf8, font_size, geom.Color.white) orelse return geom.Size.zero;
+        const line = makeLine(utf8, font, geom.Color.white) orelse return geom.Size.zero;
         defer CFRelease(line);
         var ascent: f64 = 0;
         var descent: f64 = 0;
@@ -131,15 +142,16 @@ pub const Canvas = struct {
 
 /// Build a CTLine for one run of UTF-8 text. Caller owns the returned line (CFRelease).
 /// All intermediate CF objects are released here.
-fn makeLine(utf8: []const u8, font_size: f64, color: geom.Color) ?CTLineRef {
+fn makeLine(utf8: []const u8, font_req: geom.Font, color: geom.Color) ?CTLineRef {
     const cfstr = CFStringCreateWithBytes(null, utf8.ptr, @intCast(utf8.len), kCFStringEncodingUTF8, 0);
     if (cfstr == null) return null;
     defer CFRelease(cfstr);
 
-    const name = CFStringCreateWithBytes(null, default_font.ptr, @intCast(default_font.len), kCFStringEncodingUTF8, 0);
+    const face = faceName(font_req);
+    const name = CFStringCreateWithBytes(null, face.ptr, @intCast(face.len), kCFStringEncodingUTF8, 0);
     defer if (name != null) CFRelease(name);
 
-    const font = CTFontCreateWithName(name, font_size, null);
+    const font = CTFontCreateWithName(name, font_req.size, null);
     defer if (font != null) CFRelease(font);
 
     const cgcolor = CGColorCreateGenericRGB(color.r, color.g, color.b, color.a);

@@ -7,8 +7,8 @@
 //! Primitives available on `canvas`:
 //!   canvas.clear(Color)
 //!   canvas.fillRect(Rect, Color)
-//!   canvas.drawText(utf8, x, y, FONT_SIZE, Color) -> Size
-//!   canvas.measureText(utf8, font_size) -> Size
+//!   canvas.drawText(utf8, x, y, Font, Color) -> Size
+//!   canvas.measureText(utf8, Font) -> Size
 
 const geom = @import("geom.zig");
 const Canvas = @import("canvas.zig").Canvas;
@@ -23,6 +23,7 @@ const Token = markdown.FlatToken;
 const mod_shift = input.mod_shift;
 
 const Color = geom.Color;
+const Font = geom.Font;
 const Input = input.Input;
 
 /// Cursor/index math casts buffer offsets through signed types (see
@@ -125,7 +126,7 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
             }) catch unreachable,
             0,
             canvas.size.h - font_size,
-            font_size,
+            .{ .size = font_size },
             TEXT_COLOR,
         );
     }
@@ -258,7 +259,7 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                 const frags = frag_scratch.?[line.frag_start..line.frag_end];
                 for (frags) |frag| {
                     const shown = full_text[frag.start..frag.end];
-                    frag_x += canvas.drawText(shown, frag_x, text_y, fontSizeForToken(tokens[frag.tok]), TEXT_COLOR).w;
+                    frag_x += canvas.drawText(shown, frag_x, text_y, fontForToken(tokens[frag.tok]), TEXT_COLOR).w;
                 }
             }
         }
@@ -280,8 +281,7 @@ const Measurer = struct {
     }
 };
 
-/// Font-size for a markdown token.
-fn fontSizeForToken(token: Token) f64 {
+fn fontForToken(token: Token) Font {
     const mult: f64 = switch (token.tType) {
         .HEADER => switch (token.degree) {
             1 => 2.0,
@@ -293,29 +293,32 @@ fn fontSizeForToken(token: Token) f64 {
         },
         else => 1.0,
     };
-    return FONT_SIZE * mult;
+    return .{
+        .size = FONT_SIZE * mult,
+        .bold = token.tType == .BOLD,
+    };
 }
 
-/// The font size for whichever token covers source offset `i`.
+/// The font for whichever token covers source offset `i`.
 // FOLLOW-UP (unicode): `i` here is a byte offset (line.start / cursor offsets), but token
 // startI/endI come out of parseFlat as codepoint offsets. These coincide only for ASCII;
 // with multi-byte characters this matches the wrong token. splitLines has the same
 // byte-vs-codepoint mismatch. Dormant today (sample docs are ASCII); fix separately by
 // giving the renderer byte offsets while the frontend keeps codepoints.
-fn fontSizeAt(tokens: []const Token, i: usize) f64 {
+fn fontAt(tokens: []const Token, i: usize) Font {
     const token: Token = bt: {
         for (tokens) |t| {
             if (i >= t.startI and i < t.endI) break :bt t;
         }
         break :bt tokens[tokens.len - 1];
     };
-    return fontSizeForToken(token);
+    return fontForToken(token);
 }
 
 fn widthWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64 {
     _ = end_i;
     const canvas: *Canvas = @ptrCast(@alignCast(ctx));
-    return canvas.measureText(text, fontSizeAt(tokens, start_i)).w;
+    return canvas.measureText(text, fontAt(tokens, start_i)).w;
 }
 
 fn heightWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64 {
@@ -323,7 +326,7 @@ fn heightWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, st
     const canvas: *Canvas = @ptrCast(@alignCast(ctx));
     // An empty line (e.g. a blank line after a trailing '\n') still occupies vertical space.
     const measured = if (text.len == 0) " " else text;
-    return canvas.measureText(measured, fontSizeAt(tokens, start_i)).h;
+    return canvas.measureText(measured, fontAt(tokens, start_i)).h;
 }
 
 fn pushFragment(frags: []Fragment, count: *usize, tok: usize, from: usize, to: usize) void {
