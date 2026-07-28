@@ -60,7 +60,13 @@ const FONT_SIZE: f64 = 20;
 const MARGIN_PX: f64 = 100;
 
 const TEXT_COLOR: Color = Color.rgb(0.95, 0.82, 0.40);
-const HIGHLIGHT_COLOR: Color = .{ .r = TEXT_COLOR.r, .g = TEXT_COLOR.g, .b = TEXT_COLOR.b, .a = 0.25 };
+const HIGHLIGHT_COLOR: Color = TEXT_COLOR.withAlpha(0.25);
+
+/// Code is set apart by ink weight, not by a new hue: slightly dimmed body text sitting on a
+/// faint panel of that same body color. Both are translucent, which also keeps the selection
+/// highlight (painted before the text) visible through a selected code span.
+const CODE_COLOR: Color = TEXT_COLOR.withAlpha(0.85);
+const CODE_BG_COLOR: Color = TEXT_COLOR.withAlpha(0.12);
 
 pub const AppState = struct {
     gap_buf: []u8,
@@ -259,7 +265,14 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                 const frags = frag_scratch.?[line.frag_start..line.frag_end];
                 for (frags) |frag| {
                     const shown = full_text[frag.start..frag.end];
-                    frag_x += canvas.drawText(shown, frag_x, text_y, fontForToken(tokens[frag.tok]), TEXT_COLOR).w;
+                    const style = styleForToken(tokens[frag.tok]);
+                    if (style.background) |bg| {
+                        // The panel has to be down before the glyphs, so its width can't come
+                        // from drawText's return — measure the run up front.
+                        const w = measurer.width(shown, tokens, frag.start, frag.end);
+                        canvas.fillRect(.{ .x = frag_x, .y = text_y, .w = w, .h = line_h }, bg);
+                    }
+                    frag_x += canvas.drawText(shown, frag_x, text_y, style.font, style.color).w;
                 }
             }
         }
@@ -282,21 +295,46 @@ const Measurer = struct {
 };
 
 fn fontForToken(token: Token) Font {
-    const mult: f64 = switch (token.tType) {
-        .HEADER => switch (token.degree) {
-            1 => 2.0,
-            2 => 1.75,
-            3 => 1.5,
-            4 => 1.25,
-            5 => 1.1,
-            else => 1.0,
-        },
-        else => 1.0,
+    return switch (token.tType) {
+        .HEADER => .{ .size = FONT_SIZE * headerScale(token.degree) },
+        .BOLD => .{ .size = FONT_SIZE, .bold = true },
+        .ITALIC => .{ .size = FONT_SIZE, .italic = true },
+        .EMPHASIS => .{ .size = FONT_SIZE, .bold = true, .italic = true },
+        else => .{ .size = FONT_SIZE },
     };
-    return .{
-        .size = FONT_SIZE * mult,
-        .bold = token.tType == .BOLD,
-        .italic = token.tType == .ITALIC,
+}
+
+/// How a token is painted. Measurement only ever needs `.font`, so `fontForToken` stays a
+/// separate entry point and the `Measurer` signature is unaffected by anything here.
+const Style = struct {
+    font: Font,
+    color: Color = TEXT_COLOR,
+    /// Filled behind the run before the text is drawn. `null` means "leave the page showing".
+    background: ?Color = null,
+};
+
+fn styleForToken(token: Token) Style {
+    var style = Style{ .font = fontForToken(token) };
+    switch (token.tType) {
+        .CODE => {
+            style.color = CODE_COLOR;
+            style.background = CODE_BG_COLOR;
+        },
+        else => {},
+    }
+    return style;
+}
+
+/// Headers shrink toward body size as the degree grows; degree 6 is body-sized, distinguished
+/// only by the `######` still being visible.
+fn headerScale(degree: u8) f64 {
+    return switch (degree) {
+        1 => 2.0,
+        2 => 1.75,
+        3 => 1.5,
+        4 => 1.25,
+        5 => 1.1,
+        else => 1.0,
     };
 }
 

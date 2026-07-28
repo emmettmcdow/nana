@@ -52,6 +52,12 @@ pub const Color = struct {
         return .{ .r = r, .g = g, .b = b, .a = a };
     }
 
+    /// The same hue at a new opacity. Lets derived colors stay tied to a base color, so
+    /// retheming means editing one constant.
+    pub fn withAlpha(self: Color, a: f32) Color {
+        return .{ .r = self.r, .g = self.g, .b = self.b, .a = a };
+    }
+
     pub const black = Color{ .r = 0, .g = 0, .b = 0, .a = 1 };
     pub const white = Color{ .r = 1, .g = 1, .b = 1, .a = 1 };
 };
@@ -78,4 +84,12 @@ test "Color constructors" {
     try expect(c.a == 1.0);
     const t = Color.rgba(0.1, 0.2, 0.3, 0.5);
     try expect(t.a == 0.5);
+}
+
+test "Color.withAlpha keeps the hue and replaces opacity" {
+    const base = Color.rgb(0.1, 0.2, 0.3);
+    const faded = base.withAlpha(0.25);
+    try expect(faded.r == base.r and faded.g == base.g and faded.b == base.b);
+    try expect(faded.a == 0.25);
+    try expect(base.a == 1.0); // non-mutating
 }
