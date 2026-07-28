@@ -19,8 +19,7 @@ const expectEqualStrings = std.testing.expectEqualStrings;
 const testing_allocator = std.testing.allocator;
 const assert = std.debug.assert;
 const markdown = @import("markdown.zig");
-const Markdown = markdown.Markdown;
-const Token = markdown.Token;
+const Token = markdown.FlatToken;
 const mod_shift = input.mod_shift;
 
 const Color = geom.Color;
@@ -40,9 +39,12 @@ var line_scratch: ?[]Line = null;
 const BASE_FRAG_SCRATCH_SIZE = 1024; // max rendered fragments before regrow
 var frag_scratch: ?[]Fragment = null;
 
-// Persisted across frames so the token list isn't reallocated from scratch each
-// refresh. `parse` frees and rebuilds its internal list on every call.
-var md_parser: ?Markdown = null;
+// Visible-line placements for the current render pass; bounded by line count (≤ text_len).
+var placement_scratch: ?[]Placement = null;
+
+// Persisted across frames so the parse arena keeps its capacity. Each `tokenize`
+// resets it (freeing the previous frame's tree) before parsing again.
+var md_arena: ?std.heap.ArenaAllocator = null;
 
 // The parser yields zero tokens for an empty document; the rest of the pipeline
 // (splitLines, tokenAt) needs at least one, so fall back to this.
@@ -138,6 +140,9 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
         if (frag_scratch == null) {
             frag_scratch = try allocator.alloc(Fragment, BASE_FRAG_SCRATCH_SIZE);
         }
+        if (placement_scratch == null) {
+            placement_scratch = try allocator.alloc(Placement, BASE_LINE_SCRATCH_SIZE);
+        }
         while (scratch.?.len <= state.text_len) {
             scratch = try allocator.realloc(scratch.?, scratch.?.len << 1);
         }
@@ -148,8 +153,12 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
         while (frag_scratch.?.len <= state.text_len) {
             frag_scratch = try allocator.realloc(frag_scratch.?, frag_scratch.?.len << 1);
         }
-        if (md_parser == null) {
-            md_parser = Markdown.init(allocator);
+        // Placements are bounded by line count, itself ≤ text_len.
+        while (placement_scratch.?.len <= state.text_len) {
+            placement_scratch = try allocator.realloc(placement_scratch.?, placement_scratch.?.len << 1);
+        }
+        if (md_arena == null) {
+            md_arena = std.heap.ArenaAllocator.init(allocator);
         }
     }
     const measurer = Measurer{
@@ -171,17 +180,16 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
         const tokens = try tokenize(full_text);
         const lines = splitLines(full_text, tokens, line_scratch.?, frag_scratch.?, measurer);
         const text_x: f64 = MARGIN_PX;
-
-        const writable_text_area_h = canvas.size.h - (MARGIN_PX * 2);
-
-        state.window_offset = scrollToCursor(lines, state.window_offset, cursorLine(lines, state.cursor_i), writable_text_area_h);
-
+        const viewport_h = canvas.size.h - (MARGIN_PX * 2);
+        state.window_offset = scrollToCursor(lines, state.window_offset, cursorLine(lines, state.cursor_i), viewport_h);
         const top = @min(state.window_offset, lines.len);
-        var text_y: f64 = MARGIN_PX;
+        const placements = visiblePlacements(lines, top, viewport_h, placement_scratch.?);
         var caret_drawn = false;
-        for (lines[top..lines.len]) |line| {
+
+        for (placements) |placement| {
+            const line = lines[placement.line];
             const line_h = line.h;
-            if (text_y + line_h >= writable_text_area_h) break;
+            const text_y = MARGIN_PX + placement.y;
             { // selection rendering
                 const cursor_in_line = state.cursor_i >= line.start and state.cursor_i <= line.start + line.text.len;
                 const anchor_in_line = state.selection_anchor != null and state.selection_anchor.? >= line.start and state.selection_anchor.? <= line.start + line.text.len;
@@ -252,7 +260,6 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                     const shown = full_text[frag.start..frag.end];
                     frag_x += canvas.drawText(shown, frag_x, text_y, fontSizeForToken(tokens[frag.tok]), TEXT_COLOR).w;
                 }
-                text_y += line_h;
             }
         }
     }
@@ -290,6 +297,11 @@ fn fontSizeForToken(token: Token) f64 {
 }
 
 /// The font size for whichever token covers source offset `i`.
+// FOLLOW-UP (unicode): `i` here is a byte offset (line.start / cursor offsets), but token
+// startI/endI come out of parseFlat as codepoint offsets. These coincide only for ASCII;
+// with multi-byte characters this matches the wrong token. splitLines has the same
+// byte-vs-codepoint mismatch. Dormant today (sample docs are ASCII); fix separately by
+// giving the renderer byte offsets while the frontend keeps codepoints.
 fn fontSizeAt(tokens: []const Token, i: usize) f64 {
     const token: Token = bt: {
         for (tokens) |t| {
@@ -390,6 +402,32 @@ fn cursorLine(lines: []const Line, cursor_i: usize) usize {
         if (cursor_i >= line.start and cursor_i <= line.start + line.text.len) result = i;
     }
     return result;
+}
+
+/// A visible line and where to draw it: `y` is relative to the top of the content area
+/// (add `MARGIN_PX` for an absolute canvas y).
+const Placement = struct {
+    line: usize,
+    y: f64,
+};
+
+/// The lines from `top` onward that fit within a `viewport_h`-tall content area, each paired
+/// with its content-relative y. Lines stack by height (the same rule `scrollToCursor` uses to
+/// decide what "fits"); iteration stops at the first line that would overflow. The line at
+/// `top` is always emitted even if it alone is taller than the viewport, so an oversized line
+/// (e.g. a big header) is never silently dropped.
+fn visiblePlacements(lines: []const Line, top: usize, viewport_h: f64, out: []Placement) []Placement {
+    var count: usize = 0;
+    var y: f64 = 0;
+    var i = top;
+    while (i < lines.len) : (i += 1) {
+        const h = lines[i].h;
+        if (count > 0 and y + h > viewport_h) break;
+        out[count] = .{ .line = i, .y = y };
+        count += 1;
+        y += h;
+    }
+    return out[0..count];
 }
 
 /// Scroll enough to put `cursor_line` inside a `screen_h`px window, starting from `window_offset`.
@@ -661,10 +699,12 @@ fn plainTokenize(full_text: []const u8) Token {
     return Token{ .tType = .PLAIN, .startI = 0, .endI = full_text.len, .contents = full_text };
 }
 
-/// Parse `full_text` into markdown tokens via the persisted parser, falling back
-/// to a single plain token for an empty document (which the parser returns none for).
+/// Parse `full_text` into flat markdown tokens, falling back to a single plain token for an empty
+/// document (which the parser returns none for). Tokens live in the parse arena and are valid only
+/// until the next `tokenize` call, which resets it.
 fn tokenize(full_text: []const u8) ![]const Token {
-    const parsed = try md_parser.?.parse(full_text);
+    _ = md_arena.?.reset(.retain_capacity);
+    const parsed = try markdown.parseFlat(md_arena.?.allocator(), full_text);
     return if (parsed.len == 0) EMPTY_DOC_TOKENS else parsed;
 }
 
@@ -678,6 +718,105 @@ fn feed(state: *AppState, in: Input) !void {
     const tokens = &.{plainTokenize(doc)};
     const lines = splitLines(doc, tokens, &line_buf, &frag_buf, measurer);
     try handleInput(testing_allocator, in, state, lines, tokens, measurer);
+}
+
+/// Build a Line with just the fields the vertical-layout functions read (start/text/height).
+fn testLine(start: usize, text: []const u8, h: f64) Line {
+    return .{ .start = start, .text = text, .h = h };
+}
+
+test "visiblePlacements stacks lines that fit and stops before overflow" {
+    var out: [16]Placement = undefined;
+    const lines = [_]Line{
+        testLine(0, "a", 30),
+        testLine(1, "b", 30),
+        testLine(2, "c", 30),
+        testLine(3, "d", 30),
+    };
+    // 100px viewport: 30+30+30 = 90 fits; a fourth (→120) would overflow.
+    const vis = visiblePlacements(&lines, 0, 100, &out);
+    try expectEqual(@as(usize, 3), vis.len);
+    try expectEqual(@as(usize, 0), vis[0].line);
+    try expectEqual(@as(f64, 0), vis[0].y);
+    try expectEqual(@as(f64, 30), vis[1].y);
+    try expectEqual(@as(f64, 60), vis[2].y);
+}
+
+test "visiblePlacements starts at `top` with y measured from the content top" {
+    var out: [16]Placement = undefined;
+    const lines = [_]Line{
+        testLine(0, "a", 30),
+        testLine(1, "b", 30),
+        testLine(2, "c", 30),
+        testLine(3, "d", 30),
+    };
+    const vis = visiblePlacements(&lines, 2, 100, &out);
+    try expectEqual(@as(usize, 2), vis.len);
+    try expectEqual(@as(usize, 2), vis[0].line);
+    try expectEqual(@as(f64, 0), vis[0].y); // first visible line sits at the content top
+    try expectEqual(@as(usize, 3), vis[1].line);
+    try expectEqual(@as(f64, 30), vis[1].y);
+}
+
+test "visiblePlacements: a tall line leaves room for fewer lines" {
+    var out: [16]Placement = undefined;
+    const lines = [_]Line{
+        testLine(0, "big", 60), // e.g. an H1
+        testLine(1, "a", 30),
+        testLine(2, "b", 30),
+    };
+    // 100px viewport: 60+30 = 90 fits; +30 → 120 overflows.
+    const vis = visiblePlacements(&lines, 0, 100, &out);
+    try expectEqual(@as(usize, 2), vis.len);
+    try expectEqual(@as(f64, 0), vis[0].y);
+    try expectEqual(@as(f64, 60), vis[1].y);
+}
+
+test "visiblePlacements always shows the top line even if it overflows" {
+    var out: [16]Placement = undefined;
+    const lines = [_]Line{
+        testLine(0, "huge", 150), // taller than the whole viewport
+        testLine(1, "a", 30),
+    };
+    const vis = visiblePlacements(&lines, 0, 100, &out);
+    try expectEqual(@as(usize, 1), vis.len);
+    try expectEqual(@as(usize, 0), vis[0].line);
+    try expectEqual(@as(f64, 0), vis[0].y);
+}
+
+test "visiblePlacements fills the viewport to its bottom edge" {
+    var out: [16]Placement = undefined;
+    const lines = [_]Line{
+        testLine(0, "a", 50),
+        testLine(1, "b", 50), // 50+50 == 100, exactly fills the viewport
+        testLine(2, "c", 50),
+    };
+    // Regression for the clipping bug: a line reaching exactly the bottom edge is still shown.
+    const vis = visiblePlacements(&lines, 0, 100, &out);
+    try expectEqual(@as(usize, 2), vis.len);
+    try expectEqual(@as(f64, 50), vis[1].y);
+}
+
+test "scrollToCursor and visiblePlacements agree on what fits" {
+    // The invariant the clipping bug broke: scrolling and the render clip must share one
+    // definition of "fits," so a line scrollToCursor reveals is actually placed for drawing.
+    const lines = [_]Line{
+        testLine(0, "a", 30), testLine(1, "b", 30), testLine(2, "c", 30),
+        testLine(3, "d", 30), testLine(4, "e", 30),
+    };
+    const viewport_h: f64 = 100;
+    const top = scrollToCursor(&lines, 0, 4, viewport_h); // cursor below the viewport
+    var out: [16]Placement = undefined;
+    const vis = visiblePlacements(&lines, top, viewport_h, &out);
+    try expectEqual(@as(usize, 4), vis[vis.len - 1].line); // cursor line is within the placed window
+}
+
+test "cursorLine resolves a soft-wrap boundary to the later line" {
+    // One logical line "abc" wrapped into two rows: "ab" | "c".
+    const lines = [_]Line{ testLine(0, "ab", 30), testLine(2, "c", 30) };
+    try expectEqual(@as(usize, 1), cursorLine(&lines, 2)); // boundary offset → later row
+    try expectEqual(@as(usize, 0), cursorLine(&lines, 0));
+    try expectEqual(@as(usize, 1), cursorLine(&lines, 3));
 }
 
 test "splitLines breaks on newlines" {
@@ -737,11 +876,11 @@ test "splitLines start offsets account for newlines across wraps" {
 
 test "splitLines handle multiple tokens" {
     var out: [8]Line = undefined;
-    var parser = Markdown.init(testing_allocator);
-    defer parser.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
 
     const contents: []const u8 = "foo**bar**baz";
-    const tokens = try parser.parse(contents);
+    const tokens = try markdown.parseFlat(arena.allocator(), contents);
     var frags: [16]Fragment = undefined;
     const lines = splitLines(contents, tokens, &out, &frags, testMeasurer(1_000_000));
 

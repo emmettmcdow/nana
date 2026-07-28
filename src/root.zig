@@ -20,7 +20,6 @@ pub const Note = struct {
 pub const Runtime = struct {
     basedir: std.fs.Dir,
     vectors: *VectorDB,
-    markdown: markdown.Markdown,
     allocator: std.mem.Allocator,
     skipEmbed: bool = false,
     lastParsedMD: ?std.ArrayList(u8) = null,
@@ -39,8 +38,6 @@ pub const Runtime = struct {
 
     /// Initialize the Nana Notes runtime
     pub fn init(allocator: std.mem.Allocator, opts: Runtime.Opts) !Runtime {
-        const markdown_parser = markdown.Markdown.init(allocator);
-
         const embedder_ptr = try allocator.create(Embedder);
         errdefer allocator.destroy(embedder_ptr);
         embedder_ptr.* = try initEmbedder();
@@ -51,7 +48,6 @@ pub const Runtime = struct {
         var self = Runtime{
             .basedir = opts.basedir,
             .vectors = vectors,
-            .markdown = markdown_parser,
             .allocator = allocator,
             .skipEmbed = opts.skipEmbed,
             .embedder = embedder_ptr,
@@ -481,7 +477,10 @@ pub const Runtime = struct {
 
         if (self.lastParsedMD) |*ref| ref.deinit(self.allocator);
         self.lastParsedMD = std.ArrayList(u8){};
-        const json_bytes = try std.json.Stringify.valueAlloc(self.allocator, try self.markdown.parse(content), .{});
+        var parse_arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer parse_arena.deinit();
+        const tokens = try markdown.parseFlat(parse_arena.allocator(), content);
+        const json_bytes = try std.json.Stringify.valueAlloc(self.allocator, tokens, .{});
         defer self.allocator.free(json_bytes);
         try self.lastParsedMD.?.appendSlice(self.allocator, json_bytes);
         try self.lastParsedMD.?.append(self.allocator, 0);
