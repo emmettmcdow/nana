@@ -261,16 +261,31 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                 }
             }
             { // Draw Text
-                var frag_x = text_x;
                 const frags = frag_scratch.?[line.frag_start..line.frag_end];
+                if (frags.len == 0) {
+                    // A blank row carries no fragments, but it still belongs to whatever block
+                    // owns it — a blank line inside a fence, say. Paint that block's panel so
+                    // the slab has no holes where the source had empty lines. Only a `.full`
+                    // panel applies; a `.run` panel over an empty row has nothing to hug.
+                    const style = styleForToken(tokenAt(tokens, line.start));
+                    if (style.background) |bg| {
+                        if (style.panel == .full) {
+                            fillPanel(canvas, .{ .x = text_x, .y = text_y, .w = measurer.content_w, .h = line_h }, bg);
+                        }
+                    }
+                }
+                var frag_x = text_x;
                 for (frags) |frag| {
                     const shown = full_text[frag.start..frag.end];
                     const style = styleForToken(tokens[frag.tok]);
                     if (style.background) |bg| {
                         // The panel has to be down before the glyphs, so its width can't come
                         // from drawText's return — measure the run up front.
-                        const w = measurer.width(shown, tokens, frag.start, frag.end);
-                        canvas.fillRect(.{ .x = frag_x, .y = text_y, .w = w, .h = line_h }, bg);
+                        const w = switch (style.panel) {
+                            .run => measurer.width(shown, tokens, frag.start, frag.end),
+                            .full => measurer.content_w - (frag_x - text_x),
+                        };
+                        fillPanel(canvas, .{ .x = frag_x, .y = text_y, .w = w, .h = line_h }, bg);
                     }
                     frag_x += canvas.drawText(shown, frag_x, text_y, style.font, style.color).w;
                 }
@@ -311,6 +326,16 @@ const Style = struct {
     color: Color = TEXT_COLOR,
     /// Filled behind the run before the text is drawn. `null` means "leave the page showing".
     background: ?Color = null,
+    panel: Panel = .run,
+};
+
+/// How wide a token's background panel is drawn.
+const Panel = enum {
+    /// Hugs the run's measured width — for spans sitting inside a line of prose.
+    run,
+    /// Spans the rest of the content column — for blocks that own whole lines, so consecutive
+    /// rows tile into one slab with a straight right edge instead of a ragged one.
+    full,
 };
 
 fn styleForToken(token: Token) Style {
@@ -319,6 +344,11 @@ fn styleForToken(token: Token) Style {
         .CODE => {
             style.color = CODE_COLOR;
             style.background = CODE_BG_COLOR;
+        },
+        .BLOCK_CODE => {
+            style.color = CODE_COLOR;
+            style.background = CODE_BG_COLOR;
+            style.panel = .full;
         },
         else => {},
     }
@@ -338,20 +368,23 @@ fn headerScale(degree: u8) f64 {
     };
 }
 
-/// The font for whichever token covers source offset `i`.
+/// The token covering source offset `i`, falling back to the last token when `i` is past the
+/// end of the document (an offset one past the final character is a legal cursor position).
 // FOLLOW-UP (unicode): `i` here is a byte offset (line.start / cursor offsets), but token
 // startI/endI come out of parseFlat as codepoint offsets. These coincide only for ASCII;
 // with multi-byte characters this matches the wrong token. splitLines has the same
 // byte-vs-codepoint mismatch. Dormant today (sample docs are ASCII); fix separately by
 // giving the renderer byte offsets while the frontend keeps codepoints.
+fn tokenAt(tokens: []const Token, i: usize) Token {
+    for (tokens) |t| {
+        if (i >= t.startI and i < t.endI) return t;
+    }
+    return tokens[tokens.len - 1];
+}
+
+/// The font for whichever token covers source offset `i`.
 fn fontAt(tokens: []const Token, i: usize) Font {
-    const token: Token = bt: {
-        for (tokens) |t| {
-            if (i >= t.startI and i < t.endI) break :bt t;
-        }
-        break :bt tokens[tokens.len - 1];
-    };
-    return fontForToken(token);
+    return fontForToken(tokenAt(tokens, i));
 }
 
 fn widthWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64 {
@@ -366,6 +399,17 @@ fn heightWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, st
     // An empty line (e.g. a blank line after a trailing '\n') still occupies vertical space.
     const measured = if (text.len == 0) " " else text;
     return canvas.measureText(measured, fontAt(tokens, start_i)).h;
+}
+
+/// Fill one row's background panel. The vertical extent is snapped to whole points so panels
+/// on consecutive rows share an exact edge. Line heights are fractional, so without this the
+/// shared boundary lands mid-pixel, Core Graphics antialiases both sides of it, and the two
+/// partial coverages composite to less than the full color — drawing a seam across every row
+/// boundary of a multi-line block.
+fn fillPanel(canvas: *Canvas, rect: geom.Rect, color: Color) void {
+    const top = @floor(rect.y);
+    const bottom = @floor(rect.y + rect.h);
+    canvas.fillRect(.{ .x = rect.x, .y = top, .w = rect.w, .h = bottom - top }, color);
 }
 
 fn pushFragment(frags: []Fragment, count: *usize, tok: usize, from: usize, to: usize) void {
@@ -993,6 +1037,31 @@ test "splitLines soft-wrap splits one token into a fragment per row" {
     try expectEqual(0, frags[lines[1].frag_start].tok);
     try expectEqualStrings("abc", text[frags[lines[0].frag_start].start..frags[lines[0].frag_start].end]);
     try expectEqualStrings("def", text[frags[lines[1].frag_start].start..frags[lines[1].frag_start].end]);
+}
+
+test "a blank row inside a fence has no fragments but still belongs to the block" {
+    var out: [8]Line = undefined;
+    var frags: [16]Fragment = undefined;
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    // The blank line between "a" and "b" is inside the fence.
+    const text = "```\na\n\nb\n```";
+    const tokens = try markdown.parseFlat(arena.allocator(), text);
+    const lines = splitLines(text, tokens, &out, &frags, testMeasurer(1_000_000));
+
+    try expectEqual(5, lines.len);
+    try expectEqualStrings("", lines[2].text);
+    // Nothing to draw on that row, so the render loop can't reach the block's style through a
+    // fragment — it has to look the owning token up by offset instead (see the frags.len == 0
+    // branch in `frame`), or the code panel would have a hole in it.
+    try expectEqual(0, lines[2].frag_end - lines[2].frag_start);
+    try expectEqual(markdown.TokenType.BLOCK_CODE, tokenAt(tokens, lines[2].start).tType);
+
+    // Every other row of the block does reach it through a fragment.
+    for ([_]usize{ 0, 1, 3, 4 }) |i| {
+        try expectEqual(markdown.TokenType.BLOCK_CODE, tokens[frags[lines[i].frag_start].tok].tType);
+    }
 }
 
 test "splitLines empty row has no fragments" {
