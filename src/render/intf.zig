@@ -45,6 +45,15 @@ export fn nana_render_init() void {
         \\Here is a [link](https://google.com).
         \\#### Header 4
         \\Here is a `code snippet`.
+        \\
+        \\- list item #1
+        \\- list item #2
+        \\- list item #3
+        \\
+        \\1. ordered
+        \\2. ordered
+        \\3. ordered
+        \\
         \\##### Header 5
         \\The following is a quote:
         \\> you miss every shot you don't take.

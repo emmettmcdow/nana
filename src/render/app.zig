@@ -387,14 +387,29 @@ fn styleForToken(token: Token) Style {
     return style;
 }
 
-/// How far right of the content margin a token's rows sit. Blocks that indent do so by their
-/// nesting depth; everything inline sits flush, since an indent applies to a whole row and an
-/// inline span only covers part of one.
-fn indentForToken(token: Token) f64 {
+/// How far right of the content margin the row starting at `start` sits.
+///
+/// Quotes indent every row by their nesting depth. Lists do the opposite: their first row sits
+/// flush, because a list's structure is already in the source as literal text — the leading
+/// tabs measure a real 28pt each in Menlo, and `- ` reads as the bullet — so indenting on top
+/// of that would double it. What a list needs instead is a *hanging* indent, so a wrapped item's
+/// continuation rows line up under the item's text rather than sliding back under its marker.
+///
+/// Everything inline sits flush: an indent applies to a whole row, and an inline span only
+/// covers part of one.
+fn indentForRow(token: Token, start: usize, tokens: []const Token, m: Measurer) f64 {
     return switch (token.tType) {
         .QUOTE => QUOTE_INDENT_PX * @as(f64, @floatFromInt(token.degree)),
+        .UNORDERED_LIST => if (start == token.startI) 0 else markerWidth(token, tokens, m),
         else => 0,
     };
+}
+
+/// Width of a list item's leading marker (its tabs plus `- `), which the parser already
+/// delimits with `renderStart`. This is the offset a continuation row hangs at.
+fn markerWidth(token: Token, tokens: []const Token, m: Measurer) f64 {
+    const marker_end = @min(token.renderStart, token.contents.len);
+    return m.width(token.contents[0..marker_end], tokens, token.startI, token.startI + marker_end);
 }
 
 /// Headers shrink toward body size as the degree grows; degree 6 is body-sized, distinguished
@@ -464,15 +479,15 @@ fn pushFragment(frags: []Fragment, count: *usize, tok: usize, from: usize, to: u
 /// owner up by offset gets both cases right without tracking state: a hard newline hands off to
 /// the next token (a quote's '\n' is its last character, so the row after it is no longer
 /// quoted), while a soft wrap stays inside the current token and keeps the indent.
-fn beginRow(out: []Line, lineno: usize, start: usize, tokens: []const Token) void {
+fn beginRow(out: []Line, lineno: usize, start: usize, tokens: []const Token, m: Measurer) void {
     out[lineno].start = start;
-    out[lineno].indent = indentForToken(tokenAt(tokens, start));
+    out[lineno].indent = indentForRow(tokenAt(tokens, start), start, tokens, m);
 }
 
 /// Split `full_text` into renderable fragments bounded by lines.
 fn splitLines(full_text: []const u8, tokens: []const Token, out: []Line, frags: []Fragment, m: Measurer) []Line {
     var lineno: usize = 0;
-    beginRow(out, lineno, 0, tokens);
+    beginRow(out, lineno, 0, tokens, m);
 
     var frag_count: usize = 0;
     var line_frag_start: usize = 0; // first fragment index of the current row
@@ -496,7 +511,7 @@ fn splitLines(full_text: []const u8, tokens: []const Token, out: []Line, frags: 
                 out[lineno].frag_start = line_frag_start;
                 out[lineno].frag_end = frag_count;
                 lineno += 1;
-                beginRow(out, lineno, off + 1, tokens);
+                beginRow(out, lineno, off + 1, tokens, m);
                 out[lineno].text = "";
                 line_frag_start = frag_count;
                 frag_from = off + 1; // same token, resumes past the newline
@@ -510,7 +525,7 @@ fn splitLines(full_text: []const u8, tokens: []const Token, out: []Line, frags: 
                 out[lineno].frag_start = line_frag_start;
                 out[lineno].frag_end = frag_count;
                 lineno += 1;
-                beginRow(out, lineno, off, tokens);
+                beginRow(out, lineno, off, tokens, m);
                 out[lineno].text = full_text[off .. off + 1];
                 line_frag_start = frag_count;
                 frag_from = off; // same token, the wrapped char begins the next row
@@ -1158,6 +1173,63 @@ test "a soft-wrapped quote keeps its indent on continuation rows" {
     // un-narrowed width it would have held 33.
     for (lines[0 .. lines.len - 1]) |line| {
         try expectEqual(@as(usize, 9), line.text.len);
+    }
+}
+
+test "a list item's first row sits flush and its wrapped rows hang under the text" {
+    var out: [8]Line = undefined;
+    var frags: [32]Fragment = undefined;
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    // fakeWidth is 1/byte, so the marker "- " measures 2 and the item wraps at width 12.
+    const text = "- aaaaaaaaaaaaaaaaaaaaaa";
+    const tokens = try markdown.parseFlat(arena.allocator(), text);
+    const lines = splitLines(text, tokens, &out, &frags, testMeasurer(12));
+
+    try expect(lines.len > 1); // it did wrap
+    try expectEqual(@as(f64, 0), lines[0].indent); // the marker row is flush
+    for (lines[1..]) |line| {
+        try expectEqual(@as(f64, 2), line.indent); // continuations hang under "- "
+    }
+}
+
+test "a nested list item is not indented on top of its literal tabs" {
+    var out: [8]Line = undefined;
+    var frags: [32]Fragment = undefined;
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    // Nesting is expressed by leading tabs, which are real drawn characters with a real
+    // advance. Adding a computed indent as well would double every level.
+    const text = "- one\n\t- two\n\t\t- three";
+    const tokens = try markdown.parseFlat(arena.allocator(), text);
+    const lines = splitLines(text, tokens, &out, &frags, testMeasurer(1_000_000));
+
+    try expectEqual(3, lines.len);
+    for (lines) |line| {
+        try expectEqual(@as(f64, 0), line.indent);
+    }
+    // The tabs are still present as text, which is what actually does the indenting.
+    try expectEqualStrings("\t- two", lines[1].text);
+    try expectEqualStrings("\t\t- three", lines[2].text);
+}
+
+test "the hanging indent scales with a nested item's marker" {
+    var out: [8]Line = undefined;
+    var frags: [32]Fragment = undefined;
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    // Degree 3: marker is "\t\t- ", four bytes wide under fakeWidth.
+    const text = "\t\t- aaaaaaaaaaaaaaaaaaaa";
+    const tokens = try markdown.parseFlat(arena.allocator(), text);
+    const lines = splitLines(text, tokens, &out, &frags, testMeasurer(14));
+
+    try expect(lines.len > 1);
+    try expectEqual(@as(f64, 0), lines[0].indent);
+    for (lines[1..]) |line| {
+        try expectEqual(@as(f64, 4), line.indent);
     }
 }
 
