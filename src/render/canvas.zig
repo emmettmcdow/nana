@@ -21,6 +21,7 @@ const CFDictionaryRef = ?*anyopaque;
 const CTFontRef = ?*anyopaque;
 const CTLineRef = ?*anyopaque;
 const CGColorRef = ?*anyopaque;
+const CFNumberRef = ?*anyopaque;
 
 const CFDictionaryKeyCallBacks = opaque {};
 const CFDictionaryValueCallBacks = opaque {};
@@ -36,6 +37,7 @@ const kCFStringEncodingUTF8: u32 = 0x0800_0100;
 // ── External symbols (CoreFoundation / CoreGraphics / CoreText) ────────────────
 extern const kCTFontAttributeName: CFStringRef;
 extern const kCTForegroundColorAttributeName: CFStringRef;
+extern const kCTUnderlineStyleAttributeName: CFStringRef;
 extern const kCFTypeDictionaryKeyCallBacks: CFDictionaryKeyCallBacks;
 extern const kCFTypeDictionaryValueCallBacks: CFDictionaryValueCallBacks;
 
@@ -60,6 +62,10 @@ extern fn CFAttributedStringCreate(
     str: CFStringRef,
     attributes: CFDictionaryRef,
 ) CFAttributedStringRef;
+extern fn CFNumberCreate(alloc: ?*anyopaque, theType: c_long, valuePtr: *const anyopaque) CFNumberRef;
+
+const kCFNumberSInt32Type: c_long = 3;
+const kCTUnderlineStyleSingle: i32 = 1;
 
 extern fn CTFontCreateWithName(name: CFStringRef, size: f64, matrix: ?*const CGAffineTransform) CTFontRef;
 extern fn CTLineCreateWithAttributedString(string: CFAttributedStringRef) CTLineRef;
@@ -157,13 +163,29 @@ fn makeLine(utf8: []const u8, font_req: geom.Font, color: geom.Color) ?CTLineRef
     const cgcolor = CGColorCreateGenericRGB(color.r, color.g, color.b, color.a);
     defer if (cgcolor != null) CFRelease(cgcolor);
 
-    const keys = [_]?*const anyopaque{ kCTFontAttributeName, kCTForegroundColorAttributeName };
-    const values = [_]?*const anyopaque{ font, cgcolor };
+    // Underlining is left to Core Text rather than drawn as a rule of our own: it positions and
+    // thickens the line from the font's own metrics, which we would otherwise have to plumb out
+    // of here just to guess at.
+    const underline_style: i32 = kCTUnderlineStyleSingle;
+    const underline = if (font_req.underline)
+        CFNumberCreate(null, kCFNumberSInt32Type, &underline_style)
+    else
+        null;
+    defer if (underline != null) CFRelease(underline);
+
+    var keys = [_]?*const anyopaque{ kCTFontAttributeName, kCTForegroundColorAttributeName, undefined };
+    var values = [_]?*const anyopaque{ font, cgcolor, undefined };
+    var attr_count: isize = 2;
+    if (underline != null) {
+        keys[2] = kCTUnderlineStyleAttributeName;
+        values[2] = underline;
+        attr_count = 3;
+    }
     const dict = CFDictionaryCreate(
         null,
         &keys,
         &values,
-        keys.len,
+        attr_count,
         &kCFTypeDictionaryKeyCallBacks,
         &kCFTypeDictionaryValueCallBacks,
     );

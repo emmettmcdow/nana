@@ -76,6 +76,11 @@ const QUOTE_RULE_COLOR: Color = TEXT_COLOR.withAlpha(0.35);
 const QUOTE_INDENT_PX: f64 = 24;
 const QUOTE_RULE_W: f64 = 3;
 
+/// A link is marked by the rule under it, not by a hue of its own — which keeps it legible
+/// against the amber body text instead of competing with it, and is how a link reads in prose
+/// anyway. Core Text draws the underline in the text color.
+const LINK_COLOR: Color = TEXT_COLOR;
+
 pub const AppState = struct {
     gap_buf: []u8,
     text_len: usize = 0,
@@ -346,6 +351,7 @@ fn fontForToken(token: Token) Font {
         .BOLD => .{ .size = FONT_SIZE, .bold = true },
         .ITALIC => .{ .size = FONT_SIZE, .italic = true },
         .EMPHASIS => .{ .size = FONT_SIZE, .bold = true, .italic = true },
+        .LINK => .{ .size = FONT_SIZE, .underline = true },
         else => .{ .size = FONT_SIZE },
     };
 }
@@ -382,6 +388,7 @@ fn styleForToken(token: Token) Style {
             style.panel = .full;
         },
         .QUOTE => style.color = QUOTE_COLOR,
+        .LINK => style.color = LINK_COLOR,
         else => {},
     }
     return style;
