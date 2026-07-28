@@ -296,6 +296,7 @@ fn fontForToken(token: Token) Font {
     return .{
         .size = FONT_SIZE * mult,
         .bold = token.tType == .BOLD,
+        .italic = token.tType == .ITALIC,
     };
 }
 
