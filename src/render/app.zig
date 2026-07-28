@@ -14,6 +14,7 @@ const geom = @import("geom.zig");
 const Canvas = @import("canvas.zig").Canvas;
 const input = @import("input.zig");
 const std = @import("std");
+const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const testing_allocator = std.testing.allocator;
@@ -68,6 +69,13 @@ const HIGHLIGHT_COLOR: Color = TEXT_COLOR.withAlpha(0.25);
 const CODE_COLOR: Color = TEXT_COLOR.withAlpha(0.85);
 const CODE_BG_COLOR: Color = TEXT_COLOR.withAlpha(0.12);
 
+/// Quoted text is dimmed and pushed right, with a rule per nesting level standing in the
+/// gutter it was pushed out of.
+const QUOTE_COLOR: Color = TEXT_COLOR.withAlpha(0.70);
+const QUOTE_RULE_COLOR: Color = TEXT_COLOR.withAlpha(0.35);
+const QUOTE_INDENT_PX: f64 = 24;
+const QUOTE_RULE_W: f64 = 3;
+
 pub const AppState = struct {
     gap_buf: []u8,
     text_len: usize = 0,
@@ -95,6 +103,11 @@ const Line = struct {
     /// End-exclusive range into the fragment buffer: styled runs constitute this line.
     frag_start: usize = 0,
     frag_end: usize = 0,
+    /// How far this row is pushed right of the content margin. Set by the owning block (a
+    /// quote indents by its nesting depth), and it narrows the row's wrap budget by the same
+    /// amount. Everything that maps between x and a text offset — caret, selection, mouse
+    /// hit-testing — has to add it, so it lives on the line rather than being recomputed.
+    indent: f64 = 0,
 };
 
 /// A token's slice of one visual row, the render loop quanta. Frags don't cross line bounds.
@@ -197,6 +210,24 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
             const line = lines[placement.line];
             const line_h = line.h;
             const text_y = MARGIN_PX + placement.y;
+            // Where this row's text actually starts. Everything that converts between an x
+            // and a text offset below works from this, not from `text_x` — an indented row
+            // would otherwise draw its caret and selection a full indent to the left of its
+            // glyphs. `text_x` still marks the gutter, which is what the quote rules want.
+            const line_x = text_x + line.indent;
+            // The row's usable width, which the indent eats into — the same budget splitLines
+            // wrapped this row against, so a full-width panel ends where the text would have.
+            const row_w = measurer.content_w - line.indent;
+            { // Quote rules: one bar per nesting level, standing in the gutter the text
+              // vacated. Drawn first so everything else layers over them.
+                const owner = tokenAt(tokens, line.start);
+                if (owner.tType == .QUOTE) {
+                    for (0..owner.degree) |level| {
+                        const bar_x = text_x + (@as(f64, @floatFromInt(level)) * QUOTE_INDENT_PX);
+                        fillPanel(canvas, .{ .x = bar_x, .y = text_y, .w = QUOTE_RULE_W, .h = line_h }, QUOTE_RULE_COLOR);
+                    }
+                }
+            }
             { // selection rendering
                 const cursor_in_line = state.cursor_i >= line.start and state.cursor_i <= line.start + line.text.len;
                 const anchor_in_line = state.selection_anchor != null and state.selection_anchor.? >= line.start and state.selection_anchor.? <= line.start + line.text.len;
@@ -204,7 +235,7 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                     // At a soft-wrap boundary the cursor offset matches both the end
                     // of one line and the start of the next; prefer the earlier line.
                     const caret_offset = state.cursor_i - line.start;
-                    const caret_x = text_x + measurer.width(line.text[0..caret_offset], tokens, line.start, line.start + caret_offset);
+                    const caret_x = line_x + measurer.width(line.text[0..caret_offset], tokens, line.start, line.start + caret_offset);
                     canvas.fillRect(.{ .x = caret_x, .y = text_y, .w = 2, .h = line_h }, Color.white);
                     caret_drawn = true;
                 }
@@ -212,7 +243,7 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                     if (state.selection_anchor) |anchor| {
                         const anchor_offset: usize = anchor - line.start;
                         const caret_offset = state.cursor_i - line.start;
-                        const caret_x = text_x + measurer.width(line.text[0..caret_offset], tokens, line.start, line.start + caret_offset);
+                        const caret_x = line_x + measurer.width(line.text[0..caret_offset], tokens, line.start, line.start + caret_offset);
                         var box_start_x: f64 = undefined;
                         var selection_w: f64 = undefined;
                         if (anchor_offset < caret_offset) {
@@ -229,11 +260,11 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                     if (state.selection_anchor.? < state.cursor_i) {
                         const caret_offset = state.cursor_i - line.start;
                         const selection_w: f64 = measurer.width(line.text[0..caret_offset], tokens, line.start, line.start + caret_offset);
-                        canvas.fillRect(.{ .x = text_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
+                        canvas.fillRect(.{ .x = line_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
                     } else {
                         const caret_offset = state.cursor_i - line.start;
                         const selection_w: f64 = measurer.width(line.text[caret_offset..line.text.len], tokens, line.start + caret_offset, line.start + line.text.len);
-                        const caret_x = text_x + measurer.width(line.text[0..caret_offset], tokens, line.start, line.start + caret_offset);
+                        const caret_x = line_x + measurer.width(line.text[0..caret_offset], tokens, line.start, line.start + caret_offset);
                         canvas.fillRect(.{ .x = caret_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
                     }
                 } else if (anchor_in_line) {
@@ -241,12 +272,12 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                     if (state.selection_anchor.? < state.cursor_i) {
                         const anchor_offset = state.selection_anchor.? - line.start;
                         const selection_w: f64 = measurer.width(line.text[anchor_offset..line.text.len], tokens, line.start + anchor_offset, line.start + line.text.len);
-                        const anchor_x = text_x + measurer.width(line.text[0..anchor_offset], tokens, line.start, line.start + anchor_offset);
+                        const anchor_x = line_x + measurer.width(line.text[0..anchor_offset], tokens, line.start, line.start + anchor_offset);
                         canvas.fillRect(.{ .x = anchor_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
                     } else {
                         const anchor_offset = state.selection_anchor.? - line.start;
                         const selection_w: f64 = measurer.width(line.text[0..anchor_offset], tokens, line.start, line.start + anchor_offset);
-                        canvas.fillRect(.{ .x = text_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
+                        canvas.fillRect(.{ .x = line_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
                     }
                 } else if (state.selection_anchor != null and
                     line.start > @min(state.selection_anchor.?, state.cursor_i) and
@@ -257,7 +288,7 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                         measurer.width(" ", tokens, line.start, line.start + 1) // still render empty lines aas selected.
                     else
                         measurer.width(line.text[0..line.text.len], tokens, line.start, line.start + line.text.len);
-                    canvas.fillRect(.{ .x = text_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
+                    canvas.fillRect(.{ .x = line_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
                 }
             }
             { // Draw Text
@@ -270,11 +301,11 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                     const style = styleForToken(tokenAt(tokens, line.start));
                     if (style.background) |bg| {
                         if (style.panel == .full) {
-                            fillPanel(canvas, .{ .x = text_x, .y = text_y, .w = measurer.content_w, .h = line_h }, bg);
+                            fillPanel(canvas, .{ .x = line_x, .y = text_y, .w = row_w, .h = line_h }, bg);
                         }
                     }
                 }
-                var frag_x = text_x;
+                var frag_x = line_x;
                 for (frags) |frag| {
                     const shown = full_text[frag.start..frag.end];
                     const style = styleForToken(tokens[frag.tok]);
@@ -283,7 +314,7 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                         // from drawText's return — measure the run up front.
                         const w = switch (style.panel) {
                             .run => measurer.width(shown, tokens, frag.start, frag.end),
-                            .full => measurer.content_w - (frag_x - text_x),
+                            .full => row_w - (frag_x - line_x),
                         };
                         fillPanel(canvas, .{ .x = frag_x, .y = text_y, .w = w, .h = line_h }, bg);
                     }
@@ -350,9 +381,20 @@ fn styleForToken(token: Token) Style {
             style.background = CODE_BG_COLOR;
             style.panel = .full;
         },
+        .QUOTE => style.color = QUOTE_COLOR,
         else => {},
     }
     return style;
+}
+
+/// How far right of the content margin a token's rows sit. Blocks that indent do so by their
+/// nesting depth; everything inline sits flush, since an indent applies to a whole row and an
+/// inline span only covers part of one.
+fn indentForToken(token: Token) f64 {
+    return switch (token.tType) {
+        .QUOTE => QUOTE_INDENT_PX * @as(f64, @floatFromInt(token.degree)),
+        else => 0,
+    };
 }
 
 /// Headers shrink toward body size as the degree grows; degree 6 is body-sized, distinguished
@@ -418,10 +460,19 @@ fn pushFragment(frags: []Fragment, count: *usize, tok: usize, from: usize, to: u
     count.* += 1;
 }
 
+/// Open a row at `start`, inheriting the indent of the block that owns that offset. Looking the
+/// owner up by offset gets both cases right without tracking state: a hard newline hands off to
+/// the next token (a quote's '\n' is its last character, so the row after it is no longer
+/// quoted), while a soft wrap stays inside the current token and keeps the indent.
+fn beginRow(out: []Line, lineno: usize, start: usize, tokens: []const Token) void {
+    out[lineno].start = start;
+    out[lineno].indent = indentForToken(tokenAt(tokens, start));
+}
+
 /// Split `full_text` into renderable fragments bounded by lines.
 fn splitLines(full_text: []const u8, tokens: []const Token, out: []Line, frags: []Fragment, m: Measurer) []Line {
     var lineno: usize = 0;
-    out[lineno].start = 0;
+    beginRow(out, lineno, 0, tokens);
 
     var frag_count: usize = 0;
     var line_frag_start: usize = 0; // first fragment index of the current row
@@ -445,20 +496,21 @@ fn splitLines(full_text: []const u8, tokens: []const Token, out: []Line, frags: 
                 out[lineno].frag_start = line_frag_start;
                 out[lineno].frag_end = frag_count;
                 lineno += 1;
-                out[lineno].start = off + 1;
+                beginRow(out, lineno, off + 1, tokens);
                 out[lineno].text = "";
                 line_frag_start = frag_count;
                 frag_from = off + 1; // same token, resumes past the newline
                 continue;
             }
             const text_including_new_char = full_text[out[lineno].start .. off + 1];
-            if (m.width(text_including_new_char, tokens, out[lineno].start, off) >= m.content_w) {
+            // An indented row has correspondingly less room before it has to wrap.
+            if (m.width(text_including_new_char, tokens, out[lineno].start, off) >= m.content_w - out[lineno].indent) {
                 out[lineno].text = full_text[out[lineno].start..off];
                 pushFragment(frags, &frag_count, frag_tok, frag_from, off);
                 out[lineno].frag_start = line_frag_start;
                 out[lineno].frag_end = frag_count;
                 lineno += 1;
-                out[lineno].start = off;
+                beginRow(out, lineno, off, tokens);
                 out[lineno].text = full_text[off .. off + 1];
                 line_frag_start = frag_count;
                 frag_from = off; // same token, the wrapped char begins the next row
@@ -558,7 +610,10 @@ fn handleInput(
                 curr_y += line_h;
             }
             var col: usize = lines[lineno].text.len;
-            var curr_x: f64 = MARGIN_PX;
+            // Start where the row's glyphs start, not at the margin: on an indented row the
+            // two differ, and walking from the margin would map every click an indent's worth
+            // of characters to the right.
+            var curr_x: f64 = MARGIN_PX + lines[lineno].indent;
             for (0..lines[lineno].text.len) |i| {
                 const char_width = measurer.width(lines[lineno].text[i .. i + 1], tokens, lines[lineno].start + i, lines[lineno].start + i + 1);
                 if (in.mouse.x < curr_x + (char_width / 2.0)) {
@@ -1061,6 +1116,48 @@ test "a blank row inside a fence has no fragments but still belongs to the block
     // Every other row of the block does reach it through a fragment.
     for ([_]usize{ 0, 1, 3, 4 }) |i| {
         try expectEqual(markdown.TokenType.BLOCK_CODE, tokens[frags[lines[i].frag_start].tok].tType);
+    }
+}
+
+test "quote rows carry an indent scaled by nesting depth" {
+    var out: [8]Line = undefined;
+    var frags: [32]Fragment = undefined;
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    const text = "plain\n> one\n>> two\nplain again";
+    const tokens = try markdown.parseFlat(arena.allocator(), text);
+    const lines = splitLines(text, tokens, &out, &frags, testMeasurer(1_000_000));
+
+    try expectEqual(4, lines.len);
+    try expectEqual(@as(f64, 0), lines[0].indent);
+    try expectEqual(QUOTE_INDENT_PX * 1, lines[1].indent);
+    try expectEqual(QUOTE_INDENT_PX * 2, lines[2].indent);
+    // The row after a quote is not itself quoted. A quote token owns its trailing '\n', so
+    // this only comes out right because beginRow resolves the owner at `off + 1`.
+    try expectEqual(@as(f64, 0), lines[3].indent);
+}
+
+test "a soft-wrapped quote keeps its indent on continuation rows" {
+    var out: [8]Line = undefined;
+    var frags: [32]Fragment = undefined;
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    // fakeWidth is 1/byte and content_w is 10, so the quote wraps well before its text ends.
+    const text = "> aaaaaaaaaaaaaaaaaa";
+    const tokens = try markdown.parseFlat(arena.allocator(), text);
+    const lines = splitLines(text, tokens, &out, &frags, testMeasurer(10 + QUOTE_INDENT_PX));
+
+    try expect(lines.len > 1); // it did wrap
+    for (lines) |line| {
+        try expectEqual(QUOTE_INDENT_PX, line.indent);
+    }
+    // Wrapping happened against the *narrowed* budget, not the full content width. The row
+    // breaks when it would reach the budget, so it holds budget - 1 == 9 bytes; against the
+    // un-narrowed width it would have held 33.
+    for (lines[0 .. lines.len - 1]) |line| {
+        try expectEqual(@as(usize, 9), line.text.len);
     }
 }
 
