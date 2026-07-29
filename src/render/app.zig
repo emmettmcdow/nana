@@ -122,7 +122,50 @@ const Fragment = struct {
     // Index into the full text buffers.
     start: usize,
     end: usize,
+    /// The drawn sub-range of `[start, end)`. Equal to the whole range on a revealed row; on a
+    /// hidden one it is clipped to the token's visible middle, which is what conceals the
+    /// delimiters. A token hides only a prefix and a suffix, so what survives is contiguous
+    /// and one pair of bounds is enough.
+    vis_start: usize = 0,
+    vis_end: usize = 0,
 };
+
+/// The span of source whose markdown delimiters are shown, being the line the cursor sits on.
+///
+/// Reveal is decided per *source* line rather than per visual row, which is what keeps this
+/// tractable: hiding changes how wide a row is, so it changes where rows wrap, so it changes
+/// which row the cursor lands on. Resolving that against source lines instead — they are
+/// delimited by newlines and knowable before any measuring happens — cuts the loop.
+const Reveal = struct {
+    start: usize,
+    end: usize,
+
+    fn covers(self: Reveal, i: usize) bool {
+        return i >= self.start and i < self.end;
+    }
+
+    /// Nothing revealed. For passes that have no cursor to speak of.
+    const none = Reveal{ .start = 0, .end = 0 };
+};
+
+/// The source line containing `cursor_i`, excluding its trailing newline.
+fn revealForCursor(text: []const u8, cursor_i: usize) Reveal {
+    const cursor = @min(cursor_i, text.len);
+    var start: usize = 0;
+    for (text[0..cursor], 0..) |c, i| {
+        if (c == '\n') start = i + 1;
+    }
+    var end = cursor;
+    while (end < text.len and text[end] != '\n') : (end += 1) {}
+    return .{ .start = start, .end = end };
+}
+
+/// Whether source offset `off` is drawn: either its line is revealed, or it falls inside the
+/// token's visible middle rather than in the delimiters the parser marked off.
+fn isVisible(token: Token, off: usize, reveal: Reveal) bool {
+    if (reveal.covers(off)) return true;
+    return off >= token.startI + token.renderStart and off < token.startI + token.renderEnd;
+}
 
 pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *AppState) !void {
     // debug: fps calculation
@@ -196,14 +239,18 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
     { // Calculate the displayed text and handle inputs
         const full_text = condenseGapBuf(scratch.?, state.*);
         const tokens = try tokenize(full_text);
-        const lines = splitLines(full_text, tokens, line_scratch.?, frag_scratch.?, measurer);
-        try handleInput(allocator, in, state, lines, tokens, measurer);
+        // Laid out against the cursor as it stands *before* this frame's input, which is the
+        // layout the user was looking at when they clicked or pressed a key.
+        const reveal = revealForCursor(full_text, state.cursor_i);
+        const lines = splitLines(full_text, tokens, line_scratch.?, frag_scratch.?, measurer, reveal);
+        try handleInput(allocator, in, state, lines, tokens, frag_scratch.?, full_text, measurer);
     }
 
     { // Render pass
         const full_text = condenseGapBuf(scratch.?, state.*);
         const tokens = try tokenize(full_text);
-        const lines = splitLines(full_text, tokens, line_scratch.?, frag_scratch.?, measurer);
+        const reveal = revealForCursor(full_text, state.cursor_i);
+        const lines = splitLines(full_text, tokens, line_scratch.?, frag_scratch.?, measurer, reveal);
         const text_x: f64 = MARGIN_PX;
         const viewport_h = canvas.size.h - (MARGIN_PX * 2);
         state.window_offset = scrollToCursor(lines, state.window_offset, cursorLine(lines, state.cursor_i), viewport_h);
@@ -233,67 +280,41 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                     }
                 }
             }
-            { // selection rendering
-                const cursor_in_line = state.cursor_i >= line.start and state.cursor_i <= line.start + line.text.len;
-                const anchor_in_line = state.selection_anchor != null and state.selection_anchor.? >= line.start and state.selection_anchor.? <= line.start + line.text.len;
+            { // caret and selection
+                const line_end = line.start + line.text.len;
+                const cursor_in_line = state.cursor_i >= line.start and state.cursor_i <= line_end;
                 if (cursor_in_line and !caret_drawn) {
                     // At a soft-wrap boundary the cursor offset matches both the end
                     // of one line and the start of the next; prefer the earlier line.
-                    const caret_offset = state.cursor_i - line.start;
-                    const caret_x = line_x + measurer.width(line.text[0..caret_offset], tokens, line.start, line.start + caret_offset);
+                    const caret_x = line_x + xForOffset(line, frag_scratch.?, full_text, tokens, state.cursor_i, measurer);
                     canvas.fillRect(.{ .x = caret_x, .y = text_y, .w = 2, .h = line_h }, Color.white);
                     caret_drawn = true;
                 }
-                if (cursor_in_line and anchor_in_line) {
-                    if (state.selection_anchor) |anchor| {
-                        const anchor_offset: usize = anchor - line.start;
-                        const caret_offset = state.cursor_i - line.start;
-                        const caret_x = line_x + measurer.width(line.text[0..caret_offset], tokens, line.start, line.start + caret_offset);
-                        var box_start_x: f64 = undefined;
-                        var selection_w: f64 = undefined;
-                        if (anchor_offset < caret_offset) {
-                            selection_w = measurer.width(line.text[anchor_offset..caret_offset], tokens, line.start + anchor_offset, line.start + caret_offset);
-                            box_start_x = caret_x - selection_w;
-                        } else {
-                            selection_w = measurer.width(line.text[caret_offset..anchor_offset], tokens, line.start + caret_offset, line.start + anchor_offset);
-                            box_start_x = caret_x;
+                // One rect per row: clip the document-wide selection span to this row and draw
+                // what is left. The old form branched on where the anchor and cursor each fell
+                // relative to the row; intersecting the two ranges says the same thing without
+                // enumerating the cases.
+                if (state.selection_anchor) |anchor| {
+                    const sel_lo = @min(anchor, state.cursor_i);
+                    const sel_hi = @max(anchor, state.cursor_i);
+                    const lo = @max(sel_lo, line.start);
+                    const hi = @min(sel_hi, line_end);
+                    if (lo <= hi) {
+                        const x0 = xForOffset(line, frag_scratch.?, full_text, tokens, lo, measurer);
+                        const x1 = xForOffset(line, frag_scratch.?, full_text, tokens, hi, measurer);
+                        // A row wholly inside the selection but with nothing drawn on it — a
+                        // blank line, or one that is all concealed markup — still shows a stub,
+                        // so a multi-line selection doesn't look like it skipped a row.
+                        const selection_w = if (x1 > x0)
+                            x1 - x0
+                        else if (sel_lo < line.start and sel_hi > line_end)
+                            measurer.width(" ", tokens, line.start, line.start + 1)
+                        else
+                            0;
+                        if (selection_w > 0) {
+                            canvas.fillRect(.{ .x = line_x + x0, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
                         }
-                        canvas.fillRect(.{ .x = box_start_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
-                    } else unreachable;
-                } else if (cursor_in_line and state.selection_anchor != null) {
-                    // Selection anchor is on another line
-                    if (state.selection_anchor.? < state.cursor_i) {
-                        const caret_offset = state.cursor_i - line.start;
-                        const selection_w: f64 = measurer.width(line.text[0..caret_offset], tokens, line.start, line.start + caret_offset);
-                        canvas.fillRect(.{ .x = line_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
-                    } else {
-                        const caret_offset = state.cursor_i - line.start;
-                        const selection_w: f64 = measurer.width(line.text[caret_offset..line.text.len], tokens, line.start + caret_offset, line.start + line.text.len);
-                        const caret_x = line_x + measurer.width(line.text[0..caret_offset], tokens, line.start, line.start + caret_offset);
-                        canvas.fillRect(.{ .x = caret_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
                     }
-                } else if (anchor_in_line) {
-                    // Cursor is on another line
-                    if (state.selection_anchor.? < state.cursor_i) {
-                        const anchor_offset = state.selection_anchor.? - line.start;
-                        const selection_w: f64 = measurer.width(line.text[anchor_offset..line.text.len], tokens, line.start + anchor_offset, line.start + line.text.len);
-                        const anchor_x = line_x + measurer.width(line.text[0..anchor_offset], tokens, line.start, line.start + anchor_offset);
-                        canvas.fillRect(.{ .x = anchor_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
-                    } else {
-                        const anchor_offset = state.selection_anchor.? - line.start;
-                        const selection_w: f64 = measurer.width(line.text[0..anchor_offset], tokens, line.start, line.start + anchor_offset);
-                        canvas.fillRect(.{ .x = line_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
-                    }
-                } else if (state.selection_anchor != null and
-                    line.start > @min(state.selection_anchor.?, state.cursor_i) and
-                    (line.start + line.text.len) < @max(state.selection_anchor.?, state.cursor_i))
-                {
-                    // Line is between the anchor and cursor.
-                    const selection_w: f64 = if (line.text.len == 0)
-                        measurer.width(" ", tokens, line.start, line.start + 1) // still render empty lines aas selected.
-                    else
-                        measurer.width(line.text[0..line.text.len], tokens, line.start, line.start + line.text.len);
-                    canvas.fillRect(.{ .x = line_x, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
                 }
             }
             { // Draw Text
@@ -312,13 +333,16 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                 }
                 var frag_x = line_x;
                 for (frags) |frag| {
-                    const shown = full_text[frag.start..frag.end];
+                    // Only the visible middle is drawn; on a row whose line isn't revealed the
+                    // delimiters were clipped off this range and so take up no space.
+                    const shown = full_text[frag.vis_start..frag.vis_end];
+                    if (shown.len == 0) continue;
                     const style = styleForToken(tokens[frag.tok]);
                     if (style.background) |bg| {
                         // The panel has to be down before the glyphs, so its width can't come
                         // from drawText's return — measure the run up front.
                         const w = switch (style.panel) {
-                            .run => measurer.width(shown, tokens, frag.start, frag.end),
+                            .run => measurer.width(shown, tokens, frag.vis_start, frag.vis_end),
                             .full => row_w - (frag_x - line_x),
                         };
                         fillPanel(canvas, .{ .x = frag_x, .y = text_y, .w = w, .h = line_h }, bg);
@@ -404,10 +428,19 @@ fn styleForToken(token: Token) Style {
 ///
 /// Everything inline sits flush: an indent applies to a whole row, and an inline span only
 /// covers part of one.
-fn indentForRow(token: Token, start: usize, tokens: []const Token, m: Measurer) f64 {
+///
+/// A list's indent therefore depends on whether its marker is currently concealed. Revealed,
+/// the marker is drawn and its own width does the indenting, so the first row sits flush.
+/// Concealed, the marker is gone — including the tabs — and the indent has to be supplied here
+/// or the nesting would collapse to the margin. Both cases put the item's *content* at the same
+/// x, so text doesn't slide sideways as the cursor enters and leaves the line.
+fn indentForRow(token: Token, start: usize, tokens: []const Token, m: Measurer, reveal: Reveal) f64 {
     return switch (token.tType) {
         .QUOTE => QUOTE_INDENT_PX * @as(f64, @floatFromInt(token.degree)),
-        .UNORDERED_LIST => if (start == token.startI) 0 else markerWidth(token, tokens, m),
+        .UNORDERED_LIST => if (reveal.covers(start) and start == token.startI)
+            0
+        else
+            markerWidth(token, tokens, m),
         else => 0,
     };
 }
@@ -476,37 +509,73 @@ fn fillPanel(canvas: *Canvas, rect: geom.Rect, color: Color) void {
     canvas.fillRect(.{ .x = rect.x, .y = top, .w = rect.w, .h = bottom - top }, color);
 }
 
-fn pushFragment(frags: []Fragment, count: *usize, tok: usize, from: usize, to: usize) void {
+fn pushFragment(
+    frags: []Fragment,
+    count: *usize,
+    tokens: []const Token,
+    tok: usize,
+    from: usize,
+    to: usize,
+    reveal: Reveal,
+) void {
     if (to <= from) return;
-    frags[count.*] = .{ .tok = tok, .start = from, .end = to };
+    // A fragment never straddles a newline, so the whole of it shares one reveal state.
+    var vis_start = from;
+    var vis_end = to;
+    if (!reveal.covers(from)) {
+        const token = tokens[tok];
+        vis_start = std.math.clamp(token.startI + token.renderStart, from, to);
+        vis_end = std.math.clamp(token.startI + token.renderEnd, vis_start, to);
+    }
+    frags[count.*] = .{ .tok = tok, .start = from, .end = to, .vis_start = vis_start, .vis_end = vis_end };
     count.* += 1;
+}
+
+/// Width of the one character starting at `off`. A UTF-8 continuation byte measures zero — its
+/// lead byte already accounted for the whole codepoint — so summing this over a byte range
+/// gives the range's width without ever handing a partial sequence to the text engine.
+fn charWidth(full_text: []const u8, tokens: []const Token, off: usize, m: Measurer) f64 {
+    const seq_len = std.unicode.utf8ByteSequenceLength(full_text[off]) catch return 0;
+    const end = @min(off + seq_len, full_text.len);
+    return m.width(full_text[off..end], tokens, off, end);
 }
 
 /// Open a row at `start`, inheriting the indent of the block that owns that offset. Looking the
 /// owner up by offset gets both cases right without tracking state: a hard newline hands off to
 /// the next token (a quote's '\n' is its last character, so the row after it is no longer
 /// quoted), while a soft wrap stays inside the current token and keeps the indent.
-fn beginRow(out: []Line, lineno: usize, start: usize, tokens: []const Token, m: Measurer) void {
+fn beginRow(out: []Line, lineno: usize, start: usize, tokens: []const Token, m: Measurer, reveal: Reveal) void {
     out[lineno].start = start;
-    out[lineno].indent = indentForRow(tokenAt(tokens, start), start, tokens, m);
+    out[lineno].indent = indentForRow(tokenAt(tokens, start), start, tokens, m, reveal);
 }
 
 /// Split `full_text` into renderable fragments bounded by lines.
-fn splitLines(full_text: []const u8, tokens: []const Token, out: []Line, frags: []Fragment, m: Measurer) []Line {
+fn splitLines(
+    full_text: []const u8,
+    tokens: []const Token,
+    out: []Line,
+    frags: []Fragment,
+    m: Measurer,
+    reveal: Reveal,
+) []Line {
     var lineno: usize = 0;
-    beginRow(out, lineno, 0, tokens, m);
+    beginRow(out, lineno, 0, tokens, m, reveal);
 
     var frag_count: usize = 0;
     var line_frag_start: usize = 0; // first fragment index of the current row
     var frag_from: usize = 0; // start offset of the run being accumulated
     var frag_tok: usize = 0; // token index of that run
+    // Visible width laid down on the current row. Accumulated per character rather than
+    // re-measuring the row's whole prefix each time, because hidden delimiters have to
+    // contribute nothing and a contiguous source slice can't express "skip the middle".
+    var row_w: f64 = 0;
 
     var last_token = tokens[0];
     for (tokens, 0..) |token, ti| {
         last_token = token;
         // Token boundary: close the previous token's run on this row (contiguous
         // tokens mean it ends exactly where this one starts), then open this token's.
-        pushFragment(frags, &frag_count, frag_tok, frag_from, token.startI);
+        pushFragment(frags, &frag_count, tokens, frag_tok, frag_from, token.startI, reveal);
         frag_tok = ti;
         frag_from = token.startI;
 
@@ -514,44 +583,76 @@ fn splitLines(full_text: []const u8, tokens: []const Token, out: []Line, frags: 
             const off = token.startI + token_off;
             if (c == '\n') {
                 out[lineno].text = full_text[out[lineno].start..off];
-                pushFragment(frags, &frag_count, frag_tok, frag_from, off);
+                pushFragment(frags, &frag_count, tokens, frag_tok, frag_from, off, reveal);
                 out[lineno].frag_start = line_frag_start;
                 out[lineno].frag_end = frag_count;
                 lineno += 1;
-                beginRow(out, lineno, off + 1, tokens, m);
+                beginRow(out, lineno, off + 1, tokens, m, reveal);
                 out[lineno].text = "";
                 line_frag_start = frag_count;
                 frag_from = off + 1; // same token, resumes past the newline
+                row_w = 0;
                 continue;
             }
-            const text_including_new_char = full_text[out[lineno].start .. off + 1];
+            // A concealed delimiter occupies no width, so it can never push a row over budget.
+            const char_w = if (isVisible(token, off, reveal)) charWidth(full_text, tokens, off, m) else 0;
             // An indented row has correspondingly less room before it has to wrap.
-            if (m.width(text_including_new_char, tokens, out[lineno].start, off) >= m.content_w - out[lineno].indent) {
+            if (row_w + char_w >= m.content_w - out[lineno].indent) {
                 out[lineno].text = full_text[out[lineno].start..off];
-                pushFragment(frags, &frag_count, frag_tok, frag_from, off);
+                pushFragment(frags, &frag_count, tokens, frag_tok, frag_from, off, reveal);
                 out[lineno].frag_start = line_frag_start;
                 out[lineno].frag_end = frag_count;
                 lineno += 1;
-                beginRow(out, lineno, off, tokens, m);
+                beginRow(out, lineno, off, tokens, m, reveal);
                 out[lineno].text = full_text[off .. off + 1];
                 line_frag_start = frag_count;
                 frag_from = off; // same token, the wrapped char begins the next row
+                row_w = char_w;
                 continue;
             }
+            row_w += char_w;
         }
     }
     const doc_end = last_token.startI + last_token.contents.len;
     out[lineno].text = full_text[out[lineno].start..doc_end];
-    pushFragment(frags, &frag_count, frag_tok, frag_from, doc_end);
+    pushFragment(frags, &frag_count, tokens, frag_tok, frag_from, doc_end, reveal);
     out[lineno].frag_start = line_frag_start;
     out[lineno].frag_end = frag_count;
     lineno += 1;
 
     for (out[0..lineno]) |*line| {
         line.h = m.height(line.text, tokens, line.start, line.start + line.text.len);
-        line.w = m.width(line.text, tokens, line.start, line.start + line.text.len);
+        line.w = xForOffset(line.*, frags, full_text, tokens, line.start + line.text.len, m);
     }
     return out[0..lineno];
+}
+
+/// The x of source offset `off`, relative to the row's text origin.
+///
+/// This is the one place the offset-to-pixel mapping lives. It walks the row's fragments so
+/// each run is measured in its own font — a row mixing a header, bold and plain text has no
+/// single font to measure against — and so concealed delimiters contribute no width. An offset
+/// inside a concealed run collapses onto the near edge of that run, which is the best answer
+/// available: it isn't drawn anywhere.
+fn xForOffset(
+    line: Line,
+    frags: []const Fragment,
+    full_text: []const u8,
+    tokens: []const Token,
+    off: usize,
+    m: Measurer,
+) f64 {
+    var x: f64 = 0;
+    for (frags[line.frag_start..line.frag_end]) |frag| {
+        if (off >= frag.end) {
+            x += m.width(full_text[frag.vis_start..frag.vis_end], tokens, frag.vis_start, frag.vis_end);
+            continue;
+        }
+        const stop = std.math.clamp(off, frag.vis_start, frag.vis_end);
+        x += m.width(full_text[frag.vis_start..stop], tokens, frag.vis_start, stop);
+        break;
+    }
+    return x;
 }
 
 /// Index of the rendered line containing `cursor_i`. At a soft-wrap boundary the
@@ -615,6 +716,8 @@ fn handleInput(
     state: *AppState,
     lines: []const Line,
     tokens: []const Token,
+    frags: []const Fragment,
+    full_text: []const u8,
     measurer: Measurer,
 ) !void {
     state.assertInvariant();
@@ -631,20 +734,30 @@ fn handleInput(
                 }
                 curr_y += line_h;
             }
-            var col: usize = lines[lineno].text.len;
+            const line = lines[lineno];
+            var col: usize = line.text.len;
             // Start where the row's glyphs start, not at the margin: on an indented row the
             // two differ, and walking from the margin would map every click an indent's worth
             // of characters to the right.
-            var curr_x: f64 = MARGIN_PX + lines[lineno].indent;
-            for (0..lines[lineno].text.len) |i| {
-                const char_width = measurer.width(lines[lineno].text[i .. i + 1], tokens, lines[lineno].start + i, lines[lineno].start + i + 1);
-                if (in.mouse.x < curr_x + (char_width / 2.0)) {
-                    col = i;
-                    break;
+            var curr_x: f64 = MARGIN_PX + line.indent;
+            // Walk the row's visible runs, the inverse of `xForOffset`. Concealed delimiters
+            // measure zero, so a click never lands past them by their source length — and
+            // landing *inside* one is harmless, since arriving there reveals the line.
+            walk: for (frags[line.frag_start..line.frag_end]) |frag| {
+                var off = frag.start;
+                while (off < frag.end) : (off += 1) {
+                    const w = if (off >= frag.vis_start and off < frag.vis_end)
+                        charWidth(full_text, tokens, off, measurer)
+                    else
+                        0;
+                    if (in.mouse.x < curr_x + (w / 2.0)) {
+                        col = off - line.start;
+                        break :walk;
+                    }
+                    curr_x += w;
                 }
-                curr_x += char_width;
             }
-            break :cursor lines[lineno].start + col;
+            break :cursor line.start + col;
         };
         if (state.mouse_was_down) {
             cursor_target = mouse_offset;
@@ -858,8 +971,17 @@ fn testMeasurer(content_w: f64) Measurer {
     };
 }
 
+/// A whole document as one plain token. `renderEnd` must be set explicitly: it defaults to 0,
+/// which would mean "nothing between the delimiters is visible" and conceal the entire text.
 fn plainTokenize(full_text: []const u8) Token {
-    return Token{ .tType = .PLAIN, .startI = 0, .endI = full_text.len, .contents = full_text };
+    return Token{
+        .tType = .PLAIN,
+        .startI = 0,
+        .endI = full_text.len,
+        .contents = full_text,
+        .renderStart = 0,
+        .renderEnd = full_text.len,
+    };
 }
 
 /// Parse `full_text` into flat markdown tokens, falling back to a single plain token for an empty
@@ -879,8 +1001,14 @@ fn feed(state: *AppState, in: Input) !void {
     const measurer = testMeasurer(1_000_000);
     const doc = condenseGapBuf(&doc_buf, state.*);
     const tokens = &.{plainTokenize(doc)};
-    const lines = splitLines(doc, tokens, &line_buf, &frag_buf, measurer);
-    try handleInput(testing_allocator, in, state, lines, tokens, measurer);
+    const reveal = revealForCursor(doc, state.cursor_i);
+    const lines = splitLines(doc, tokens, &line_buf, &frag_buf, measurer, reveal);
+    try handleInput(testing_allocator, in, state, lines, tokens, &frag_buf, doc, measurer);
+}
+
+/// Every line revealed, for tests about layout rather than concealment.
+fn revealAll(text: []const u8) Reveal {
+    return .{ .start = 0, .end = text.len };
 }
 
 /// Build a Line with just the fields the vertical-layout functions read (start/text/height).
@@ -986,7 +1114,7 @@ test "splitLines breaks on newlines" {
     var out: [8]Line = undefined;
     var frags: [16]Fragment = undefined;
     const text = "ab\ncd";
-    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(1_000_000));
+    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(1_000_000), Reveal.none);
 
     try expectEqual(2, lines.len);
     try expectEqual(0, lines[0].start);
@@ -999,7 +1127,7 @@ test "splitLines deal with trailing newline" {
     var out: [8]Line = undefined;
     var frags: [16]Fragment = undefined;
     const text = "ab\n";
-    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(1_000_000));
+    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(1_000_000), Reveal.none);
     try expectEqual(2, lines.len);
     try expectEqual(0, lines[0].start);
     try expectEqualStrings("ab", lines[0].text);
@@ -1012,7 +1140,7 @@ test "splitLines soft-wraps a run wider than content_w" {
     // fakeWidth == byte count; content_w 4 ⇒ at most 3 bytes per line.
     const text = "abcdef";
     var frags: [16]Fragment = undefined;
-    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(4));
+    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(4), Reveal.none);
 
     try expectEqual(2, lines.len);
     try expectEqual(0, lines[0].start);
@@ -1026,7 +1154,7 @@ test "splitLines start offsets account for newlines across wraps" {
     // "abcd\nef": first logical line wraps (3 per line), then a hard break.
     const text = "abcd\nef";
     var frags: [16]Fragment = undefined;
-    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(4));
+    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(4), Reveal.none);
 
     try expectEqual(3, lines.len);
     try expectEqual(0, lines[0].start);
@@ -1045,7 +1173,7 @@ test "splitLines handle multiple tokens" {
     const contents: []const u8 = "foo**bar**baz";
     const tokens = try markdown.parseFlat(arena.allocator(), contents);
     var frags: [16]Fragment = undefined;
-    const lines = splitLines(contents, tokens, &out, &frags, testMeasurer(1_000_000));
+    const lines = splitLines(contents, tokens, &out, &frags, testMeasurer(1_000_000), Reveal.none);
 
     try expectEqual(1, lines.len);
     const line = lines[0];
@@ -1065,7 +1193,7 @@ test "splitLines output dimensions" {
     var out: [8]Line = undefined;
     const text = "1\n12\n123";
     var frags: [16]Fragment = undefined;
-    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(4));
+    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(4), Reveal.none);
 
     try expectEqual(3, lines.len);
     try expectEqual(1, lines[0].h);
@@ -1080,7 +1208,7 @@ test "splitLines fragments tile each line's text" {
     var out: [8]Line = undefined;
     var frags: [16]Fragment = undefined;
     const text = "ab\ncd";
-    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(1_000_000));
+    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(1_000_000), Reveal.none);
 
     for (lines) |line| {
         // Concatenating a row's fragment slices reconstructs the row's text, in order.
@@ -1104,7 +1232,7 @@ test "splitLines soft-wrap splits one token into a fragment per row" {
     var frags: [16]Fragment = undefined;
     // Single plain token "abcdef" wraps into "abc" / "def" at content_w 4.
     const text = "abcdef";
-    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(4));
+    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(4), Reveal.none);
 
     try expectEqual(2, lines.len);
     try expectEqual(1, lines[0].frag_end - lines[0].frag_start);
@@ -1125,7 +1253,7 @@ test "a blank row inside a fence has no fragments but still belongs to the block
     // The blank line between "a" and "b" is inside the fence.
     const text = "```\na\n\nb\n```";
     const tokens = try markdown.parseFlat(arena.allocator(), text);
-    const lines = splitLines(text, tokens, &out, &frags, testMeasurer(1_000_000));
+    const lines = splitLines(text, tokens, &out, &frags, testMeasurer(1_000_000), revealAll(text));
 
     try expectEqual(5, lines.len);
     try expectEqualStrings("", lines[2].text);
@@ -1149,7 +1277,7 @@ test "quote rows carry an indent scaled by nesting depth" {
 
     const text = "plain\n> one\n>> two\nplain again";
     const tokens = try markdown.parseFlat(arena.allocator(), text);
-    const lines = splitLines(text, tokens, &out, &frags, testMeasurer(1_000_000));
+    const lines = splitLines(text, tokens, &out, &frags, testMeasurer(1_000_000), revealAll(text));
 
     try expectEqual(4, lines.len);
     try expectEqual(@as(f64, 0), lines[0].indent);
@@ -1169,7 +1297,7 @@ test "a soft-wrapped quote keeps its indent on continuation rows" {
     // fakeWidth is 1/byte and content_w is 10, so the quote wraps well before its text ends.
     const text = "> aaaaaaaaaaaaaaaaaa";
     const tokens = try markdown.parseFlat(arena.allocator(), text);
-    const lines = splitLines(text, tokens, &out, &frags, testMeasurer(10 + QUOTE_INDENT_PX));
+    const lines = splitLines(text, tokens, &out, &frags, testMeasurer(10 + QUOTE_INDENT_PX), revealAll(text));
 
     try expect(lines.len > 1); // it did wrap
     for (lines) |line| {
@@ -1192,7 +1320,7 @@ test "a list item's first row sits flush and its wrapped rows hang under the tex
     // fakeWidth is 1/byte, so the marker "- " measures 2 and the item wraps at width 12.
     const text = "- aaaaaaaaaaaaaaaaaaaaaa";
     const tokens = try markdown.parseFlat(arena.allocator(), text);
-    const lines = splitLines(text, tokens, &out, &frags, testMeasurer(12));
+    const lines = splitLines(text, tokens, &out, &frags, testMeasurer(12), revealAll(text));
 
     try expect(lines.len > 1); // it did wrap
     try expectEqual(@as(f64, 0), lines[0].indent); // the marker row is flush
@@ -1211,7 +1339,7 @@ test "a nested list item is not indented on top of its literal tabs" {
     // advance. Adding a computed indent as well would double every level.
     const text = "- one\n\t- two\n\t\t- three";
     const tokens = try markdown.parseFlat(arena.allocator(), text);
-    const lines = splitLines(text, tokens, &out, &frags, testMeasurer(1_000_000));
+    const lines = splitLines(text, tokens, &out, &frags, testMeasurer(1_000_000), revealAll(text));
 
     try expectEqual(3, lines.len);
     for (lines) |line| {
@@ -1231,7 +1359,7 @@ test "the hanging indent scales with a nested item's marker" {
     // Degree 3: marker is "\t\t- ", four bytes wide under fakeWidth.
     const text = "\t\t- aaaaaaaaaaaaaaaaaaaa";
     const tokens = try markdown.parseFlat(arena.allocator(), text);
-    const lines = splitLines(text, tokens, &out, &frags, testMeasurer(14));
+    const lines = splitLines(text, tokens, &out, &frags, testMeasurer(14), revealAll(text));
 
     try expect(lines.len > 1);
     try expectEqual(@as(f64, 0), lines[0].indent);
@@ -1240,12 +1368,153 @@ test "the hanging indent scales with a nested item's marker" {
     }
 }
 
+/// The text a row would actually draw: its fragments' visible ranges, concatenated.
+fn drawnText(buf: []u8, line: Line, frags: []const Fragment, full_text: []const u8) []const u8 {
+    var n: usize = 0;
+    for (frags[line.frag_start..line.frag_end]) |frag| {
+        const shown = full_text[frag.vis_start..frag.vis_end];
+        @memcpy(buf[n .. n + shown.len], shown);
+        n += shown.len;
+    }
+    return buf[0..n];
+}
+
+test "revealForCursor picks out the cursor's source line" {
+    const text = "one\ntwo\nthree";
+    try expectEqual(Reveal{ .start = 0, .end = 3 }, revealForCursor(text, 0));
+    try expectEqual(Reveal{ .start = 0, .end = 3 }, revealForCursor(text, 3)); // end of line 1
+    try expectEqual(Reveal{ .start = 4, .end = 7 }, revealForCursor(text, 4));
+    try expectEqual(Reveal{ .start = 4, .end = 7 }, revealForCursor(text, 6));
+    try expectEqual(Reveal{ .start = 8, .end = 13 }, revealForCursor(text, 13)); // end of doc
+}
+
+test "delimiters are concealed off the cursor's line and shown on it" {
+    var out: [8]Line = undefined;
+    var frags: [32]Fragment = undefined;
+    var buf: [64]u8 = undefined;
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    const text = "a**b**c\n# H\nx`y`z";
+    const tokens = try markdown.parseFlat(arena.allocator(), text);
+
+    { // Cursor on line 1: that line keeps its markup, the others lose theirs.
+        const lines = splitLines(text, tokens, &out, &frags, testMeasurer(1_000_000), revealForCursor(text, 0));
+        try expectEqualStrings("a**b**c", drawnText(&buf, lines[0], &frags, text));
+        try expectEqualStrings("H", drawnText(&buf, lines[1], &frags, text));
+        try expectEqualStrings("xyz", drawnText(&buf, lines[2], &frags, text));
+    }
+    { // Cursor on line 2 — the header — and the reveal moves with it.
+        const lines = splitLines(text, tokens, &out, &frags, testMeasurer(1_000_000), revealForCursor(text, 9));
+        try expectEqualStrings("abc", drawnText(&buf, lines[0], &frags, text));
+        try expectEqualStrings("# H", drawnText(&buf, lines[1], &frags, text));
+        try expectEqualStrings("xyz", drawnText(&buf, lines[2], &frags, text));
+    }
+    { // A link hides its target but keeps its label.
+        const link = "see [label](https://example.com) here";
+        const link_tokens = try markdown.parseFlat(arena.allocator(), link);
+        const lines = splitLines(link, link_tokens, &out, &frags, testMeasurer(1_000_000), Reveal.none);
+        try expectEqualStrings("see label here", drawnText(&buf, lines[0], &frags, link));
+    }
+}
+
+test "concealed delimiters take up no width" {
+    var out: [8]Line = undefined;
+    var frags: [32]Fragment = undefined;
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    // fakeWidth is 1/byte. "a**b**c" is 7 bytes of source but only 3 drawn.
+    const text = "a**b**c";
+    const tokens = try markdown.parseFlat(arena.allocator(), text);
+
+    const hidden = splitLines(text, tokens, &out, &frags, testMeasurer(1_000_000), Reveal.none);
+    try expectEqual(@as(f64, 3), hidden[0].w);
+
+    const shown = splitLines(text, tokens, &out, &frags, testMeasurer(1_000_000), revealAll(text));
+    try expectEqual(@as(f64, 7), shown[0].w);
+}
+
+test "wrapping measures visible text, so concealing a line lets more fit on a row" {
+    var out: [8]Line = undefined;
+    var frags: [32]Fragment = undefined;
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    // Ten bold single letters: 10 drawn characters, 40 bytes of source.
+    const text = "**a****b****c****d****e****f****g****h****i****j**";
+    const tokens = try markdown.parseFlat(arena.allocator(), text);
+
+    // Budget 8: concealed, 7 letters fit on the first row even though they span 35 bytes.
+    const hidden = splitLines(text, tokens, &out, &frags, testMeasurer(8), Reveal.none);
+    try expectEqual(@as(f64, 7), hidden[0].w);
+
+    // Revealed, the same budget only holds 7 bytes of source — a single `**a**` and change.
+    const shown = splitLines(text, tokens, &out, &frags, testMeasurer(8), revealAll(text));
+    try expectEqual(@as(f64, 7), shown[0].w);
+    try expect(shown.len > hidden.len); // markup shown ⇒ more rows
+}
+
+test "xForOffset skips concealed runs and measures each run in its own font" {
+    var out: [8]Line = undefined;
+    var frags: [32]Fragment = undefined;
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    const text = "a**b**c";
+    const tokens = try markdown.parseFlat(arena.allocator(), text);
+    const m = testMeasurer(1_000_000);
+    const lines = splitLines(text, tokens, &out, &frags, m, Reveal.none);
+    const line = lines[0];
+
+    // Drawn as "abc": offset 0 -> x 0, and the whole row is 3 wide.
+    try expectEqual(@as(f64, 0), xForOffset(line, &frags, text, tokens, 0, m));
+    try expectEqual(@as(f64, 1), xForOffset(line, &frags, text, tokens, 1, m)); // before "**"
+    // Offsets 1..3 are the opening "**" — concealed, so they all collapse to the same x as the
+    // 'b' they precede rather than spreading across width the row never drew.
+    try expectEqual(@as(f64, 1), xForOffset(line, &frags, text, tokens, 2, m));
+    try expectEqual(@as(f64, 1), xForOffset(line, &frags, text, tokens, 3, m));
+    try expectEqual(@as(f64, 2), xForOffset(line, &frags, text, tokens, 4, m)); // after 'b'
+    try expectEqual(@as(f64, 3), xForOffset(line, &frags, text, tokens, 7, m)); // end of row
+}
+
+test "a list keeps its content in place whether or not its marker is shown" {
+    var out: [8]Line = undefined;
+    var frags: [32]Fragment = undefined;
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    // Concealing a list marker also conceals the tabs that were doing the indenting, so the
+    // indent has to be supplied instead — landing the content at the same x either way.
+    const text = "\t\t- three";
+    const tokens = try markdown.parseFlat(arena.allocator(), text);
+    const marker_w: f64 = 4; // "\t\t- " under fakeWidth
+
+    // Both calls lay out into `out`, so the second overwrites the first's rows — read the
+    // values across before comparing them.
+    const hidden = splitLines(text, tokens, &out, &frags, testMeasurer(1_000_000), Reveal.none);
+    const hidden_indent = hidden[0].indent;
+    const hidden_w = hidden[0].w;
+    try expectEqual(marker_w, hidden_indent); // indent replaces the vanished tabs
+    try expectEqual(@as(f64, 5), hidden_w); // only "three" is drawn
+
+    const shown = splitLines(text, tokens, &out, &frags, testMeasurer(1_000_000), revealAll(text));
+    const shown_indent = shown[0].indent;
+    try expectEqual(@as(f64, 0), shown_indent); // the marker itself does the indenting
+    try expectEqual(@as(f64, 9), shown[0].w);
+
+    // Content x == indent + width of whatever precedes it on the row: the marker when it is
+    // drawn, nothing when it isn't. Identical either way, so the text never slides sideways.
+    try expectEqual(marker_w, hidden_indent + 0);
+    try expectEqual(marker_w, shown_indent + marker_w);
+}
+
 test "splitLines empty row has no fragments" {
     var out: [8]Line = undefined;
     var frags: [16]Fragment = undefined;
     // Trailing newline yields an empty second row.
     const text = "ab\n";
-    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(1_000_000));
+    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(1_000_000), Reveal.none);
 
     try expectEqual(2, lines.len);
     try expectEqual(1, lines[0].frag_end - lines[0].frag_start); // "ab"
@@ -1433,6 +1702,8 @@ test "handleInput up across a soft-wrapped line" {
         &state,
         &lines,
         &.{plainTokenize(contents)},
+        &.{}, // no fragments: up/down navigation never consults them
+        contents,
         testMeasurer(1_000_000),
     );
 

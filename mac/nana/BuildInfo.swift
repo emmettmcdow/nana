@@ -3,6 +3,6 @@ import Foundation
 enum BuildInfo {
     static let version: String =
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
-    static let gitSHA = "3ecf74d"
+    static let gitSHA = "42472e8"
     static var label: String { "\(version)+\(gitSHA)" }
 }
