@@ -17,9 +17,88 @@ import AppKit
     // the preview target still builds without the nana_render_* symbols.
     final class NanaCanvasView: NSView {}
 
+    enum Workspace {
+        static func restore() -> String? { nil }
+        @discardableResult static func choose() -> Bool { false }
+    }
+
 #else
 
     import NanaKit
+
+    /// Workspace access.
+    ///
+    /// Under the sandbox, a directory the user picked is only reachable through a
+    /// security-scoped bookmark — a Foundation concept with no Zig equivalent, so resolving and
+    /// holding it is the shim's job. Zig is told a plain path and nothing more.
+    enum Workspace {
+        private static let bookmarkKey = "workspaceBookmark"
+
+        /// The scope currently held open. Released only when replaced: access lasts as long as
+        /// the workspace is in use, not just as long as the call that opened it.
+        private static var accessing: URL?
+
+        /// Resolve the stored bookmark, if there is one, and start accessing it.
+        /// Returns the path to hand to Zig at startup.
+        static func restore() -> String? {
+            guard let data = UserDefaults.standard.data(forKey: bookmarkKey) else { return nil }
+            var stale = false
+            guard let url = try? URL(
+                resolvingBookmarkData: data,
+                options: .withSecurityScope,
+                relativeTo: nil,
+                bookmarkDataIsStale: &stale
+            ) else {
+                // A bookmark we can't resolve is worse than none — drop it so the next launch
+                // falls back to the default rather than failing the same way forever.
+                UserDefaults.standard.removeObject(forKey: bookmarkKey)
+                return nil
+            }
+            guard beginAccess(url) else { return nil }
+            // A stale bookmark still resolves, but re-issue it so it doesn't decay further.
+            if stale { store(url) }
+            return url.path
+        }
+
+        /// Ask for a directory and switch to it. Returns whether the switch happened.
+        @discardableResult
+        static func choose() -> Bool {
+            let panel = NSOpenPanel()
+            panel.canChooseFiles = false
+            panel.canChooseDirectories = true
+            panel.allowsMultipleSelection = false
+            panel.message = "Choose a folder for your notes"
+            guard panel.runModal() == .OK, let url = panel.url else { return false }
+
+            guard store(url), beginAccess(url) else { return false }
+            return nana_render_set_workspace(url.path)
+        }
+
+        /// Persist a bookmark for `url`. The panel's grant is what makes the bookmark usable
+        /// later, so this has to happen while that grant is still in effect.
+        @discardableResult
+        private static func store(_ url: URL) -> Bool {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            guard let data = try? url.bookmarkData(
+                options: .withSecurityScope,
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            ) else { return false }
+            UserDefaults.standard.set(data, forKey: bookmarkKey)
+            return true
+        }
+
+        private static func beginAccess(_ url: URL) -> Bool {
+            if let current = accessing {
+                current.stopAccessingSecurityScopedResource()
+                accessing = nil
+            }
+            guard url.startAccessingSecurityScopedResource() else { return false }
+            accessing = url
+            return true
+        }
+    }
 
     final class NanaCanvasView: NSView {
         private var timer: Timer?
@@ -28,8 +107,10 @@ import AppKit
         private var mousePoint = CGPoint.zero
         private var mouseIsDown = false
         private var modifiers: UInt32 = 0
+        private var scrollDelta: Double = 0
         private var pendingText = ""
         private var backspaceCount: UInt32 = 0
+        private var escapeCount: UInt32 = 0
         private var upCount: UInt32 = 0
         private var downCount: UInt32 = 0
         private var leftCount: UInt32 = 0
@@ -47,7 +128,10 @@ import AppKit
 
         private func commonInit() {
             wantsLayer = true
-            nana_render_init()
+            // A previously chosen workspace if there is one, otherwise nil so Zig uses its
+            // default. Passed at init rather than switched to afterwards, so a user with their
+            // own folder never has the default one created behind their back.
+            nana_render_init(Workspace.restore())
             startLoop()
         }
 
@@ -82,19 +166,23 @@ import AppKit
             input.mouse_down = mouseIsDown
             input.modifiers = modifiers
 
-            let bytes = Array(pendingText.utf8.prefix(63))
-            withUnsafeMutableBytes(of: &input.text_utf8) { raw in
-                for (i, b) in bytes.enumerated() { raw[i] = b }
-                raw[bytes.count] = 0
-            }
+            // Resolved here because the same answer drives the titlebar: whatever appearance
+            // AppKit settled on for this view is the one Zig should paint to match.
+            input.system_dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+
+            input.scroll_dy = scrollDelta
+            scrollDelta = 0
 
             // For each of these types of input, we think of it in terms of "consumption". We read
             // some data, and we are using it up.
-            input.text_len = UInt32(bytes.count)
+            var textBytes = Array(pendingText.utf8)
             pendingText = ""
 
             input.backspaces = backspaceCount
             backspaceCount = 0
+
+            input.escapes = escapeCount
+            escapeCount = 0
 
             input.ups = upCount
             upCount = 0
@@ -105,7 +193,96 @@ import AppKit
             input.rights = rightCount
             rightCount = 0
 
-            nana_render_frame(ctx, Double(bounds.width), Double(bounds.height), &input)
+            // The buffer is borrowed for the duration of the call, so it has to outlive it —
+            // hence passing it in from an enclosing scope rather than building it inline.
+            textBytes.withUnsafeBufferPointer { buf in
+                input.text_utf8 = buf.baseAddress.map { UnsafeRawPointer($0).assumingMemoryBound(to: CChar.self) }
+                input.text_len = UInt32(buf.count)
+                nana_render_frame(ctx, Double(bounds.width), Double(bounds.height), &input)
+            }
+        }
+
+        // MARK: - Clipboard
+        //
+        // The pasteboard is an AppKit service, so it lives here; what counts as "selected"
+        // lives in Zig. Pasted text needs no special path — it goes in as ordinary input.
+
+        /// Pull the current selection out of Zig, sizing the buffer from it first.
+        private func takeSelection(cut: Bool) -> String? {
+            let len = nana_render_selection_len()
+            guard len > 0 else { return nil }
+            var buf = [CChar](repeating: 0, count: Int(len))
+            let written = buf.withUnsafeMutableBufferPointer { p in
+                cut ? nana_render_cut_selection(p.baseAddress, len)
+                    : nana_render_copy_selection(p.baseAddress, len)
+            }
+            guard written > 0 else { return nil }
+            let bytes = buf.prefix(Int(written)).map { UInt8(bitPattern: $0) }
+            return String(bytes: bytes, encoding: .utf8)
+        }
+
+        private func writeToPasteboard(_ s: String) {
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(s, forType: .string)
+        }
+
+        @objc func copy(_: Any?) {
+            guard let s = takeSelection(cut: false) else { return }
+            writeToPasteboard(s)
+        }
+
+        @objc func cut(_: Any?) {
+            guard let s = takeSelection(cut: true) else { return }
+            writeToPasteboard(s)
+            needsDisplay = true
+        }
+
+        @objc func paste(_: Any?) {
+            guard let s = NSPasteboard.general.string(forType: .string) else { return }
+            pendingText += s
+            needsDisplay = true
+        }
+
+        @objc override func selectAll(_: Any?) {
+            nana_render_select_all()
+            needsDisplay = true
+        }
+
+        // MARK: - Undo
+
+        @objc func undo(_: Any?) {
+            _ = nana_render_undo()
+            needsDisplay = true
+        }
+
+        @objc func redo(_: Any?) {
+            _ = nana_render_redo()
+            needsDisplay = true
+        }
+
+        /// Handle the editing shortcuts directly rather than relying on an Edit menu being
+        /// present. Returning true stops the event before the main menu sees it, so the menu
+        /// items (which route to the `@objc` methods above) can't also fire for the same press.
+        override func performKeyEquivalent(with event: NSEvent) -> Bool {
+            let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            guard let key = event.charactersIgnoringModifiers?.lowercased() else { return false }
+
+            // Cmd+Shift+Z is redo; every other shortcut here is plain Cmd.
+            if mods == [.command, .shift], key == "z" {
+                redo(nil)
+                return true
+            }
+            guard mods == .command else { return false }
+            switch key {
+            case "c": copy(nil)
+            case "x": cut(nil)
+            case "v": paste(nil)
+            case "a": selectAll(nil)
+            case "z": undo(nil)
+            default: return false
+            }
+            return true
         }
 
         // MARK: - Input
@@ -140,12 +317,33 @@ import AppKit
             mouseIsDown = false
         }
 
+        override func scrollWheel(with event: NSEvent) {
+            // Accumulate rather than assign: several scroll events can land between two frames,
+            // and dropping all but the last would lose most of a fast flick.
+            //
+            // `scrollingDeltaY` is the precise-pixel value on trackpads and Magic Mouse, and
+            // falls back to line-sized steps for a notched wheel. `hasPreciseScrollingDeltas`
+            // tells the two apart; only the latter needs scaling up to feel right.
+            if event.hasPreciseScrollingDeltas {
+                scrollDelta += event.scrollingDeltaY
+            } else {
+                scrollDelta += event.scrollingDeltaY * 16
+            }
+        }
+
         override func keyDown(with event: NSEvent) {
+            // A Command-modified press is a shortcut, not text. Without this, anything not
+            // claimed by performKeyEquivalent (Cmd+S, Cmd+W, ...) would insert its bare
+            // character into the document.
+            if event.modifierFlags.contains(.command) { return }
+
             // The Backspace key (labeled "delete" on Mac keyboards) is keyCode 51. It's a
             // key press, not a modifier — count it instead of appending its control
             // character to the text buffer.
             if event.keyCode == 51 {
                 backspaceCount += 1
+            } else if event.keyCode == 53 {
+                escapeCount += 1
             } else if event.keyCode == 126 {
                 upCount += 1
             } else if event.keyCode == 125 {

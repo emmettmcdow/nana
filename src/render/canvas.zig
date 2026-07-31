@@ -77,6 +77,9 @@ extern fn CGContextSetRGBFillColor(c: CGContextRef, red: f64, green: f64, blue: 
 extern fn CGContextFillRect(c: CGContextRef, rect: CGRect) void;
 extern fn CGContextSetTextPosition(c: CGContextRef, x: f64, y: f64) void;
 extern fn CGContextSetTextMatrix(c: CGContextRef, t: CGAffineTransform) void;
+extern fn CGContextSaveGState(c: CGContextRef) void;
+extern fn CGContextRestoreGState(c: CGContextRef) void;
+extern fn CGContextClipToRect(c: CGContextRef, rect: CGRect) void;
 
 /// Font faces, by PostScript name. Menlo is a good monospace default for a text editor and
 /// ships with all four styles; swap the family freely while iterating in app.zig.
@@ -109,6 +112,24 @@ pub const Canvas = struct {
             .origin = .{ .x = rect.x, .y = rect.y },
             .size = .{ .width = rect.w, .height = rect.h },
         });
+    }
+
+    /// Confine subsequent drawing to `rect` until the matching `popClip`. Calls must be
+    /// balanced and may nest.
+    ///
+    /// Needed once the view scrolls by pixels rather than whole lines: the topmost visible row
+    /// is then usually cut off partway, and without a clip its upper half would be drawn into
+    /// the margin above the content area.
+    pub fn pushClip(self: *Canvas, rect: geom.Rect) void {
+        CGContextSaveGState(self.ctx);
+        CGContextClipToRect(self.ctx, .{
+            .origin = .{ .x = rect.x, .y = rect.y },
+            .size = .{ .width = rect.w, .height = rect.h },
+        });
+    }
+
+    pub fn popClip(self: *Canvas) void {
+        CGContextRestoreGState(self.ctx);
     }
 
     /// Draw a single line of UTF-8 text. (x, y) is the top-left of the text box.

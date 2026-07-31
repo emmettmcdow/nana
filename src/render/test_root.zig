@@ -8,4 +8,6 @@ comptime {
     _ = @import("geom.zig");
     _ = @import("app.zig");
     _ = @import("markdown.zig");
+    _ = @import("theme.zig");
+    _ = @import("ui.zig");
 }

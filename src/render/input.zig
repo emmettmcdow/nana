@@ -20,8 +20,14 @@ pub const Input = struct {
     /// UTF-8 text entered during this frame (empty if none). Borrowed; valid only
     /// for the duration of the frame call.
     text: []const u8 = &.{},
+    /// Scroll wheel / trackpad movement this frame, in points. Positive means the content
+    /// should move down the screen, i.e. toward the top of the document — matching AppKit's
+    /// `scrollingDeltaY`.
+    scroll_dy: f64 = 0,
     /// Number of {backspace,up,down,left,right} key presses during this frame.
     backspaces: u32 = 0,
+    /// Escape presses. Dismisses whatever is open rather than entering anything.
+    escapes: u32 = 0,
     ups: u32 = 0,
     downs: u32 = 0,
     lefts: u32 = 0,

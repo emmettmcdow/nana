@@ -11,9 +11,13 @@
 //!   canvas.measureText(utf8, Font) -> Size
 
 const geom = @import("geom.zig");
+const theme = @import("theme.zig");
+const ui = @import("ui.zig");
 const Canvas = @import("canvas.zig").Canvas;
 const input = @import("input.zig");
 const std = @import("std");
+const Allocator = std.mem.Allocator;
+const ArrayList = std.ArrayList;
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
@@ -24,6 +28,7 @@ const Token = markdown.FlatToken;
 const mod_shift = input.mod_shift;
 
 const Color = geom.Color;
+const Rect = geom.Rect;
 const Font = geom.Font;
 const Input = input.Input;
 
@@ -57,39 +62,57 @@ const EMPTY_DOC_TOKENS: []const Token = &.{.{ .tType = .PLAIN, .startI = 0, .end
 // text is drawn before this frame's own time is known), which is fine at 60 Hz.
 var last_frame_ns: u64 = 0;
 
-const FONT_SIZE: f64 = 20;
 const MARGIN_PX: f64 = 100;
 
-const TEXT_COLOR: Color = Color.rgb(0.95, 0.82, 0.40);
-const HIGHLIGHT_COLOR: Color = TEXT_COLOR.withAlpha(0.25);
-
-/// Code is set apart by ink weight, not by a new hue: slightly dimmed body text sitting on a
-/// faint panel of that same body color. Both are translucent, which also keeps the selection
-/// highlight (painted before the text) visible through a selected code span.
-const CODE_COLOR: Color = TEXT_COLOR.withAlpha(0.85);
-const CODE_BG_COLOR: Color = TEXT_COLOR.withAlpha(0.12);
-
-/// Quoted text is dimmed and pushed right, with a rule per nesting level standing in the
-/// gutter it was pushed out of.
-const QUOTE_COLOR: Color = TEXT_COLOR.withAlpha(0.70);
-const QUOTE_RULE_COLOR: Color = TEXT_COLOR.withAlpha(0.35);
+/// Quoted text is pushed right, with a rule per nesting level standing in the gutter it was
+/// pushed out of.
 const QUOTE_INDENT_PX: f64 = 24;
 const QUOTE_RULE_W: f64 = 3;
 
-/// A link is marked by the rule under it, not by a hue of its own — which keeps it legible
-/// against the amber body text instead of competing with it, and is how a link reads in prose
-/// anyway. Core Text draws the underline in the text color.
-const LINK_COLOR: Color = TEXT_COLOR;
+/// Colors and type size come from the active theme rather than constants here, so light and
+/// dark are the same code path. `theme.active` is set by the host; this module only reads it.
+///
+/// Code is set apart by ink weight rather than a new hue — dimmed body text on a faint panel
+/// of the same color — and a link by the rule under it. Both fall out of the theme's derived
+/// colors; see theme.zig for how they relate.
+fn th() theme.Theme {
+    return theme.active;
+}
 
 pub const AppState = struct {
     gap_buf: []u8,
     text_len: usize = 0,
     cursor_i: usize = 0,
     gap_end: usize = 0,
-    /// Index of the top visible rendered line — how far down the view is scrolled.
-    window_offset: usize = 0,
+    /// How far the view is scrolled from the top of the document, in points.
+    ///
+    /// Points rather than a line index: a trackpad delivers sub-line deltas, and quantising
+    /// them to whole rows makes scrolling feel stepped. The cost is that the top and bottom
+    /// visible rows are usually cut off partway, so the render pass has to clip.
+    scroll_y: f64 = 0,
     selection_anchor: ?usize = null,
     mouse_was_down: bool = false,
+    /// Set whenever this frame's input changed the document's *text*, so a layer above can
+    /// persist it. Cursor and selection movement don't count — nothing to write. Whoever
+    /// consumes it clears it; `app.zig` only ever sets it.
+    dirty: bool = false,
+    history: History = .{},
+    ui: ui.State = .{},
+    /// Whether the note list is showing.
+    list_visible: bool = false,
+    list_scroll: f64 = 0,
+    /// The search query. A fixed buffer because a query is not prose; overflow just stops
+    /// accepting characters rather than growing without bound.
+    query_buf: [QUERY_MAX]u8 = undefined,
+    query_len: usize = 0,
+    query_cursor: usize = 0,
+
+    /// Takes a pointer, not a value. `query_buf` is an array, so a by-value `self` would be a
+    /// copy of it, and the returned slice would point into that copy — dead the moment the
+    /// call returns.
+    pub fn query(self: *const AppState) []const u8 {
+        return self.query_buf[0..self.query_len];
+    }
 
     pub fn init(gap_buf: []u8) AppState {
         return .{ .gap_buf = gap_buf, .gap_end = gap_buf.len };
@@ -167,7 +190,138 @@ fn isVisible(token: Token, off: usize, reveal: Reveal) bool {
     return off >= token.startI + token.renderStart and off < token.startI + token.renderEnd;
 }
 
-pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *AppState) !void {
+/// A note as the file list needs it. Borrowed from the host for the duration of the frame.
+pub const NoteEntry = struct {
+    path: []const u8,
+    title: []const u8,
+};
+
+/// What this frame is asking the host to do.
+///
+/// `app.zig` cannot reach the note store — importing it would drag the vector DB and the
+/// embedder into every render test — so widgets record an intent here and the host, which has
+/// both, carries it out.
+pub const FrameActions = struct {
+    new_note: bool = false,
+    /// Index into the `notes` slice handed to `frame`.
+    open_note: ?usize = null,
+    /// The query changed this frame, so the host should redo the lookup that feeds `notes`.
+    query_changed: bool = false,
+};
+
+const QUERY_MAX: usize = 256;
+
+const BTN_SIZE: f64 = 44;
+const BTN_GAP: f64 = 12;
+const BTN_MARGIN: f64 = 20;
+const LIST_MAX_W: f64 = 400;
+
+/// Where this frame's chrome sits. Computed before anything is drawn so the editor can be told
+/// to ignore a click that belongs to the UI, then reused by the widget pass itself.
+const UiLayout = struct {
+    new_note: Rect,
+    toggle_list: Rect,
+    /// Null when the list is hidden.
+    panel: ?Rect,
+    /// The query field, and the area below it the rows scroll in. Both null with the panel.
+    query: ?Rect,
+    rows: ?Rect,
+    row_h: f64,
+};
+
+fn layoutUi(size: geom.Size, list_visible: bool, font_size: f64) UiLayout {
+    const bx = size.w - BTN_MARGIN - BTN_SIZE;
+    const by = size.h - BTN_MARGIN - BTN_SIZE;
+    const panel: ?Rect = if (list_visible) .{
+        .x = size.w - @min(LIST_MAX_W, size.w * 0.4),
+        .y = 0,
+        .w = @min(LIST_MAX_W, size.w * 0.4),
+        .h = size.h,
+    } else null;
+
+    const field_h = font_size * 2.0;
+    const pad: f64 = 10;
+    return .{
+        .new_note = .{ .x = bx, .y = by, .w = BTN_SIZE, .h = BTN_SIZE },
+        .toggle_list = .{ .x = bx, .y = by - BTN_SIZE - BTN_GAP, .w = BTN_SIZE, .h = BTN_SIZE },
+        .panel = panel,
+        .query = if (panel) |p| .{
+            .x = p.x + pad,
+            .y = p.y + pad,
+            .w = p.w - pad * 2,
+            .h = field_h,
+        } else null,
+        .rows = if (panel) |p| .{
+            .x = p.x,
+            .y = p.y + field_h + pad * 2,
+            .w = p.w,
+            .h = p.h - (field_h + pad * 2),
+        } else null,
+        .row_h = font_size * 2.2,
+    };
+}
+
+/// Apply this frame's typing to the query. Returns whether the text changed — the caret moving
+/// on its own doesn't warrant redoing the search.
+fn editQuery(state: *AppState, in: Input) bool {
+    var changed = false;
+
+    if (in.backspaces > 0 and state.query_cursor > 0) {
+        const n = @min(state.query_cursor, in.backspaces);
+        std.mem.copyForwards(
+            u8,
+            state.query_buf[state.query_cursor - n .. state.query_len - n],
+            state.query_buf[state.query_cursor..state.query_len],
+        );
+        state.query_len -= n;
+        state.query_cursor -= n;
+        changed = true;
+    }
+    if (in.lefts > 0) state.query_cursor -= @min(state.query_cursor, in.lefts);
+    if (in.rights > 0) state.query_cursor = @min(state.query_len, state.query_cursor + in.rights);
+
+    for (in.text) |b| {
+        // Single-line: a newline means "accept", handled by the caller, and control bytes are
+        // not text.
+        if (b < 0x20 or b == 0x7f) continue;
+        if (state.query_len == state.query_buf.len) break;
+        std.mem.copyBackwards(
+            u8,
+            state.query_buf[state.query_cursor + 1 .. state.query_len + 1],
+            state.query_buf[state.query_cursor..state.query_len],
+        );
+        state.query_buf[state.query_cursor] = b;
+        state.query_cursor += 1;
+        state.query_len += 1;
+        changed = true;
+    }
+    return changed;
+}
+
+fn clearQuery(state: *AppState) void {
+    state.query_len = 0;
+    state.query_cursor = 0;
+}
+
+/// Whether the chrome should take this frame's pointer input, leaving the editor to ignore it.
+/// A widget already being dragged keeps the pointer wherever it has wandered to.
+fn uiCapturesMouse(layout: UiLayout, mouse: geom.Point, ui_state: ui.State) bool {
+    if (ui_state.active != null) return true;
+    if (layout.new_note.contains(mouse)) return true;
+    if (layout.toggle_list.contains(mouse)) return true;
+    if (layout.panel) |p| {
+        if (p.contains(mouse)) return true;
+    }
+    return false;
+}
+
+pub fn frame(
+    allocator: std.mem.Allocator,
+    canvas: *Canvas,
+    in: Input,
+    state: *AppState,
+    notes: []const NoteEntry,
+) !FrameActions {
     // debug: fps calculation
     var frame_timer = std.time.Timer.start() catch null;
     defer if (frame_timer) |*t| {
@@ -175,7 +329,7 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
     };
 
     // Background.
-    canvas.clear(Color.rgb(0.12, 0.12, 0.14));
+    canvas.clear(th().background);
 
     { // debug
         var buf: [96]u8 = undefined;
@@ -194,7 +348,7 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
             0,
             canvas.size.h - font_size,
             .{ .size = font_size },
-            TEXT_COLOR,
+            th().text,
         );
     }
 
@@ -236,6 +390,40 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
         .heightFn = heightWithCanvas,
     };
 
+    // Whether the view should chase the caret this frame. Only true when the caret actually
+    // went somewhere: otherwise a wheel scroll that pushes the caret off screen would be
+    // yanked straight back by `scrollToCursor` on the very next frame.
+    var follow_cursor = false;
+
+    const layout = layoutUi(canvas.size, state.list_visible, th().font_size);
+    // Decided before `handleInput` runs, and from the same rects the widget pass will use, so
+    // a click on a button can't also move the caret in the text underneath it.
+    const ui_has_mouse = uiCapturesMouse(layout, in.mouse, state.ui);
+    var editor_in = in;
+    if (ui_has_mouse) {
+        editor_in.mouse_down = false;
+        editor_in.scroll_dy = 0; // the list scrolls instead
+    }
+
+    var actions = FrameActions{};
+    if (state.list_visible) {
+        // An open list holds the keyboard: typing goes to the query, not the document behind
+        // it. Withhold the keys from the editor rather than letting both act on them.
+        actions.query_changed = editQuery(state, in);
+        if (std.mem.indexOfScalar(u8, in.text, '\n') != null) {
+            // Enter accepts the top hit, the usual way out of a search field.
+            if (notes.len > 0) actions.open_note = 0;
+        }
+        if (in.escapes > 0) state.list_visible = false;
+
+        editor_in.text = &.{};
+        editor_in.backspaces = 0;
+        editor_in.lefts = 0;
+        editor_in.rights = 0;
+        editor_in.ups = 0;
+        editor_in.downs = 0;
+    }
+
     { // Calculate the displayed text and handle inputs
         const full_text = condenseGapBuf(scratch.?, state.*);
         const tokens = try tokenize(full_text);
@@ -243,7 +431,11 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
         // layout the user was looking at when they clicked or pressed a key.
         const reveal = revealForCursor(full_text, state.cursor_i);
         const lines = splitLines(full_text, tokens, line_scratch.?, frag_scratch.?, measurer, reveal);
-        try handleInput(allocator, in, state, lines, tokens, frag_scratch.?, full_text, measurer);
+        const cursor_before = state.cursor_i;
+        try handleInput(allocator, editor_in, state, lines, tokens, frag_scratch.?, full_text, measurer);
+        // `dirty` covers deleting a selection ahead of the caret, which changes the text
+        // without moving it.
+        follow_cursor = state.cursor_i != cursor_before or state.dirty;
     }
 
     { // Render pass
@@ -253,10 +445,20 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
         const lines = splitLines(full_text, tokens, line_scratch.?, frag_scratch.?, measurer, reveal);
         const text_x: f64 = MARGIN_PX;
         const viewport_h = canvas.size.h - (MARGIN_PX * 2);
-        state.window_offset = scrollToCursor(lines, state.window_offset, cursorLine(lines, state.cursor_i), viewport_h);
-        const top = @min(state.window_offset, lines.len);
-        const placements = visiblePlacements(lines, top, viewport_h, placement_scratch.?);
+
+        // Wheel first, then the caret, so typing always wins over where the wheel had left us.
+        state.scroll_y -= editor_in.scroll_dy;
+        if (follow_cursor) {
+            state.scroll_y = scrollToCursor(lines, state.scroll_y, cursorLine(lines, state.cursor_i), viewport_h);
+        }
+        state.scroll_y = clampScroll(state.scroll_y, lines, viewport_h);
+
+        const placements = visiblePlacements(lines, state.scroll_y, viewport_h, placement_scratch.?);
         var caret_drawn = false;
+
+        // Rows at the edges are cut off mid-line; keep them inside the content area.
+        canvas.pushClip(.{ .x = 0, .y = MARGIN_PX, .w = canvas.size.w, .h = viewport_h });
+        defer canvas.popClip();
 
         for (placements) |placement| {
             const line = lines[placement.line];
@@ -276,7 +478,7 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                 if (owner.tType == .QUOTE) {
                     for (0..owner.degree) |level| {
                         const bar_x = text_x + (@as(f64, @floatFromInt(level)) * QUOTE_INDENT_PX);
-                        fillPanel(canvas, .{ .x = bar_x, .y = text_y, .w = QUOTE_RULE_W, .h = line_h }, QUOTE_RULE_COLOR);
+                        fillPanel(canvas, .{ .x = bar_x, .y = text_y, .w = QUOTE_RULE_W, .h = line_h }, th().quote_rule);
                     }
                 }
             }
@@ -287,7 +489,7 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                     // At a soft-wrap boundary the cursor offset matches both the end
                     // of one line and the start of the next; prefer the earlier line.
                     const caret_x = line_x + xForOffset(line, frag_scratch.?, full_text, tokens, state.cursor_i, measurer);
-                    canvas.fillRect(.{ .x = caret_x, .y = text_y, .w = 2, .h = line_h }, Color.white);
+                    canvas.fillRect(.{ .x = caret_x, .y = text_y, .w = 2, .h = line_h }, th().caret);
                     caret_drawn = true;
                 }
                 // One rect per row: clip the document-wide selection span to this row and draw
@@ -312,7 +514,7 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                         else
                             0;
                         if (selection_w > 0) {
-                            canvas.fillRect(.{ .x = line_x + x0, .y = text_y, .w = selection_w, .h = line_h }, HIGHLIGHT_COLOR);
+                            canvas.fillRect(.{ .x = line_x + x0, .y = text_y, .w = selection_w, .h = line_h }, th().highlight);
                         }
                     }
                 }
@@ -352,6 +554,71 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
             }
         }
     }
+
+    // Chrome last, so it sits over the text. Input for it was already accounted for above.
+    drawChrome(canvas, in, state, layout, notes, &actions);
+    return actions;
+}
+
+/// Draw the buttons and the note list, returning whatever the user asked for.
+fn drawChrome(
+    canvas: *Canvas,
+    in: Input,
+    state: *AppState,
+    layout: UiLayout,
+    notes: []const NoteEntry,
+    actions: *FrameActions,
+) void {
+    const t = th();
+    // Edges come from the UI's own record of the previous frame, not the editor's — see
+    // `ui.State.was_down` for why the editor's is unusable here.
+    var ctx = ui.Ctx.init(&state.ui, in.mouse, in.mouse_down);
+    defer ctx.end();
+
+    if (layout.panel) |p| {
+        ui.panel(&ctx, canvas, t, p);
+        _ = ui.textField(&ctx, canvas, t, 3, layout.query.?, state.query(), state.query_cursor, "Search notes");
+
+        const rows = layout.rows.?;
+        if (p.contains(in.mouse)) state.list_scroll -= in.scroll_dy;
+        const content_h = @as(f64, @floatFromInt(notes.len)) * layout.row_h;
+        state.list_scroll = std.math.clamp(state.list_scroll, 0, @max(0, content_h - rows.h));
+
+        canvas.pushClip(rows);
+        defer canvas.popClip();
+
+        if (notes.len == 0) {
+            // Distinguish "nothing matched" from "nothing saved" — an empty rectangle leaves
+            // the user unsure which of the two they are looking at.
+            const msg = if (state.query_len > 0) "No matches" else "No saved notes yet";
+            ui.emptyLabel(canvas, t, rows, msg);
+        }
+
+        for (notes, 0..) |note, i| {
+            const y = rows.y + (@as(f64, @floatFromInt(i)) * layout.row_h) - state.list_scroll;
+            if (y + layout.row_h <= rows.y or y >= rows.y + rows.h) continue; // off-panel
+            const row = Rect{ .x = rows.x, .y = y, .w = rows.w, .h = layout.row_h };
+            // Falling back to the path keeps an untitled note selectable rather than invisible.
+            const label = if (note.title.len > 0) note.title else note.path;
+            if (ui.listRow(&ctx, canvas, t, @intCast(100 + i), row, label, false)) {
+                actions.open_note = i;
+                state.list_visible = false;
+            }
+        }
+    }
+
+    if (ui.button(&ctx, canvas, t, 1, layout.toggle_list, if (state.list_visible) "x" else "=")) {
+        state.list_visible = !state.list_visible;
+        state.list_scroll = 0;
+        // Opening on a stale query would show yesterday's results against an empty-looking
+        // field, so start clean either way.
+        clearQuery(state);
+        actions.query_changed = true;
+    }
+    if (ui.button(&ctx, canvas, t, 2, layout.new_note, "+")) {
+        actions.new_note = true;
+        state.list_visible = false;
+    }
 }
 
 const Measurer = struct {
@@ -371,12 +638,12 @@ const Measurer = struct {
 
 fn fontForToken(token: Token) Font {
     return switch (token.tType) {
-        .HEADER => .{ .size = FONT_SIZE * headerScale(token.degree) },
-        .BOLD => .{ .size = FONT_SIZE, .bold = true },
-        .ITALIC => .{ .size = FONT_SIZE, .italic = true },
-        .EMPHASIS => .{ .size = FONT_SIZE, .bold = true, .italic = true },
-        .LINK => .{ .size = FONT_SIZE, .underline = true },
-        else => .{ .size = FONT_SIZE },
+        .HEADER => .{ .size = th().font_size * headerScale(token.degree) },
+        .BOLD => .{ .size = th().font_size, .bold = true },
+        .ITALIC => .{ .size = th().font_size, .italic = true },
+        .EMPHASIS => .{ .size = th().font_size, .bold = true, .italic = true },
+        .LINK => .{ .size = th().font_size, .underline = true },
+        else => .{ .size = th().font_size },
     };
 }
 
@@ -384,7 +651,8 @@ fn fontForToken(token: Token) Font {
 /// separate entry point and the `Measurer` signature is unaffected by anything here.
 const Style = struct {
     font: Font,
-    color: Color = TEXT_COLOR,
+    /// No default: it comes from the active theme, which is not comptime-known.
+    color: Color,
     /// Filled behind the run before the text is drawn. `null` means "leave the page showing".
     background: ?Color = null,
     panel: Panel = .run,
@@ -400,19 +668,19 @@ const Panel = enum {
 };
 
 fn styleForToken(token: Token) Style {
-    var style = Style{ .font = fontForToken(token) };
+    var style = Style{ .font = fontForToken(token), .color = th().text };
     switch (token.tType) {
         .CODE => {
-            style.color = CODE_COLOR;
-            style.background = CODE_BG_COLOR;
+            style.color = th().code;
+            style.background = th().code_bg;
         },
         .BLOCK_CODE => {
-            style.color = CODE_COLOR;
-            style.background = CODE_BG_COLOR;
+            style.color = th().code;
+            style.background = th().code_bg;
             style.panel = .full;
         },
-        .QUOTE => style.color = QUOTE_COLOR,
-        .LINK => style.color = LINK_COLOR,
+        .QUOTE => style.color = th().quote,
+        .LINK => style.color = th().link,
         else => {},
     }
     return style;
@@ -467,11 +735,9 @@ fn headerScale(degree: u8) f64 {
 
 /// The token covering source offset `i`, falling back to the last token when `i` is past the
 /// end of the document (an offset one past the final character is a legal cursor position).
-// FOLLOW-UP (unicode): `i` here is a byte offset (line.start / cursor offsets), but token
-// startI/endI come out of parseFlat as codepoint offsets. These coincide only for ASCII;
-// with multi-byte characters this matches the wrong token. splitLines has the same
-// byte-vs-codepoint mismatch. Dormant today (sample docs are ASCII); fix separately by
-// giving the renderer byte offsets while the frontend keeps codepoints.
+///
+/// `i` is a byte offset, matching `parseFlat`. Both are bytes on purpose: the renderer slices
+/// the source directly, so any other coordinate space would need converting on every lookup.
 fn tokenAt(tokens: []const Token, i: usize) Token {
     for (tokens) |t| {
         if (i >= t.startI and i < t.endI) return t;
@@ -672,42 +938,54 @@ const Placement = struct {
     y: f64,
 };
 
-/// The lines from `top` onward that fit within a `viewport_h`-tall content area, each paired
-/// with its content-relative y. Lines stack by height (the same rule `scrollToCursor` uses to
-/// decide what "fits"); iteration stops at the first line that would overflow. The line at
-/// `top` is always emitted even if it alone is taller than the viewport, so an oversized line
-/// (e.g. a big header) is never silently dropped.
-fn visiblePlacements(lines: []const Line, top: usize, viewport_h: f64, out: []Placement) []Placement {
+/// Every line that intersects the viewport when scrolled to `scroll_y`, paired with its y
+/// relative to the top of the content area. The first and last are typically cut off, so their
+/// `y` may be negative or place their bottom past `viewport_h` — the render pass clips.
+fn visiblePlacements(lines: []const Line, scroll_y: f64, viewport_h: f64, out: []Placement) []Placement {
     var count: usize = 0;
-    var y: f64 = 0;
-    var i = top;
-    while (i < lines.len) : (i += 1) {
-        const h = lines[i].h;
-        if (count > 0 and y + h > viewport_h) break;
-        out[count] = .{ .line = i, .y = y };
+    var doc_y: f64 = 0; // top of the current line, in document space
+    for (lines, 0..) |line, i| {
+        const top = doc_y - scroll_y;
+        doc_y += line.h;
+        if (doc_y - scroll_y <= 0) continue; // entirely above the viewport
+        if (top >= viewport_h) break; // entirely below it, and so is everything after
+        out[count] = .{ .line = i, .y = top };
         count += 1;
-        y += h;
     }
     return out[0..count];
 }
 
-/// Scroll enough to put `cursor_line` inside a `screen_h`px window, starting from `window_offset`.
-fn scrollToCursor(lines: []const Line, window_offset: usize, cursor_line: usize, screen_h: f64) usize {
-    if (cursor_line < window_offset) return cursor_line; // above the viewport
+/// Total height of the laid-out document.
+fn documentHeight(lines: []const Line) f64 {
+    var h: f64 = 0;
+    for (lines) |line| h += line.h;
+    return h;
+}
 
-    var stacked: f64 = 0;
-    var i = window_offset;
-    while (i <= cursor_line) : (i += 1) stacked += lines[i].h;
-    if (stacked <= screen_h) return window_offset; // Already in view
+/// Hold `scroll_y` within the document. The lower bound wins when the document is shorter than
+/// the viewport, which would otherwise give a negative maximum.
+fn clampScroll(scroll_y: f64, lines: []const Line, viewport_h: f64) f64 {
+    return std.math.clamp(scroll_y, 0, @max(0, documentHeight(lines) - viewport_h));
+}
 
-    // Below the viewport
-    stacked = lines[cursor_line].h;
-    var top = cursor_line;
-    while (top > 0 and stacked + lines[top - 1].h <= screen_h) {
-        top -= 1;
-        stacked += lines[top].h;
-    }
-    return top;
+/// Document-space y of the top of `line_i`.
+fn lineTop(lines: []const Line, line_i: usize) f64 {
+    var y: f64 = 0;
+    for (lines[0..line_i]) |line| y += line.h;
+    return y;
+}
+
+/// The smallest adjustment to `scroll_y` that brings `cursor_line` fully into view.
+fn scrollToCursor(lines: []const Line, scroll_y: f64, cursor_line: usize, viewport_h: f64) f64 {
+    const top = lineTop(lines, cursor_line);
+    const bottom = top + lines[cursor_line].h;
+
+    var result = scroll_y;
+    if (bottom > result + viewport_h) result = bottom - viewport_h; // below the viewport
+    // Checked second on purpose: a line taller than the viewport satisfies both tests, and
+    // pinning it to its top is the more useful of the two outcomes.
+    if (top < result) result = top;
+    return clampScroll(result, lines, viewport_h);
 }
 
 fn handleInput(
@@ -722,17 +1000,24 @@ fn handleInput(
 ) !void {
     state.assertInvariant();
     var cursor_target: ?usize = null;
+    // Anything that isn't typing ends the current run, so an undo can't reach back across a
+    // click or an arrow key into text the user typed somewhere else entirely.
+    if (in.mouse_down or (in.lefts | in.rights | in.ups | in.downs) != 0) breakCoalesce(state);
     if (in.mouse_down) {
         const mouse_offset: usize = cursor: { // point to offset
+            // Work in document space: drop the content margin, then add how far we are
+            // scrolled. Falling off either end of the loop clamps to the first or last row,
+            // which is what a click above or below the text should do.
+            const doc_y = (in.mouse.y - MARGIN_PX) + state.scroll_y;
             var lineno: usize = lines.len - 1;
-            var curr_y: f64 = MARGIN_PX;
-            for (state.window_offset..lines.len) |i| {
-                const line_h = measurer.height(lines[i].text, tokens, lines[i].start, lines[i].start + lines[i].text.len);
-                if (in.mouse.y < curr_y + line_h) {
+            var y: f64 = 0;
+            for (lines, 0..) |l, i| {
+                const line_h = measurer.height(l.text, tokens, l.start, l.start + l.text.len);
+                if (doc_y < y + line_h) {
                     lineno = i;
                     break;
                 }
-                curr_y += line_h;
+                y += line_h;
             }
             const line = lines[lineno];
             var col: usize = line.text.len;
@@ -771,23 +1056,29 @@ fn handleInput(
         // A click leaves an empty selection; collapse it so only a real drag keeps the anchor.
         if (state.selection_anchor == state.cursor_i) state.selection_anchor = null;
     } else if (in.backspaces != 0) {
-        if (state.selection_anchor) |anchor| {
-            if (state.cursor_i > anchor) {
-                // Sel. is in the pre-cursor area; drop it by moving the cursor back to the anchor.
-                const backspaces = state.cursor_i - anchor;
-                state.cursor_i = anchor;
-                state.text_len -= backspaces;
-            } else {
-                // Selection is in the tail; drop it by advancing the gap end past it.
-                const backspaces = anchor - state.cursor_i;
-                state.gap_end += backspaces;
-                state.text_len -= backspaces;
-            }
-            state.selection_anchor = null;
+        const cursor_before = state.cursor_i;
+        const anchor_before = state.selection_anchor;
+        if (selectionRange(state.*)) |sel| {
+            state.dirty = true;
+            // Capture the text before dropping it — afterwards there is nothing left to read.
+            const removed = try allocator.alloc(u8, sel.hi - sel.lo);
+            defer allocator.free(removed);
+            _ = copyRange(state.*, sel.lo, sel.hi, removed);
+            deleteSelection(state);
+            try recordEdit(state, allocator, sel.lo, removed, "", cursor_before, anchor_before);
         } else {
             const backspaces = @min(state.cursor_i, in.backspaces);
-            state.cursor_i -= backspaces;
-            state.text_len -= backspaces;
+            if (backspaces > 0) {
+                state.dirty = true;
+                const at = state.cursor_i - backspaces;
+                // The deleted run sits just behind the cursor, so it is contiguous in the
+                // buffer's head — no gap to straddle.
+                const removed = try allocator.dupe(u8, state.gap_buf[at..state.cursor_i]);
+                defer allocator.free(removed);
+                state.cursor_i -= backspaces;
+                state.text_len -= backspaces;
+                try recordEdit(state, allocator, at, removed, "", cursor_before, anchor_before);
+            }
         }
     } else if ((in.lefts | in.rights | in.ups | in.downs) != 0) {
         const horz_pressed = (in.lefts | in.rights) != 0;
@@ -837,45 +1128,21 @@ fn handleInput(
             break :updown lines[new_line].start + new_col;
         };
     } else if (in.text.len > 0) {
-        if (state.selection_anchor) |anchor| {
-            if (anchor > state.cursor_i) {
-                // Selection is in the tail; drop it by advancing the gap end past it.
-                const removed = anchor - state.cursor_i;
-                state.gap_end += removed;
-                state.text_len -= removed;
-            } else {
-                // Sel. is in the pre-cursor region; drop it by moving the cursor to the anchor.
-                state.text_len -= state.cursor_i - anchor;
-                state.cursor_i = anchor;
-            }
-            state.selection_anchor = null;
+        state.dirty = true;
+        const cursor_before = state.cursor_i;
+        const anchor_before = state.selection_anchor;
+
+        // Typing over a selection replaces it, so that text is part of this one edit.
+        var removed: []u8 = &.{};
+        defer allocator.free(removed);
+        if (selectionRange(state.*)) |sel| {
+            removed = try allocator.alloc(u8, sel.hi - sel.lo);
+            _ = copyRange(state.*, sel.lo, sel.hi, removed);
         }
-        const new_text_len = state.text_len + in.text.len;
-        if (new_text_len >= state.gap_buf.len) {
-            // grow the underlying buffer
-            var new_buf_len: usize = state.gap_buf.len;
-            while (new_buf_len <= new_text_len) new_buf_len = new_buf_len << 1;
+        deleteSelection(state);
 
-            assert(new_buf_len <= MAX_BUF_LEN);
-            var new_buf = try allocator.alloc(u8, new_buf_len);
-
-            if (state.cursor_i > 0) {
-                @memcpy(new_buf[0..state.cursor_i], state.gap_buf[0..state.cursor_i]);
-            }
-
-            assert(state.gap_buf.len >= state.gap_end);
-            const new_gap_end = new_buf_len - (state.gap_buf.len - state.gap_end);
-            if (state.gap_end < state.gap_buf.len) {
-                @memcpy(
-                    new_buf[new_gap_end..new_buf_len],
-                    state.gap_buf[state.gap_end..state.gap_buf.len],
-                );
-            }
-
-            allocator.free(state.gap_buf);
-            state.gap_buf = new_buf;
-            state.gap_end = new_gap_end;
-        }
+        const at = state.cursor_i;
+        try ensureCapacity(state, allocator, in.text.len);
         // Insert only real document content; drop control/non-printable bytes
         for (in.text) |byte| {
             const is_control_byte = (byte < 0x20 and byte != '\n') or byte == 0x7f;
@@ -884,30 +1151,289 @@ fn handleInput(
             state.cursor_i += 1;
             state.text_len += 1;
         }
-    }
-    if (cursor_target) |target| { // Move the cursor and adjust the gap buf
-        if (target > state.cursor_i) {
-            // abc|def => abcd|ef : dest (cursor) precedes src (gap_end), copy front-to-back.
-            const n = target - state.cursor_i;
-            std.mem.copyForwards(
-                u8,
-                state.gap_buf[state.cursor_i .. state.cursor_i + n],
-                state.gap_buf[state.gap_end .. state.gap_end + n],
-            );
-            state.cursor_i += n;
-            state.gap_end += n;
-        } else if (target < state.cursor_i) {
-            // abc|def => ab|cdef : dest (gap_end) follows src (cursor), copy back-to-front.
-            const n = state.cursor_i - target;
-            std.mem.copyBackwards(
-                u8,
-                state.gap_buf[state.gap_end - n .. state.gap_end],
-                state.gap_buf[state.cursor_i - n .. state.cursor_i],
-            );
-            state.cursor_i -= n;
-            state.gap_end -= n;
+        // Read what landed rather than what was offered: filtering means the two can differ,
+        // and undo has to restore the document, not the keystrokes.
+        const inserted = state.gap_buf[at..state.cursor_i];
+        if (removed.len > 0 or inserted.len > 0) {
+            try recordEdit(state, allocator, at, removed, inserted, cursor_before, anchor_before);
         }
     }
+    if (cursor_target) |target| moveCursorTo(state, target);
+}
+
+/// Move the cursor to document offset `target`, shifting the gap to match.
+pub fn moveCursorTo(state: *AppState, target: usize) void {
+    if (target > state.cursor_i) {
+        // abc|def => abcd|ef : dest (cursor) precedes src (gap_end), copy front-to-back.
+        const n = target - state.cursor_i;
+        std.mem.copyForwards(
+            u8,
+            state.gap_buf[state.cursor_i .. state.cursor_i + n],
+            state.gap_buf[state.gap_end .. state.gap_end + n],
+        );
+        state.cursor_i += n;
+        state.gap_end += n;
+    } else if (target < state.cursor_i) {
+        // abc|def => ab|cdef : dest (gap_end) follows src (cursor), copy back-to-front.
+        const n = state.cursor_i - target;
+        std.mem.copyBackwards(
+            u8,
+            state.gap_buf[state.gap_end - n .. state.gap_end],
+            state.gap_buf[state.cursor_i - n .. state.cursor_i],
+        );
+        state.cursor_i -= n;
+        state.gap_end -= n;
+    }
+}
+
+/// One reversible change: `removed` was at `at`, and `inserted` took its place. A pure insert
+/// has an empty `removed`, a pure delete an empty `inserted`, and replacing a selection has
+/// both — so one shape covers every edit the editor can make.
+///
+/// Records rather than document snapshots: a note is not big, but a snapshot per keystroke
+/// still costs its full length each time, where a record costs only what actually changed.
+const Edit = struct {
+    at: usize,
+    removed: []const u8,
+    inserted: []const u8,
+    /// Caret and selection as they stood before the edit, so undo puts the user back where
+    /// they were rather than wherever the text happened to end.
+    cursor_before: usize,
+    anchor_before: ?usize,
+};
+
+/// How many edits are kept before the oldest is dropped.
+const MAX_UNDO_DEPTH: usize = 256;
+
+const History = struct {
+    undo_stack: ArrayList(Edit) = .{},
+    redo_stack: ArrayList(Edit) = .{},
+    /// Whether the next insert may merge into the top undo entry. Typing a run should undo as
+    /// one unit, but only while it stays a run — anything else (moving the caret, deleting,
+    /// undoing) ends it, so the merge can't reach across unrelated edits.
+    coalesce: bool = false,
+};
+
+/// End any in-progress typing run, so the next insert starts a fresh undo entry.
+pub fn breakCoalesce(state: *AppState) void {
+    state.history.coalesce = false;
+}
+
+fn freeEdit(alloc: Allocator, e: Edit) void {
+    alloc.free(e.removed);
+    alloc.free(e.inserted);
+}
+
+fn clearRedo(state: *AppState, alloc: Allocator) void {
+    for (state.history.redo_stack.items) |e| freeEdit(alloc, e);
+    state.history.redo_stack.clearRetainingCapacity();
+}
+
+/// Journal an edit. `removed` and `inserted` are borrowed; this copies what it keeps.
+fn recordEdit(
+    state: *AppState,
+    alloc: Allocator,
+    at: usize,
+    removed: []const u8,
+    inserted: []const u8,
+    cursor_before: usize,
+    anchor_before: ?usize,
+) !void {
+    // Editing after undoing abandons the redone-future; those entries can never be reached.
+    clearRedo(state, alloc);
+
+    const pure_insert = removed.len == 0 and inserted.len > 0;
+    if (state.history.coalesce and pure_insert and state.history.undo_stack.items.len > 0) {
+        const top = &state.history.undo_stack.items[state.history.undo_stack.items.len - 1];
+        const contiguous = at == top.at + top.inserted.len;
+        // A newline ends the run: undoing a paragraph one line at a time is more useful than
+        // losing all of it at once.
+        const spans_newline = std.mem.indexOfScalar(u8, inserted, '\n') != null or
+            std.mem.indexOfScalar(u8, top.inserted, '\n') != null;
+        if (top.removed.len == 0 and contiguous and !spans_newline) {
+            const merged = try alloc.alloc(u8, top.inserted.len + inserted.len);
+            @memcpy(merged[0..top.inserted.len], top.inserted);
+            @memcpy(merged[top.inserted.len..], inserted);
+            alloc.free(top.inserted);
+            top.inserted = merged;
+            return;
+        }
+    }
+
+    const entry = Edit{
+        .at = at,
+        .removed = try alloc.dupe(u8, removed),
+        .inserted = try alloc.dupe(u8, inserted),
+        .cursor_before = cursor_before,
+        .anchor_before = anchor_before,
+    };
+    errdefer freeEdit(alloc, entry);
+    try state.history.undo_stack.append(alloc, entry);
+
+    if (state.history.undo_stack.items.len > MAX_UNDO_DEPTH) {
+        freeEdit(alloc, state.history.undo_stack.orderedRemove(0));
+    }
+    state.history.coalesce = pure_insert;
+}
+
+/// Grow the gap buffer so `extra` more bytes fit, preserving the gap's position.
+fn ensureCapacity(state: *AppState, allocator: Allocator, extra: usize) !void {
+    const needed = state.text_len + extra;
+    if (needed < state.gap_buf.len) return;
+
+    var new_buf_len: usize = state.gap_buf.len;
+    while (new_buf_len <= needed) new_buf_len = new_buf_len << 1;
+    assert(new_buf_len <= MAX_BUF_LEN);
+
+    const new_buf = try allocator.alloc(u8, new_buf_len);
+    if (state.cursor_i > 0) {
+        @memcpy(new_buf[0..state.cursor_i], state.gap_buf[0..state.cursor_i]);
+    }
+    assert(state.gap_buf.len >= state.gap_end);
+    const new_gap_end = new_buf_len - (state.gap_buf.len - state.gap_end);
+    if (state.gap_end < state.gap_buf.len) {
+        @memcpy(new_buf[new_gap_end..new_buf_len], state.gap_buf[state.gap_end..state.gap_buf.len]);
+    }
+    allocator.free(state.gap_buf);
+    state.gap_buf = new_buf;
+    state.gap_end = new_gap_end;
+}
+
+/// Replace document range `[from, to)` with `text`, leaving the caret after the new text.
+/// Unlike the typing path this does no filtering — it replays text the editor already accepted.
+fn applyReplace(state: *AppState, alloc: Allocator, from: usize, to: usize, text: []const u8) !void {
+    moveCursorTo(state, from);
+    const deleted = to - from;
+    state.gap_end += deleted;
+    state.text_len -= deleted;
+
+    try ensureCapacity(state, alloc, text.len);
+    for (text) |b| {
+        state.gap_buf[state.cursor_i] = b;
+        state.cursor_i += 1;
+        state.text_len += 1;
+    }
+    state.selection_anchor = null;
+}
+
+/// Reverse the most recent edit. Returns false when there is nothing left to undo.
+pub fn undo(state: *AppState, alloc: Allocator) !bool {
+    if (state.history.undo_stack.items.len == 0) return false;
+    const e = state.history.undo_stack.pop().?;
+
+    try applyReplace(state, alloc, e.at, e.at + e.inserted.len, e.removed);
+    moveCursorTo(state, e.cursor_before);
+    state.selection_anchor = e.anchor_before;
+
+    try state.history.redo_stack.append(alloc, e);
+    state.history.coalesce = false;
+    state.dirty = true;
+    return true;
+}
+
+/// Re-apply the most recently undone edit. Returns false when there is nothing to redo.
+pub fn redo(state: *AppState, alloc: Allocator) !bool {
+    if (state.history.redo_stack.items.len == 0) return false;
+    const e = state.history.redo_stack.pop().?;
+
+    try applyReplace(state, alloc, e.at, e.at + e.removed.len, e.inserted);
+
+    try state.history.undo_stack.append(alloc, e);
+    state.history.coalesce = false;
+    state.dirty = true;
+    return true;
+}
+
+/// Release every journalled edit.
+pub fn deinitHistory(state: *AppState, alloc: Allocator) void {
+    for (state.history.undo_stack.items) |e| freeEdit(alloc, e);
+    for (state.history.redo_stack.items) |e| freeEdit(alloc, e);
+    state.history.undo_stack.deinit(alloc);
+    state.history.redo_stack.deinit(alloc);
+    state.history = .{};
+}
+
+/// The selected span as document offsets, or null when nothing is selected. An anchor sitting
+/// exactly on the cursor is an empty selection and counts as nothing.
+pub fn selectionRange(state: AppState) ?struct { lo: usize, hi: usize } {
+    const anchor = state.selection_anchor orelse return null;
+    const lo = @min(anchor, state.cursor_i);
+    const hi = @max(anchor, state.cursor_i);
+    return if (lo == hi) null else .{ .lo = lo, .hi = hi };
+}
+
+pub fn selectionLen(state: AppState) usize {
+    const sel = selectionRange(state) orelse return 0;
+    return sel.hi - sel.lo;
+}
+
+/// Copy document bytes `[from, to)` into `out`, returning how many were written.
+///
+/// The gap sits at the cursor, so a range straddling it lives in two pieces of `gap_buf` that
+/// aren't adjacent — hence two copies rather than one slice.
+fn copyRange(state: AppState, from: usize, to: usize, out: []u8) usize {
+    var n: usize = 0;
+    const head_end = @min(to, state.cursor_i);
+    if (from < head_end) {
+        const len = head_end - from;
+        @memcpy(out[n..][0..len], state.gap_buf[from..head_end]);
+        n += len;
+    }
+    if (to > state.cursor_i) {
+        const tail_from = @max(from, state.cursor_i);
+        const len = to - tail_from;
+        const src = state.gap_end + (tail_from - state.cursor_i);
+        @memcpy(out[n..][0..len], state.gap_buf[src..][0..len]);
+        n += len;
+    }
+    return n;
+}
+
+/// Write the selection into `out`, returning the byte count. Zero if there is no selection or
+/// `out` is too small — check `selectionLen` first to size the buffer.
+pub fn copySelection(state: AppState, out: []u8) usize {
+    const sel = selectionRange(state) orelse return 0;
+    if (out.len < sel.hi - sel.lo) return 0;
+    return copyRange(state, sel.lo, sel.hi, out);
+}
+
+/// Drop the selected text, leaving the cursor where the selection started.
+pub fn deleteSelection(state: *AppState) void {
+    const anchor = state.selection_anchor orelse return;
+    if (state.cursor_i > anchor) {
+        // Selection is behind the cursor; drop it by walking the cursor back over it.
+        state.text_len -= state.cursor_i - anchor;
+        state.cursor_i = anchor;
+    } else {
+        // Selection is ahead of the cursor; drop it by advancing the gap end past it.
+        const removed = anchor - state.cursor_i;
+        state.gap_end += removed;
+        state.text_len -= removed;
+    }
+    state.selection_anchor = null;
+}
+
+/// Select the whole document, leaving the cursor at the end as macOS does.
+pub fn selectAll(state: *AppState) void {
+    if (state.text_len == 0) return;
+    moveCursorTo(state, state.text_len);
+    state.selection_anchor = 0;
+    breakCoalesce(state);
+}
+
+/// Copy the selection into `out` and remove it, as one journalled edit. Returns the byte count,
+/// or 0 if there was no selection or `out` was too small — in which case nothing is removed.
+pub fn cutSelection(state: *AppState, alloc: Allocator, out: []u8) !usize {
+    const sel = selectionRange(state.*) orelse return 0;
+    const n = copySelection(state.*, out);
+    if (n == 0) return 0;
+
+    const cursor_before = state.cursor_i;
+    const anchor_before = state.selection_anchor;
+    deleteSelection(state);
+    try recordEdit(state, alloc, sel.lo, out[0..n], "", cursor_before, anchor_before);
+    state.dirty = true;
+    return n;
 }
 
 fn condenseGapBuf(buf: []u8, state: AppState) []u8 {
@@ -1016,7 +1542,7 @@ fn testLine(start: usize, text: []const u8, h: f64) Line {
     return .{ .start = start, .text = text, .h = h };
 }
 
-test "visiblePlacements stacks lines that fit and stops before overflow" {
+test "visiblePlacements returns every line intersecting the viewport" {
     var out: [16]Placement = undefined;
     const lines = [_]Line{
         testLine(0, "a", 30),
@@ -1024,16 +1550,17 @@ test "visiblePlacements stacks lines that fit and stops before overflow" {
         testLine(2, "c", 30),
         testLine(3, "d", 30),
     };
-    // 100px viewport: 30+30+30 = 90 fits; a fourth (→120) would overflow.
+    // 100px viewport at the top: 30+30+30 = 90 fits, and the fourth line straddles the bottom
+    // edge, so it is placed too — it is partly visible and the clip trims the rest.
     const vis = visiblePlacements(&lines, 0, 100, &out);
-    try expectEqual(@as(usize, 3), vis.len);
-    try expectEqual(@as(usize, 0), vis[0].line);
+    try expectEqual(@as(usize, 4), vis.len);
     try expectEqual(@as(f64, 0), vis[0].y);
     try expectEqual(@as(f64, 30), vis[1].y);
     try expectEqual(@as(f64, 60), vis[2].y);
+    try expectEqual(@as(f64, 90), vis[3].y);
 }
 
-test "visiblePlacements starts at `top` with y measured from the content top" {
+test "visiblePlacements offsets rows by a fractional scroll" {
     var out: [16]Placement = undefined;
     const lines = [_]Line{
         testLine(0, "a", 30),
@@ -1041,65 +1568,102 @@ test "visiblePlacements starts at `top` with y measured from the content top" {
         testLine(2, "c", 30),
         testLine(3, "d", 30),
     };
-    const vis = visiblePlacements(&lines, 2, 100, &out);
+    // Scrolled 45px: the first row is half gone, so the top visible row is line 1 sitting at
+    // y = -15. A negative y is the point of scrolling by pixels rather than by whole lines.
+    const vis = visiblePlacements(&lines, 45, 100, &out);
+    try expectEqual(@as(usize, 1), vis[0].line);
+    try expectEqual(@as(f64, -15), vis[0].y);
+    try expectEqual(@as(usize, 2), vis[1].line);
+    try expectEqual(@as(f64, 15), vis[1].y);
+}
+
+test "visiblePlacements drops rows entirely above or below the viewport" {
+    var out: [16]Placement = undefined;
+    const lines = [_]Line{
+        testLine(0, "a", 30),
+        testLine(1, "b", 30),
+        testLine(2, "c", 30),
+        testLine(3, "d", 30),
+        testLine(4, "e", 30),
+    };
+    // Scrolled exactly past the first two rows, 50px viewport ⇒ rows 2 and 3 only.
+    const vis = visiblePlacements(&lines, 60, 50, &out);
     try expectEqual(@as(usize, 2), vis.len);
     try expectEqual(@as(usize, 2), vis[0].line);
-    try expectEqual(@as(f64, 0), vis[0].y); // first visible line sits at the content top
+    try expectEqual(@as(f64, 0), vis[0].y);
     try expectEqual(@as(usize, 3), vis[1].line);
-    try expectEqual(@as(f64, 30), vis[1].y);
 }
 
-test "visiblePlacements: a tall line leaves room for fewer lines" {
-    var out: [16]Placement = undefined;
+test "clampScroll keeps the view inside the document" {
+    const lines = [_]Line{ testLine(0, "a", 30), testLine(1, "b", 30), testLine(2, "c", 30) };
+    try expectEqual(@as(f64, 0), clampScroll(-40, &lines, 50)); // can't scroll above the start
+    try expectEqual(@as(f64, 40), clampScroll(999, &lines, 50)); // 90 tall - 50 viewport
+    try expectEqual(@as(f64, 20), clampScroll(20, &lines, 50)); // untouched in range
+    // A document shorter than the viewport has nowhere to scroll to.
+    try expectEqual(@as(f64, 0), clampScroll(30, &lines, 500));
+}
+
+test "scrollToCursor reveals a caret below the viewport, moving as little as possible" {
     const lines = [_]Line{
-        testLine(0, "big", 60), // e.g. an H1
-        testLine(1, "a", 30),
-        testLine(2, "b", 30),
+        testLine(0, "a", 30), testLine(1, "b", 30), testLine(2, "c", 30),
+        testLine(3, "d", 30), testLine(4, "e", 30),
     };
-    // 100px viewport: 60+30 = 90 fits; +30 → 120 overflows.
-    const vis = visiblePlacements(&lines, 0, 100, &out);
-    try expectEqual(@as(usize, 2), vis.len);
-    try expectEqual(@as(f64, 0), vis[0].y);
-    try expectEqual(@as(f64, 60), vis[1].y);
+    // Caret on line 4 spans 120..150; a 100px viewport at 0 must scroll to 50 to show it.
+    try expectEqual(@as(f64, 50), scrollToCursor(&lines, 0, 4, 100));
 }
 
-test "visiblePlacements always shows the top line even if it overflows" {
-    var out: [16]Placement = undefined;
+test "scrollToCursor reveals a caret above the viewport" {
     const lines = [_]Line{
-        testLine(0, "huge", 150), // taller than the whole viewport
-        testLine(1, "a", 30),
+        testLine(0, "a", 30), testLine(1, "b", 30), testLine(2, "c", 30),
+        testLine(3, "d", 30), testLine(4, "e", 30),
     };
-    const vis = visiblePlacements(&lines, 0, 100, &out);
-    try expectEqual(@as(usize, 1), vis.len);
-    try expectEqual(@as(usize, 0), vis[0].line);
-    try expectEqual(@as(f64, 0), vis[0].y);
+    // Scrolled to 90 (showing from line 3); caret on line 1 sits at 30 ⇒ scroll up to 30.
+    try expectEqual(@as(f64, 30), scrollToCursor(&lines, 90, 1, 100));
 }
 
-test "visiblePlacements fills the viewport to its bottom edge" {
-    var out: [16]Placement = undefined;
+test "scrollToCursor leaves the view alone when the caret is already visible" {
     const lines = [_]Line{
-        testLine(0, "a", 50),
-        testLine(1, "b", 50), // 50+50 == 100, exactly fills the viewport
-        testLine(2, "c", 50),
+        testLine(0, "a", 30), testLine(1, "b", 30), testLine(2, "c", 30),
+        testLine(3, "d", 30), testLine(4, "e", 30),
     };
-    // Regression for the clipping bug: a line reaching exactly the bottom edge is still shown.
-    const vis = visiblePlacements(&lines, 0, 100, &out);
-    try expectEqual(@as(usize, 2), vis.len);
-    try expectEqual(@as(f64, 50), vis[1].y);
+    // Showing 30..130; line 2 spans 60..90, comfortably inside.
+    try expectEqual(@as(f64, 30), scrollToCursor(&lines, 30, 2, 100));
 }
 
-test "scrollToCursor and visiblePlacements agree on what fits" {
-    // The invariant the clipping bug broke: scrolling and the render clip must share one
-    // definition of "fits," so a line scrollToCursor reveals is actually placed for drawing.
+test "scrollToCursor pins a caret line taller than the viewport to its top" {
+    // The line satisfies both "below the viewport" and "above the viewport" at once. Showing
+    // its top is the useful answer — scrolling to its bottom would hide where the text starts.
+    const lines = [_]Line{ testLine(0, "a", 30), testLine(1, "huge", 300), testLine(2, "c", 30) };
+    try expectEqual(@as(f64, 30), scrollToCursor(&lines, 0, 1, 100));
+}
+
+test "scrollToCursor accounts for variable line heights" {
+    var lines = unitLines(5);
+    for (&lines) |*line| line.h = 2;
+    lines[3].h = 4;
+    // Line 3 spans 6..10; a 6px viewport must scroll to 4 to bring its bottom into view.
+    try expectEqual(@as(f64, 4), scrollToCursor(&lines, 0, 3, 6));
+}
+
+test "a scrolled-to caret is actually placed for drawing" {
+    // The invariant that matters: whatever scrollToCursor decides, visiblePlacements must
+    // agree the caret's line is on screen. Otherwise the caret can be scrolled "into view"
+    // and still not drawn.
     const lines = [_]Line{
         testLine(0, "a", 30), testLine(1, "b", 30), testLine(2, "c", 30),
         testLine(3, "d", 30), testLine(4, "e", 30),
     };
     const viewport_h: f64 = 100;
-    const top = scrollToCursor(&lines, 0, 4, viewport_h); // cursor below the viewport
-    var out: [16]Placement = undefined;
-    const vis = visiblePlacements(&lines, top, viewport_h, &out);
-    try expectEqual(@as(usize, 4), vis[vis.len - 1].line); // cursor line is within the placed window
+    for (0..lines.len) |cursor_line| {
+        const scroll = scrollToCursor(&lines, 0, cursor_line, viewport_h);
+        var out: [16]Placement = undefined;
+        const vis = visiblePlacements(&lines, scroll, viewport_h, &out);
+        var found = false;
+        for (vis) |p| {
+            if (p.line == cursor_line) found = true;
+        }
+        try expect(found);
+    }
 }
 
 test "cursorLine resolves a soft-wrap boundary to the later line" {
@@ -1521,46 +2085,449 @@ test "splitLines empty row has no fragments" {
     try expectEqual(0, lines[1].frag_end - lines[1].frag_start); // empty row draws nothing
 }
 
-/// `n` unit-height lines, for exercising scrollToCursor's line-count logic
-/// independent of measured heights.
+/// `n` unit-height lines, for exercising scroll logic independent of measured heights.
 fn unitLines(comptime n: usize) [n]Line {
     var lines: [n]Line = undefined;
     for (&lines, 0..) |*line, i| line.* = .{ .start = i, .text = "", .h = 1, .w = 0 };
     return lines;
 }
 
-test "scrollToCursor scrolls down to reveal a cursor below the viewport" {
-    // 3px-tall viewport at the top (offset 0) with unit-height lines; cursor on
-    // line 5 is off the bottom. Top shifts so line 5 is last visible: 5 - 3 + 1 = 3.
-    var lines = unitLines(6);
-    try expectEqual(3, scrollToCursor(&lines, 0, 5, 3));
+test "copySelection reads a range that straddles the gap" {
+    var buf: [64]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
+    try feed(&state, .{ .text = "abcdef" });
+
+    // Put the cursor in the middle so the gap splits the document: "abc" | gap | "def".
+    try feed(&state, .{ .lefts = 3 });
+    try expectEqual(3, state.cursor_i);
+
+    // Select "bcde" — two characters either side of the gap, so this is the case a naive
+    // single-slice read would get wrong.
+    state.selection_anchor = 1;
+    moveCursorTo(&state, 5);
+
+    var out: [16]u8 = undefined;
+    try expectEqual(4, selectionLen(state));
+    const n = copySelection(state, &out);
+    try expectEqualStrings("bcde", out[0..n]);
 }
 
-test "scrollToCursor scrolls up to reveal a cursor above the viewport" {
-    // Scrolled to line 4 (showing 4..6); cursor on line 1 is above ⇒ top = 1.
-    var lines = unitLines(6);
-    try expectEqual(1, scrollToCursor(&lines, 4, 1, 3));
+test "copySelection handles selections wholly on either side of the gap" {
+    var buf: [64]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
+    try feed(&state, .{ .text = "abcdef" });
+    try feed(&state, .{ .lefts = 3 }); // cursor at 3
+
+    var out: [16]u8 = undefined;
+
+    { // entirely before the gap
+        state.selection_anchor = 0;
+        moveCursorTo(&state, 2);
+        const n = copySelection(state, &out);
+        try expectEqualStrings("ab", out[0..n]);
+    }
+    { // entirely after it
+        moveCursorTo(&state, 3);
+        state.selection_anchor = 4;
+        moveCursorTo(&state, 6);
+        const n = copySelection(state, &out);
+        try expectEqualStrings("ef", out[0..n]);
+    }
 }
 
-test "scrollToCursor leaves the offset alone when the cursor is already visible" {
-    // Showing lines 2..4; cursor on line 3 is within ⇒ unchanged.
-    var lines = unitLines(6);
-    try expectEqual(2, scrollToCursor(&lines, 2, 3, 3));
+test "no selection copies nothing" {
+    var buf: [64]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
+    try feed(&state, .{ .text = "abc" });
+
+    var out: [16]u8 = undefined;
+    try expectEqual(0, selectionLen(state));
+    try expectEqual(0, copySelection(state, &out));
+
+    // An anchor sitting exactly on the cursor is an empty selection, not a selection of one.
+    state.selection_anchor = state.cursor_i;
+    try expectEqual(0, selectionLen(state));
+    try expectEqual(0, copySelection(state, &out));
 }
 
-test "scrollToCursor accounts for variable line heights when scrolling down" {
-    // Lines are 2px tall except a 4px line 3. A 6px viewport at offset 0 shows
-    // lines 0..2 (2+2+2=6); cursor on line 3 pushes the top down. From line 3
-    // (4px) only line 2 (2px) also fits within 6px ⇒ top = 2.
-    var lines = unitLines(5);
-    for (&lines) |*line| line.h = 2;
-    lines[3].h = 4;
-    try expectEqual(2, scrollToCursor(&lines, 0, 3, 6));
+test "copySelection refuses a buffer that is too small rather than truncating" {
+    var buf: [64]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
+    try feed(&state, .{ .text = "abcdef" });
+    state.selection_anchor = 0; // whole document selected, cursor already at the end
+
+    var small: [3]u8 = undefined;
+    try expectEqual(6, selectionLen(state));
+    try expectEqual(0, copySelection(state, &small));
+}
+
+test "selectAll spans the document and leaves the cursor at the end" {
+    var buf: [64]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
+    try feed(&state, .{ .text = "ab\ncd" });
+    try feed(&state, .{ .lefts = 3 }); // cursor into the middle first
+
+    selectAll(&state);
+    try expectEqual(@as(?usize, 0), state.selection_anchor);
+    try expectEqual(5, state.cursor_i);
+
+    var out: [16]u8 = undefined;
+    const n = copySelection(state, &out);
+    try expectEqualStrings("ab\ncd", out[0..n]);
+}
+
+test "selectAll on an empty document selects nothing" {
+    var buf: [16]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
+    selectAll(&state);
+    try expectEqual(@as(?usize, null), state.selection_anchor);
+}
+
+test "cut removes exactly what it copied" {
+    var buf: [64]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
+    try feed(&state, .{ .text = "abcdef" });
+    try feed(&state, .{ .lefts = 3 });
+
+    state.selection_anchor = 1;
+    moveCursorTo(&state, 5); // "bcde", straddling the gap
+
+    var out: [16]u8 = undefined;
+    const n = copySelection(state, &out);
+    try expectEqualStrings("bcde", out[0..n]);
+
+    deleteSelection(&state);
+    try expectTextContentsEquals("af", state);
+    try expectEqual(@as(?usize, null), state.selection_anchor);
+    try expectEqual(1, state.cursor_i); // caret left where the selection started
+}
+
+test "paste-sized input replaces a selection" {
+    // Heap-allocated: this insert outgrows the buffer, and the grow path frees the old one.
+    var state = AppState.init(try testing_allocator.alloc(u8, 16));
+    defer deinitHistory(&state, testing_allocator);
+    defer testing_allocator.free(state.gap_buf);
+    try feed(&state, .{ .text = "abcdef" });
+    try feed(&state, .{ .lefts = 4 }); // cursor at 2
+    try feed(&state, .{ .rights = 2, .modifiers = mod_shift }); // select "cd"
+
+    // Longer than the remaining buffer, so this also covers the grow path on paste.
+    try feed(&state, .{ .text = "XXXXXXXXXXXXXXXX" });
+    try expectTextContentsEquals("abXXXXXXXXXXXXXXXXef", state);
+    try expectEqual(@as(?usize, null), state.selection_anchor);
+}
+
+test "undo reverses a typed run as one unit" {
+    var buf: [64]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
+
+    // Each feed is a separate frame, as if five keystrokes arrived one per frame.
+    for ("hello") |c| try feed(&state, .{ .text = &[_]u8{c} });
+    try expectTextContentsEquals("hello", state);
+    try expectEqual(1, state.history.undo_stack.items.len); // coalesced into one entry
+
+    try expect(try undo(&state, testing_allocator));
+    try expectTextContentsEquals("", state);
+    try expect(!try undo(&state, testing_allocator)); // nothing left
+}
+
+test "a caret move splits a typing run into separate undo steps" {
+    var buf: [64]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
+
+    try feed(&state, .{ .text = "abc" });
+    try feed(&state, .{ .lefts = 3 }); // caret elsewhere — the run ends here
+    try feed(&state, .{ .text = "X" });
+    try expectTextContentsEquals("Xabc", state);
+
+    try expect(try undo(&state, testing_allocator));
+    try expectTextContentsEquals("abc", state); // only the X went
+    try expect(try undo(&state, testing_allocator));
+    try expectTextContentsEquals("", state);
+}
+
+test "a newline ends a typing run" {
+    var buf: [64]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
+
+    try feed(&state, .{ .text = "ab" });
+    try feed(&state, .{ .text = "\n" });
+    try feed(&state, .{ .text = "cd" });
+    try expectTextContentsEquals("ab\ncd", state);
+
+    // Undoing a paragraph a line at a time beats losing all of it at once.
+    try expect(try undo(&state, testing_allocator));
+    try expectTextContentsEquals("ab\n", state);
+}
+
+test "undo restores text deleted by backspace" {
+    var buf: [64]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
+
+    try feed(&state, .{ .text = "abcdef" });
+    try feed(&state, .{ .backspaces = 1 });
+    try feed(&state, .{ .backspaces = 1 });
+    try expectTextContentsEquals("abcd", state);
+
+    try expect(try undo(&state, testing_allocator));
+    try expectTextContentsEquals("abcde", state);
+    try expect(try undo(&state, testing_allocator));
+    try expectTextContentsEquals("abcdef", state);
+}
+
+test "undo of a selection replacement restores both the text and the selection" {
+    var buf: [64]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
+
+    try feed(&state, .{ .text = "abcdef" });
+    try feed(&state, .{ .lefts = 4 }); // caret at 2
+    try feed(&state, .{ .rights = 2, .modifiers = mod_shift }); // select "cd"
+    try feed(&state, .{ .text = "Z" });
+    try expectTextContentsEquals("abZef", state);
+
+    try expect(try undo(&state, testing_allocator));
+    try expectTextContentsEquals("abcdef", state);
+    // The selection comes back too, so a mistaken overtype leaves you where you were.
+    try expectEqual(@as(?usize, 2), state.selection_anchor);
+    try expectEqual(4, state.cursor_i);
+}
+
+test "cut is undoable" {
+    var buf: [64]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
+
+    try feed(&state, .{ .text = "abcdef" });
+    try feed(&state, .{ .lefts = 3 }); // caret at 3, so the gap splits the document
+    state.selection_anchor = 1;
+    moveCursorTo(&state, 5); // "bcde", straddling the gap
+
+    var out: [16]u8 = undefined;
+    const n = try cutSelection(&state, testing_allocator, &out);
+    try expectEqualStrings("bcde", out[0..n]);
+    try expectTextContentsEquals("af", state);
+
+    try expect(try undo(&state, testing_allocator));
+    try expectTextContentsEquals("abcdef", state);
+}
+
+test "redo replays an undone edit, and a new edit discards the redo stack" {
+    var buf: [64]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
+
+    try feed(&state, .{ .text = "abc" });
+    try expect(try undo(&state, testing_allocator));
+    try expectTextContentsEquals("", state);
+
+    try expect(try redo(&state, testing_allocator));
+    try expectTextContentsEquals("abc", state);
+
+    try expect(try undo(&state, testing_allocator));
+    try feed(&state, .{ .text = "xyz" }); // diverges from the redone future
+    try expectEqual(0, state.history.redo_stack.items.len);
+    try expect(!try redo(&state, testing_allocator));
+}
+
+test "undo and redo survive a round trip through the middle of the document" {
+    var buf: [64]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
+
+    try feed(&state, .{ .text = "hello world" });
+    try feed(&state, .{ .lefts = 6 }); // caret at 5, gap mid-document
+    try feed(&state, .{ .text = "!!" });
+    try expectTextContentsEquals("hello!! world", state);
+
+    try expect(try undo(&state, testing_allocator));
+    try expectTextContentsEquals("hello world", state);
+    try expectEqual(5, state.cursor_i); // back where the typing started
+
+    try expect(try redo(&state, testing_allocator));
+    try expectTextContentsEquals("hello!! world", state);
+}
+
+test "the undo stack is bounded" {
+    var state = AppState.init(try testing_allocator.alloc(u8, 8));
+    defer deinitHistory(&state, testing_allocator);
+    defer testing_allocator.free(state.gap_buf);
+
+    // Each pair is a separate entry: the caret move between them breaks coalescing.
+    for (0..MAX_UNDO_DEPTH + 20) |_| {
+        try feed(&state, .{ .text = "x" });
+        try feed(&state, .{ .lefts = 1 });
+    }
+    try expectEqual(MAX_UNDO_DEPTH, state.history.undo_stack.items.len);
+}
+
+test "typing edits the query and reports that it changed" {
+    var buf: [16]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
+
+    try expect(editQuery(&state, .{ .text = "abc" }));
+    try expectEqualStrings("abc", state.query());
+    try expectEqual(@as(usize, 3), state.query_cursor);
+
+    // Moving the caret is not a content change: it must not trigger another search.
+    try expect(!editQuery(&state, .{ .lefts = 1 }));
+    try expectEqual(@as(usize, 2), state.query_cursor);
+
+    // Insertion happens at the caret, not the end.
+    try expect(editQuery(&state, .{ .text = "X" }));
+    try expectEqualStrings("abXc", state.query());
+
+    try expect(editQuery(&state, .{ .backspaces = 1 }));
+    try expectEqualStrings("abc", state.query());
+}
+
+test "query() aliases the live buffer, not a copy of it" {
+    // Regression: `query` used to take `self` by value. `query_buf` is an array, so the copy
+    // brought the characters with it and the returned slice pointed into that copy — dead as
+    // soon as the call returned. It read as the field clearing itself a frame after typing.
+    var buf: [16]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
+
+    _ = editQuery(&state, .{ .text = "abc" });
+    const q = state.query();
+    try expect(@intFromPtr(q.ptr) == @intFromPtr(&state.query_buf));
+
+    // And it tracks later edits, rather than being a snapshot.
+    _ = editQuery(&state, .{ .text = "d" });
+    try expectEqualStrings("abcd", state.query());
+}
+
+test "the query field rejects newlines and control bytes" {
+    var buf: [16]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
+
+    // Enter means "accept" and is handled by the caller; it must never land in the text.
+    try expect(!editQuery(&state, .{ .text = "\n" }));
+    try expect(!editQuery(&state, .{ .text = "\x1b" }));
+    try expectEqual(@as(usize, 0), state.query_len);
+
+    _ = editQuery(&state, .{ .text = "a\nb" });
+    try expectEqualStrings("ab", state.query());
+}
+
+test "the query stops accepting text at the buffer's end rather than overflowing" {
+    var buf: [16]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
+
+    var long: [QUERY_MAX + 50]u8 = undefined;
+    @memset(&long, 'z');
+    _ = editQuery(&state, .{ .text = &long });
+    try expectEqual(QUERY_MAX, state.query_len);
+    try expectEqual(QUERY_MAX, state.query_cursor);
+}
+
+test "backspace at the start of the query does nothing" {
+    var buf: [16]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
+
+    _ = editQuery(&state, .{ .text = "ab" });
+    _ = editQuery(&state, .{ .lefts = 5 }); // clamps to 0
+    try expectEqual(@as(usize, 0), state.query_cursor);
+    try expect(!editQuery(&state, .{ .backspaces = 1 }));
+    try expectEqualStrings("ab", state.query());
+}
+
+test "the query field and the row area divide the panel between them" {
+    const layout = layoutUi(.{ .w = 1000, .h = 800 }, true, 20);
+    const p = layout.panel.?;
+    const q = layout.query.?;
+    const rows = layout.rows.?;
+
+    // The field sits inside the panel, and the rows start below it — they must not overlap, or
+    // the top row would be drawn under the search box.
+    try expect(q.y >= p.y);
+    try expect(rows.y >= q.y + q.h);
+    try expect(rows.y + rows.h <= p.y + p.h);
+}
+
+test "the chrome claims clicks that land on it" {
+    const size = geom.Size{ .w = 1000, .h = 800 };
+    const layout = layoutUi(size, false, 20);
+    const idle = ui.State{};
+
+    // A press on the buttons is the UI's, not the editor's — otherwise clicking "new note"
+    // would also drop the caret into whatever text sits behind the button.
+    try expect(uiCapturesMouse(layout, .{ .x = layout.new_note.x + 5, .y = layout.new_note.y + 5 }, idle));
+    try expect(uiCapturesMouse(layout, .{ .x = layout.toggle_list.x + 5, .y = layout.toggle_list.y + 5 }, idle));
+    // Anywhere else belongs to the editor.
+    try expect(!uiCapturesMouse(layout, .{ .x = 200, .y = 200 }, idle));
+}
+
+test "an open list claims the whole panel, a closed one claims none of it" {
+    const size = geom.Size{ .w = 1000, .h = 800 };
+    const idle = ui.State{};
+
+    const closed = layoutUi(size, false, 20);
+    try expect(closed.panel == null);
+    try expect(!uiCapturesMouse(closed, .{ .x = 900, .y = 300 }, idle));
+
+    const open = layoutUi(size, true, 20);
+    const p = open.panel.?;
+    try expect(uiCapturesMouse(open, .{ .x = p.x + 5, .y = 300 }, idle));
+    // The panel is anchored to the right edge and runs the full height.
+    try expectEqual(size.w, p.x + p.w);
+    try expectEqual(size.h, p.h);
+    // ...and leaves the editor reachable to its left.
+    try expect(!uiCapturesMouse(open, .{ .x = p.x - 5, .y = 300 }, idle));
+}
+
+test "a widget being dragged keeps the pointer wherever it wanders" {
+    const layout = layoutUi(.{ .w = 1000, .h = 800 }, false, 20);
+    // Press started on a button; the pointer has since moved over the text. The editor still
+    // must not see it, or a drag off a button would start selecting text.
+    const dragging = ui.State{ .active = 2 };
+    try expect(uiCapturesMouse(layout, .{ .x = 200, .y = 200 }, dragging));
+}
+
+test "styling follows the active theme" {
+    const saved = theme.active;
+    defer theme.active = saved;
+
+    const plain = Token{ .tType = .PLAIN, .startI = 0, .endI = 1, .contents = "x", .renderEnd = 1 };
+    const code = Token{ .tType = .CODE, .startI = 0, .endI = 3, .contents = "`x`", .renderStart = 1, .renderEnd = 2 };
+
+    theme.active = theme.dark(20);
+    try expectEqual(theme.dark(20).text, styleForToken(plain).color);
+    try expectEqual(theme.dark(20).code_bg, styleForToken(code).background.?);
+    try expectEqual(@as(f64, 20), fontForToken(plain).size);
+
+    // Swapping the theme changes what gets drawn, with no other state to invalidate.
+    theme.active = theme.light(31);
+    try expectEqual(theme.light(31).text, styleForToken(plain).color);
+    try expectEqual(@as(f64, 31), fontForToken(plain).size);
+    // Headers scale off the theme's size rather than a fixed constant.
+    const h1 = Token{ .tType = .HEADER, .startI = 0, .endI = 3, .contents = "# x", .degree = 1, .renderStart = 2, .renderEnd = 3 };
+    try expectEqual(@as(f64, 62), fontForToken(h1).size);
+
+    // Light and dark must actually differ, or none of the above proves anything.
+    try expect(theme.light(20).text.r != theme.dark(20).text.r);
 }
 
 test "handleInput hello" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
 
     try feed(&state, .{ .text = "h" });
     try feed(&state, .{ .text = "e" });
@@ -1574,6 +2541,7 @@ test "handleInput hello" {
 test "handleInput type at end of line in middle of document" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
 
     try feed(&state, .{ .text = "abc\ndef\nghi" });
     try expectTextContentsEquals("abc\ndef\nghi", state);
@@ -1585,6 +2553,7 @@ test "handleInput type at end of line in middle of document" {
 test "handleInput backspace deletes the char before the cursor" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
 
     try feed(&state, .{ .text = "h" });
     try feed(&state, .{ .text = "i" });
@@ -1596,6 +2565,7 @@ test "handleInput backspace deletes the char before the cursor" {
 test "handleInput backspace on empty buffer is a no-op" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
 
     try feed(&state, .{ .backspaces = 3 });
 
@@ -1606,6 +2576,7 @@ test "handleInput backspace on empty buffer is a no-op" {
 test "handleInput move cursor left and right" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
 
     try feed(&state, .{ .text = "b" });
     try feed(&state, .{ .text = "d" });
@@ -1626,12 +2597,14 @@ test "handleInput move cursor left and right" {
 test "handleInput grow buffer" {
     { // Cursor at end
         var state = AppState.init(try testing_allocator.alloc(u8, 1));
+        defer deinitHistory(&state, testing_allocator);
         try feed(&state, .{ .text = "hello" });
         try expectTextContentsEquals("hello", state);
         testing_allocator.free(state.gap_buf);
     }
     { // Cursor at beginning
         var state = AppState.init(try testing_allocator.alloc(u8, 1));
+        defer deinitHistory(&state, testing_allocator);
         try feed(&state, .{ .text = "o" });
         try feed(&state, .{ .lefts = 1 });
         try feed(&state, .{ .text = "l" });
@@ -1647,6 +2620,7 @@ test "handleInput grow buffer" {
     }
     { // Cursor in middle
         var state = AppState.init(try testing_allocator.alloc(u8, 1));
+        defer deinitHistory(&state, testing_allocator);
         try feed(&state, .{ .text = "[]" }); // Size is now 4
         try feed(&state, .{ .lefts = 1 });
         try feed(&state, .{ .text = "123" }); // Size is now 8
@@ -1658,6 +2632,7 @@ test "handleInput grow buffer" {
 test "handleInput up-down cursor" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
 
     try feed(&state, .{ .text = "1\n" });
     try feed(&state, .{ .downs = 1 });
@@ -1672,6 +2647,7 @@ test "handleInput up-down cursor" {
 test "handleInput up-down cursor preferred column" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
 
     try feed(&state, .{ .text = "1234\n123\n12\n1" });
     try feed(&state, .{ .ups = 100 });
@@ -1685,6 +2661,7 @@ test "handleInput up-down cursor preferred column" {
 test "handleInput up across a soft-wrapped line" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
 
     const contents = "abcdef";
     try feed(&state, .{ .text = contents }); // cursor at end (offset 6)
@@ -1716,6 +2693,7 @@ test "handleInput up across a soft-wrapped line" {
 test "selection: plain movement never creates a selection" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
     try feed(&state, .{ .text = "abc" });
 
     try feed(&state, .{ .lefts = 1 });
@@ -1726,6 +2704,7 @@ test "selection: plain movement never creates a selection" {
 test "selection: shift+right starts and extends a selection" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
     try feed(&state, .{ .text = "abc" });
     try feed(&state, .{ .lefts = 3 }); // cursor at 0
 
@@ -1741,6 +2720,7 @@ test "selection: shift+right starts and extends a selection" {
 test "selection: shift+left extends leftward (anchor right of cursor)" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
     try feed(&state, .{ .text = "abc" }); // cursor at 3
 
     try feed(&state, .{ .lefts = 2, .modifiers = mod_shift });
@@ -1751,6 +2731,7 @@ test "selection: shift+left extends leftward (anchor right of cursor)" {
 test "selection: a plain right collapses to the right edge" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
     try feed(&state, .{ .text = "abc" });
     try feed(&state, .{ .lefts = 3 }); // cursor 0
     try feed(&state, .{ .rights = 2, .modifiers = mod_shift }); // range [0,2]
@@ -1763,6 +2744,7 @@ test "selection: a plain right collapses to the right edge" {
 test "selection: a plain left collapses to the left edge" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
     try feed(&state, .{ .text = "abc" }); // cursor 3
     try feed(&state, .{ .lefts = 2, .modifiers = mod_shift }); // range [1,3], cursor 1
 
@@ -1774,6 +2756,7 @@ test "selection: a plain left collapses to the left edge" {
 test "selection: typing replaces the selected range" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
     try feed(&state, .{ .text = "abc" });
     try feed(&state, .{ .lefts = 3 }); // cursor 0
     try feed(&state, .{ .rights = 2, .modifiers = mod_shift }); // select "ab"
@@ -1787,6 +2770,7 @@ test "selection: typing replaces the selected range" {
 test "selection: backspace deletes the selected range" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
     try feed(&state, .{ .text = "abc" });
     try feed(&state, .{ .lefts = 3 }); // cursor 0
     try feed(&state, .{ .rights = 2, .modifiers = mod_shift }); // select "ab"
@@ -1800,6 +2784,7 @@ test "selection: backspace deletes the selected range" {
 test "selection: backspace deletes a leftward selection too" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
     try feed(&state, .{ .text = "abc" }); // cursor 3
     try feed(&state, .{ .lefts = 2, .modifiers = mod_shift }); // select "bc": anchor 3, cursor 1
 
@@ -1812,6 +2797,7 @@ test "selection: backspace deletes a leftward selection too" {
 test "selection: shift+down extends across lines" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
     try feed(&state, .{ .text = "ab\ncd" }); // cursor at end (5)
     try feed(&state, .{ .lefts = 5 }); // cursor 0
 
@@ -1823,6 +2809,7 @@ test "selection: shift+down extends across lines" {
 test "selection: plain up/down resets the anchor" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
     try feed(&state, .{ .text = "ab\ncd" });
     try feed(&state, .{ .lefts = 5 }); // cursor 0
 
@@ -1842,6 +2829,7 @@ test "selection: plain up/down resets the anchor" {
 test "selection: backspace on a leftward selection keeps trailing text" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
     try feed(&state, .{ .text = "abcde" });
     try feed(&state, .{ .lefts = 2 }); // cursor at 3, trailing "de" after it
 
@@ -1859,6 +2847,7 @@ test "selection: backspace on a leftward selection keeps trailing text" {
 test "selection: typing over a leftward selection keeps trailing text" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
     try feed(&state, .{ .text = "abcde" });
     try feed(&state, .{ .lefts = 2 }); // cursor at 3, trailing "de" after it
 
@@ -1874,6 +2863,7 @@ test "selection: typing over a leftward selection keeps trailing text" {
 test "selection: shift+up selection then backspace keeps trailing text" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
     try feed(&state, .{ .text = "ab\ncd\nef" }); // cursor at end (8)
     try feed(&state, .{ .ups = 1 }); // cursor on the "cd" line (offset 5)
 
@@ -1887,6 +2877,7 @@ test "selection: shift+up selection then backspace keeps trailing text" {
 test "handleInput ignores non-alphanumeric input we don't define" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
 
     // Keys we don't explicitly handle (escape, forward-delete, NUL, bell) arrive
     // through `in.text` as control characters and must not be inserted into the
@@ -1927,6 +2918,7 @@ const Y0 = MARGIN_PX; // y of the first visible line (line_h == 1 under testMeas
 test "mouse: drag selects a range" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
     try feed(&state, .{ .text = "abcde" });
 
     try feed(&state, .{ .mouse = .{ .x = X0 + 1, .y = Y0 }, .mouse_down = true }); // press at offset 1
@@ -1945,6 +2937,7 @@ test "mouse: drag selects a range" {
 test "mouse: a click places the caret and clears the selection" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
     try feed(&state, .{ .text = "abcde" });
     try feed(&state, .{ .lefts = 2, .modifiers = mod_shift }); // keyboard-select [3,5]
 
@@ -1958,6 +2951,7 @@ test "mouse: a click places the caret and clears the selection" {
 test "mouse: a click lands on the correct line in a multi-line document" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
     try feed(&state, .{ .text = "ab\ncd" }); // lines: {0,"ab"}, {3,"cd"}
 
     // Click column 1 of the second visual line → offset 4 (between 'c' and 'd').
@@ -1971,6 +2965,7 @@ test "mouse: a click lands on the correct line in a multi-line document" {
 test "mouse: a fresh click discards a prior mouse selection" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
     try feed(&state, .{ .text = "abcde" });
 
     // Drag-select [1,4].
@@ -1989,6 +2984,7 @@ test "mouse: a fresh click discards a prior mouse selection" {
 test "mouse: caret tracks the pointer while held, anchor stays put" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
     try feed(&state, .{ .text = "abcde" });
 
     try feed(&state, .{ .mouse = .{ .x = X0 + 1, .y = Y0 }, .mouse_down = true }); // press at offset 1
@@ -2012,6 +3008,7 @@ test "mouse: caret tracks the pointer while held, anchor stays put" {
 test "mouse: clicks outside the text clamp to the nearest row and column" {
     var buf: [20]u8 = undefined;
     var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
     try feed(&state, .{ .text = "ab\ncd" }); // lines: {0,"ab"}, {3,"cd"}
 
     const Click = struct { x: f64, y: f64, want: usize };

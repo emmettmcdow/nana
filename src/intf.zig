@@ -3,10 +3,10 @@ comptime {
     _ = @import("render/intf.zig");
 }
 
-var rt: nana.Runtime = undefined;
-var init: bool = false;
-var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-var mutex = std.Thread.Mutex{};
+// The runtime itself lives in runtime.zig so the editor (session.zig) can reach it without
+// importing this module and forming a cycle. These aliases keep the call sites below unchanged.
+const gpa = &runtime.gpa;
+const mutex = &runtime.mutex;
 
 const CError = enum(c_int) {
     Success = 0,
@@ -23,28 +23,21 @@ export fn nana_init(basedir: [*:0]const u8) c_int {
     defer mutex.unlock();
     const basedir_slice = std.mem.sliceTo(basedir, 0);
     std.log.info("nana_init {s}", .{basedir_slice});
-    if (init) {
+    if (runtime.isOpen()) {
         return @intFromEnum(CError.DoubleInit);
     }
 
     var buf: [PATH_MAX]u8 = undefined;
-    const encoded_basedir = if (std.mem.eql(u8, basedir_slice, "./")) val: {
-        break :val std.process.getCwd(&buf) catch return @intFromEnum(CError.FileNotFound);
-    } else val: {
-        break :val std.Uri.percentDecodeBackwards(&buf, basedir_slice);
-    };
-
-    const d = std.fs.openDirAbsolute(encoded_basedir, .{ .iterate = true }) catch |err| {
-        std.log.err("Failed to access working directory '{s}': {}\n", .{ encoded_basedir, err });
+    const d = runtime.openDir(&buf, basedir_slice) catch |err| {
+        std.log.err("Failed to access working directory '{s}': {}\n", .{ basedir_slice, err });
         return @intFromEnum(CError.GenericFail);
     };
 
-    rt = nana.Runtime.init(gpa.allocator(), .{ .basedir = d }) catch |err| {
+    runtime.open(d) catch |err| {
         std.log.err("Failed to initialize nana: {}\n", .{err});
         return @intFromEnum(CError.GenericFail);
     };
 
-    init = true;
     return @intFromEnum(CError.Success);
 }
 
@@ -52,11 +45,11 @@ export fn nana_deinit() CError {
     mutex.lock();
     defer mutex.unlock();
     std.log.info("nana_deinit", .{});
-    if (!init) {
+    if (!runtime.isOpen()) {
         return CError.NotInit;
     }
-    rt.deinit();
-    init = false;
+    session.close();
+    runtime.close();
     return CError.Success;
 }
 
@@ -66,11 +59,11 @@ export fn nana_create(outbuf: [*]u8, outbuf_len: c_uint) c_int {
     mutex.lock();
     defer mutex.unlock();
     std.log.info("nana_create", .{});
-    if (!init) {
+    if (!runtime.isOpen()) {
         return @intFromEnum(CError.NotInit);
     }
 
-    const path = rt.create(outbuf[0..outbuf_len]) catch |err| {
+    const path = runtime.get().?.create(outbuf[0..outbuf_len]) catch |err| {
         std.log.err("Failed to create note: {}\n", .{err});
         return @intFromEnum(CError.GenericFail);
     };
@@ -88,13 +81,13 @@ export fn nana_import(path: [*:0]const u8, destPathBuf: [*]u8, destPathBufLen: c
     const path_slice = std.mem.sliceTo(path, 0);
     std.log.info("nana_import {s}", .{path_slice});
 
-    if (!init) {
+    if (!runtime.isOpen()) {
         return @intFromEnum(CError.NotInit);
     }
 
     const destBuf: []u8 = destPathBuf[0..destPathBufLen];
 
-    const maybePath = rt.import(path_slice, destBuf) catch |err| {
+    const maybePath = runtime.get().?.import(path_slice, destBuf) catch |err| {
         std.log.err("Failed to import note: {}\n", .{err});
         switch (err) {
             nana.Error.NotNote => return @intFromEnum(CError.InvalidFiletype),
@@ -118,7 +111,7 @@ export fn nana_create_time(path: [*:0]const u8) c_long {
     const path_slice = std.mem.sliceTo(path, 0);
     std.log.info("nana_create_time {s}", .{path_slice});
 
-    const note = rt.get(path_slice) catch |err| {
+    const note = runtime.get().?.get(path_slice) catch |err| {
         std.log.err("Failed to get note '{s}': {}\n", .{ path_slice, err });
         return @intFromEnum(CError.GenericFail);
     };
@@ -134,7 +127,7 @@ export fn nana_mod_time(path: [*:0]const u8) c_long {
     const path_slice = std.mem.sliceTo(path, 0);
     std.log.info("nana_mod_time {s}", .{path_slice});
 
-    const note = rt.get(path_slice) catch |err| {
+    const note = runtime.get().?.get(path_slice) catch |err| {
         std.log.err("Failed to get note '{s}': {}\n", .{ path_slice, err });
         return @intFromEnum(CError.GenericFail);
     };
@@ -157,7 +150,7 @@ export fn nana_search(query: [*:0]const u8, outbuf: [*c]CSearchResult, sz: c_uin
         return @intFromEnum(CError.GenericFail);
     };
 
-    const written = rt.search(convQuery, tmp_buf[0..sz]) catch |err| {
+    const written = runtime.get().?.search(convQuery, tmp_buf[0..sz]) catch |err| {
         std.log.err("Failed to search with query '{s}': {}\n", .{ convQuery, err });
         return @intFromEnum(CError.GenericFail);
     };
@@ -190,7 +183,7 @@ export fn nana_search_detail(
     var detail = SearchDetail{
         .content = content_slice,
     };
-    rt.searchDetail(
+    runtime.get().?.searchDetail(
         .{ .path = zigPath, .start_i = start_i, .end_i = end_i },
         zigQuery,
         &detail,
@@ -222,11 +215,11 @@ export fn nana_index(outbuf: [*]u8, sz: c_uint, ignore: [*:0]const u8) c_int {
     var path_buf: [256][]const u8 = undefined;
     const ignore_param: ?[]const u8 = if (ignore_slice.len == 0) null else ignore_slice;
 
-    const count = rt.index(&path_buf, ignore_param) catch |err| {
+    const count = runtime.get().?.index(&path_buf, ignore_param) catch |err| {
         std.log.err("Failed to index: {}\n", .{err});
         return @intFromEnum(CError.GenericFail);
     };
-    defer for (path_buf[0..count]) |p| rt.allocator.free(p);
+    defer for (path_buf[0..count]) |p| runtime.get().?.allocator.free(p);
 
     var pos: usize = 0;
     for (path_buf[0..count]) |p| {
@@ -249,7 +242,7 @@ export fn nana_write_all(path: [*:0]const u8, content: [*:0]const u8) c_int {
     const content_slice = std.mem.sliceTo(content, 0);
     std.log.info("nana_write_all {s}", .{path_slice});
 
-    rt.writeAll(path_slice, content_slice) catch |err| switch (err) {
+    runtime.get().?.writeAll(path_slice, content_slice) catch |err| switch (err) {
         error.FileNotFound, nana.Error.NotFound => {
             std.log.err("Failed to write note '{s}': {}\n", .{ path_slice, err });
             return @intFromEnum(CError.FileNotFound);
@@ -270,7 +263,7 @@ export fn nana_write_all_with_time(path: [*:0]const u8, content: [*:0]const u8) 
     const content_slice = std.mem.sliceTo(content, 0);
     std.log.info("nana_write_all_with_time {s}", .{path_slice});
 
-    rt.writeAll(path_slice, content_slice) catch |err| switch (err) {
+    runtime.get().?.writeAll(path_slice, content_slice) catch |err| switch (err) {
         error.FileNotFound, nana.Error.NotFound => {
             std.log.err("Failed to write note '{s}': {}\n", .{ path_slice, err });
             return @intFromEnum(CError.FileNotFound);
@@ -281,7 +274,7 @@ export fn nana_write_all_with_time(path: [*:0]const u8, content: [*:0]const u8) 
         },
     };
 
-    const note = rt.get(path_slice) catch |err| {
+    const note = runtime.get().?.get(path_slice) catch |err| {
         std.log.err("Failed to get note '{s}' after write: {}\n", .{ path_slice, err });
         return @intFromEnum(CError.GenericFail);
     };
@@ -295,7 +288,7 @@ export fn nana_read_all(path: [*:0]const u8, outbuf: [*]u8, sz: c_uint) c_int {
     const path_slice = std.mem.sliceTo(path, 0);
     std.log.info("nana_read_all {s}", .{path_slice});
 
-    const written = rt.readAll(path_slice, outbuf[0..sz]) catch |err| {
+    const written = runtime.get().?.readAll(path_slice, outbuf[0..sz]) catch |err| {
         std.log.err("Failed to read note '{s}': {}\n", .{ path_slice, err });
         return @intFromEnum(CError.GenericFail);
     };
@@ -309,7 +302,7 @@ export fn nana_delete(path: [*:0]const u8) c_int {
     const path_slice = std.mem.sliceTo(path, 0);
     std.log.info("nana_delete {s}", .{path_slice});
 
-    rt.delete(path_slice) catch |err| {
+    runtime.get().?.delete(path_slice) catch |err| {
         std.log.err("Failed to delete note '{s}': {}\n", .{ path_slice, err });
         return @intFromEnum(CError.GenericFail);
     };
@@ -321,7 +314,7 @@ export fn nana_parse_markdown(content: [*:0]const u8) [*:0]const u8 {
     mutex.lock();
     defer mutex.unlock();
     std.log.info("nana_parse_markdown", .{});
-    const zig_out = rt.parseMarkdown(std.mem.sliceTo(content, 0)) catch |err| switch (err) {
+    const zig_out = runtime.get().?.parseMarkdown(std.mem.sliceTo(content, 0)) catch |err| switch (err) {
         else => {
             std.log.err("Failed to parse Markdown: {}\n", .{err});
             return "\x00";
@@ -338,7 +331,7 @@ export fn nana_title(path: [*:0]const u8, outbuf: [*:0]u8) [*:0]const u8 {
     std.log.info("nana_title {s}", .{path_slice});
 
     var input_slice = std.mem.sliceTo(outbuf, 0);
-    const output = rt.title(path_slice, input_slice[0..nana.TITLE_BUF_LEN]) catch |e| {
+    const output = runtime.get().?.title(path_slice, input_slice[0..nana.TITLE_BUF_LEN]) catch |e| {
         std.log.err("Failed to get title: {}\n", .{e});
         input_slice[0] = 0;
         return input_slice;
@@ -353,11 +346,11 @@ export fn nana_doctor() c_int {
     defer mutex.unlock();
     std.log.info("nana_doctor", .{});
 
-    if (!init) {
+    if (!runtime.isOpen()) {
         return @intFromEnum(CError.NotInit);
     }
 
-    rt.doctor() catch |err| {
+    runtime.get().?.doctor() catch |err| {
         std.log.err("Failed to run doctor: {}\n", .{err});
         return @intFromEnum(CError.GenericFail);
     };
@@ -369,6 +362,8 @@ const assert = std.debug.assert;
 const PATH_MAX = std.posix.PATH_MAX;
 
 const nana = @import("root.zig");
+const runtime = @import("runtime.zig");
+const session = @import("session.zig");
 const SearchResult = nana.SearchResult;
 const SearchDetail = nana.SearchDetail;
 const CSearchDetail = nana.CSearchDetail;

@@ -79,8 +79,24 @@ pub const FlatToken = struct {
 /// inline children contributes its children (a plain paragraph of `**b**` yields just the BOLD);
 /// a leaf block (header, quote, list, block code) contributes itself. The returned slice tiles the
 /// document contiguously — the shape the flat renderers and the JSON FFI expect.
+///
+/// Offsets are **byte** offsets into `text`. That is what a renderer wants: it slices the source
+/// directly, so anything else would have to be converted back on every lookup. Consumers that
+/// address text by visual position want `parseFlatCodepoints` instead.
 pub fn parseFlat(alloc: Allocator, text: []const u8) ![]FlatToken {
+    return flattenTree(alloc, try parseMarkdown(alloc, text));
+}
+
+/// As `parseFlat`, but every offset is a count of codepoints rather than bytes. For consumers
+/// that index text by visual position and have no concept of a byte — the JSON FFI, and any
+/// frontend on the other side of it.
+pub fn parseFlatCodepoints(alloc: Allocator, text: []const u8) ![]FlatToken {
     const tree = try parseMarkdown(alloc, text);
+    try unicodePostprocess(text, tree);
+    return flattenTree(alloc, tree);
+}
+
+fn flattenTree(alloc: Allocator, tree: ?*Token) ![]FlatToken {
     var list = ArrayList(FlatToken){};
     try flattenLeaves(alloc, &list, tree);
     return list.toOwnedSlice(alloc);
@@ -148,14 +164,14 @@ pub fn parseMarkdown(alloc: Allocator, text: []const u8) !?*Token {
         }
         unreachable;
     }
-    // Offsets are collected in bytes; rewrite them (and contents-relative render offsets) as
-    // codepoint counts so callers can index the source by visual position.
-    try unicodePostprocess(text, root.next);
     return root.next;
 }
 
 /// Rewrites every token's byte offsets (`startI`/`endI`) and byte-relative render offsets
 /// (`renderStart`/`renderEnd`) as codepoint counts. Recurses through `child` and `next`.
+///
+/// Applied only by `parseFlatCodepoints`. The parser works in bytes throughout, so this is a
+/// conversion for consumers that need it rather than something the tree carries by default.
 fn unicodePostprocess(text: []const u8, list: ?*Token) !void {
     var maybe = list;
     while (maybe) |t| {
@@ -984,16 +1000,38 @@ test "unicode handling" {
 
     {
         const input = "**brave❤️**__good🐶__***🔗wax***";
-        // Offsets are codepoints (post-processed): **brave (7) + ❤️ (2: heart + variation
-        // selector) + ** (2) = 11; __good (6) + 🐶 (1) + __ (2) = 9; *** (3) + 🔗 (1) + wax*** (6) = 10.
+        // `parseMarkdown` reports bytes: **brave (7) + ❤️ (6: 3-byte heart + 3-byte variation
+        // selector) + ** (2) = 15; __good (6) + 🐶 (4) + __ (2) = 12; *** (3) + 🔗 (4) + wax*** (6) = 13.
         try expectTree(&[_]Expect{
-            .{ .tType = .PLAIN, .contents = input, .startI = 0, .endI = 30, .renderStart = 0, .renderEnd = 30, .children = &[_]Expect{
-                .{ .tType = .BOLD, .contents = "**brave❤️**", .startI = 0, .endI = 11, .renderStart = 2, .renderEnd = 9 },
-                .{ .tType = .ITALIC, .contents = "__good🐶__", .startI = 11, .endI = 20, .renderStart = 2, .renderEnd = 7 },
-                .{ .tType = .EMPHASIS, .contents = "***🔗wax***", .startI = 20, .endI = 30, .renderStart = 3, .renderEnd = 7 },
+            .{ .tType = .PLAIN, .contents = input, .startI = 0, .endI = 40, .renderStart = 0, .renderEnd = 40, .children = &[_]Expect{
+                .{ .tType = .BOLD, .contents = "**brave❤️**", .startI = 0, .endI = 15, .renderStart = 2, .renderEnd = 13 },
+                .{ .tType = .ITALIC, .contents = "__good🐶__", .startI = 15, .endI = 27, .renderStart = 2, .renderEnd = 10 },
+                .{ .tType = .EMPHASIS, .contents = "***🔗wax***", .startI = 27, .endI = 40, .renderStart = 3, .renderEnd = 10 },
             } },
         }, try parseMarkdown(alloc, input));
     }
+}
+
+test "parseFlatCodepoints reports offsets in codepoints, parseFlat in bytes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const input = "**brave❤️**__good🐶__***🔗wax***";
+
+    // Bytes: what the renderer slices the source with.
+    try expectEqualDeep(&[_]FlatToken{
+        .{ .tType = .BOLD, .contents = "**brave❤️**", .startI = 0, .endI = 15, .renderStart = 2, .renderEnd = 13 },
+        .{ .tType = .ITALIC, .contents = "__good🐶__", .startI = 15, .endI = 27, .renderStart = 2, .renderEnd = 10 },
+        .{ .tType = .EMPHASIS, .contents = "***🔗wax***", .startI = 27, .endI = 40, .renderStart = 3, .renderEnd = 10 },
+    }, try parseFlat(alloc, input));
+
+    // Codepoints: ❤️ counts as 2 (heart + variation selector), each emoji as 1.
+    try expectEqualDeep(&[_]FlatToken{
+        .{ .tType = .BOLD, .contents = "**brave❤️**", .startI = 0, .endI = 11, .renderStart = 2, .renderEnd = 9 },
+        .{ .tType = .ITALIC, .contents = "__good🐶__", .startI = 11, .endI = 20, .renderStart = 2, .renderEnd = 7 },
+        .{ .tType = .EMPHASIS, .contents = "***🔗wax***", .startI = 20, .endI = 30, .renderStart = 3, .renderEnd = 7 },
+    }, try parseFlatCodepoints(alloc, input));
 }
 
 test "renderStart and renderEnd" {

@@ -71,15 +71,42 @@ typedef struct {
     double mouse_y;
     bool mouse_down;
     unsigned int modifiers;  // NANA_MOD_* bitmask
-    char text_utf8[64];      // UTF-8 text typed this frame (NUL-terminated)
+    bool system_dark;        // host window is in a dark appearance
+    double scroll_dy;        // wheel/trackpad points this frame; + scrolls toward doc start
+    const char *text_utf8;   // UTF-8 text entered this frame; borrowed for the call only.
+                             // A pointer rather than a fixed array because a paste is
+                             // unbounded. May be NULL when text_len is 0.
     unsigned int text_len;   // byte length of text_utf8
     unsigned int backspaces; // count of Backspace presses this frame
+    unsigned int escapes;    // count of Escape presses this frame
     unsigned int ups;        // count of up presses this frame
     unsigned int downs;      // count of down presses this frame
     unsigned int lefts;      // count of left presses this frame
     unsigned int rights;     // count of right presses this frame
 } NanaInput;
 
-void nana_render_init(void);
+// `path` may be NULL, meaning "use the default workspace". Pass a directory when the host has
+// already gained access to one (a resolved security-scoped bookmark, say).
+void nana_render_init(const char *path);
+// Switch workspaces. The host must already hold access to the directory. Returns false if the
+// switch failed, in which case no workspace is open.
+bool nana_render_set_workspace(const char *path);
 void nana_render_frame(CGContextRef ctx, double width, double height, const NanaInput *input);
 void nana_render_deinit(void);
+
+// Selection access, for the host's copy/cut/paste plumbing. Paste needs nothing here: pasted
+// text goes in through NanaInput.text_utf8 like any other input.
+unsigned int nana_render_selection_len(void);              // bytes, 0 if nothing selected
+int nana_render_copy_selection(char *out, unsigned int);   // bytes written, or 0
+int nana_render_cut_selection(char *out, unsigned int);    // copies, then deletes
+void nana_render_select_all(void);
+
+// Undo/redo. Return false when the corresponding stack is empty, so the host can fall back to
+// AppKit's usual "nothing to undo" behaviour rather than silently swallowing the shortcut.
+// Settings. Owned and persisted by Zig; the host reads them back for its own UI.
+double nana_render_font_size(void);
+void nana_render_set_font_size(double size);
+void nana_render_adjust_font_size(double delta);
+
+bool nana_render_undo(void);
+bool nana_render_redo(void);

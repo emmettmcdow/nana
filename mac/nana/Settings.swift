@@ -8,6 +8,14 @@
 import Foundation
 import SwiftUI
 
+#if DISABLE_NANAKIT
+    // Previews build without NanaKit; keep the settings UI renderable.
+    private func nana_render_font_size() -> Double { 20 }
+    private func nana_render_set_font_size(_: Double) {}
+#else
+    import NanaKit
+#endif
+
 enum AppColorScheme: String, CaseIterable, Identifiable, Codable {
     case light = "Light"
     case dark = "Dark"
@@ -95,7 +103,9 @@ struct StylePreview: View {
 struct GeneralSettingsView: View {
     @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
     @Environment(\.colorScheme) private var colorScheme
-    @AppStorage("fontSize") private var fontSize: Double = 14
+    // Font size belongs to Zig, which clamps and persists it. Mirrored into @State only so the
+    // stepper has something to bind to; Zig stays the source of truth.
+    @State private var fontSize: Double = nana_render_font_size()
 
     var body: some View {
         Form {
@@ -108,7 +118,8 @@ struct GeneralSettingsView: View {
                 .pickerStyle(.inline)
                 Stepper("Font Size: \(fontSize.formatted())px",
                         value: $fontSize,
-                        in: 1 ... 64)
+                        in: 8 ... 64)
+                    .onChange(of: fontSize) { _, size in nana_render_set_font_size(size) }
             }
             Section(header: Text("Preview")) {
                 StylePreview(sz: fontSize)

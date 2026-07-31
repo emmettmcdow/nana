@@ -410,11 +410,23 @@ pub const Runtime = struct {
     }
 
     /// Do vector search on the contents of every note. Potentially return multiple results per note.
+    /// Search, returning one result per matching *chunk*. A note is embedded in pieces, so a
+    /// single note can appear several times with different `start_i`/`end_i` — which is what
+    /// you want when each result is shown as its own excerpt.
     pub fn search(self: *Runtime, query: []const u8, buf: []SearchResult) !usize {
         const zone = tracy.beginZone(@src(), .{ .name = "root.zig:search" });
         defer zone.end();
 
         return self.vectors.search(query, buf);
+    }
+
+    /// Search, returning at most one result per note. For callers listing notes rather than
+    /// excerpts, where the same note repeated is just noise.
+    pub fn searchUnique(self: *Runtime, query: []const u8, buf: []SearchResult) !usize {
+        const zone = tracy.beginZone(@src(), .{ .name = "root.zig:searchUnique" });
+        defer zone.end();
+
+        return self.vectors.uniqueSearch(query, buf);
     }
 
     /// List all notes, optionally ignoring a list of notes(e.g. the currently selected note).
@@ -479,7 +491,9 @@ pub const Runtime = struct {
         self.lastParsedMD = std.ArrayList(u8){};
         var parse_arena = std.heap.ArenaAllocator.init(self.allocator);
         defer parse_arena.deinit();
-        const tokens = try markdown.parseFlat(parse_arena.allocator(), content);
+        // Codepoint offsets: this JSON crosses the C ABI to a frontend that indexes text by
+        // visual position, not by byte.
+        const tokens = try markdown.parseFlatCodepoints(parse_arena.allocator(), content);
         const json_bytes = try std.json.Stringify.valueAlloc(self.allocator, tokens, .{});
         defer self.allocator.free(json_bytes);
         try self.lastParsedMD.?.appendSlice(self.allocator, json_bytes);

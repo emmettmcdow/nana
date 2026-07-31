@@ -184,6 +184,49 @@ pub fn build(b: *std.Build) !void {
         test_root.dependOn(&run.step);
     }
 
+    // Separate from test-render: the session layer bridges the editor to the note store, so it
+    // needs the real Runtime (and therefore dve and the model files), which is exactly the
+    // dependency test-render exists to stay clear of.
+    const test_session = b.step("test-session", "run the tests for src/session.zig");
+    {
+        const t = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/session_test.zig"),
+                .target = x86_target,
+                .optimize = optimize,
+            }),
+            .filters = if (test_filter != null) filters else &.{},
+        });
+        t.root_module.addImport("dve", dve_module);
+        addNanaDeps(depOpts(x86_deps, t), dve_module);
+        const install_models = b.addInstallDirectory(.{
+            .source_dir = dve_dep.path("models/all_mpnet_base_v2/all_mpnet_base_v2.mlpackage"),
+            .install_dir = .{ .custom = "share" },
+            .install_subdir = "all_mpnet_base_v2.mlpackage",
+        });
+        const install_tokenizer = b.addInstallFile(
+            dve_dep.path("models/all_mpnet_base_v2/tokenizer.json"),
+            "share/tokenizer.json",
+        );
+        const run = runTest(b, t, use_lldb, use_objc_leakcheck);
+        run.step.dependOn(&install_models.step);
+        run.step.dependOn(&install_tokenizer.step);
+        test_session.dependOn(&run.step);
+    }
+
+    const test_settings = b.step("test-settings", "run the tests for src/settings.zig");
+    {
+        const t = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/settings.zig"),
+                .target = x86_target,
+                .optimize = optimize,
+            }),
+            .filters = if (test_filter != null) filters else &.{},
+        });
+        test_settings.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
+    }
+
     const test_diff = b.step("test-diff", "run the tests for src/diff.zig");
     {
         const t = b.addTest(.{
@@ -266,6 +309,8 @@ pub fn build(b: *std.Build) !void {
         .{ "diff.zig", test_diff },
         .{ "util.zig", test_util },
         .{ "render", test_render },
+        .{ "session", test_session },
+        .{ "settings", test_settings },
     };
     inline for (file_tests) |entry| {
         const name = entry[0];

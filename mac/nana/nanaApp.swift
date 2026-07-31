@@ -7,6 +7,10 @@
 
 import SwiftUI
 
+#if !DISABLE_NANAKIT
+    import NanaKit
+#endif
+
 /// Applies nana's chrome to the hosting window: a transparent, separator-less
 /// titlebar so the canvas can run edge-to-edge.
 private struct WindowConfigurator: NSViewRepresentable {
@@ -28,7 +32,6 @@ private struct WindowConfigurator: NSViewRepresentable {
 @main
 struct nanaApp: App {
     @AppStorage("colorSchemePreference") private var preference: ColorSchemePreference = .system
-    @AppStorage("fontSize") private var fontSize: Double = 14
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some Scene {
@@ -49,15 +52,17 @@ struct nanaApp: App {
         }
         .windowStyle(HiddenTitleBarWindowStyle())
         .commands {
+            CommandGroup(after: .newItem) {
+                Button("Choose Notes Folder…") { Workspace.choose() }
+                Divider()
+            }
             CommandGroup(before: .toolbar) {
-                Button("Increase Font Size") {
-                    fontSize = min(fontSize + 1, 64)
-                }
-                .keyboardShortcut("+")
-                Button("Decrease Font Size") {
-                    fontSize = max(fontSize - 1, 1)
-                }
-                .keyboardShortcut("-")
+                // Font size lives in Zig, which owns clamping and persistence; these just nudge
+                // it. Nothing to store on this side.
+                Button("Increase Font Size") { nana_render_adjust_font_size(1) }
+                    .keyboardShortcut("+")
+                Button("Decrease Font Size") { nana_render_adjust_font_size(-1) }
+                    .keyboardShortcut("-")
                 Divider()
             }
         }
