@@ -7,6 +7,8 @@ comptime {
     _ = @import("utf.zig");
     _ = @import("geom.zig");
     _ = @import("app.zig");
+    _ = @import("ted.zig");
+    _ = @import("overlay.zig");
     _ = @import("markdown.zig");
     _ = @import("theme.zig");
     _ = @import("ui.zig");

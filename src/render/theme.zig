@@ -61,6 +61,12 @@ pub fn forAppearance(is_dark: bool, font_size: f64) Theme {
 /// whole render tree would be noise; the host sets it, `app.zig` only reads it.
 pub var active: Theme = Theme.derive(ink, paper, DEFAULT_FONT_SIZE);
 
+/// Shorthand for `active`. Draw code reads the theme on nearly every line, and the render
+/// modules each alias this as `th` so those lines stay about what is being drawn.
+pub fn th() Theme {
+    return active;
+}
+
 const geom = @import("geom.zig");
 const Color = geom.Color;
 
