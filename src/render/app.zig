@@ -98,7 +98,7 @@ pub const FrameActions = struct {
     query_changed: bool = false,
 };
 
-// ******************************************************************************* Editor Re-exports
+// ****************************************************************************** Editor Re-exports
 // `intf.zig` reaches these across the C boundary. They are the editor's, but the host knows
 // only this module, so they are surfaced here rather than making it import `ted.zig` too.
 pub const deinitHistory = ted.deinitHistory;

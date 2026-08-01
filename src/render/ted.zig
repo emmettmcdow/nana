@@ -55,6 +55,9 @@ const MARGIN_PX: f64 = 100;
 const QUOTE_INDENT_PX: f64 = 24;
 const QUOTE_RULE_W: f64 = 3;
 
+/// How many edits are kept before the oldest is dropped.
+const MAX_UNDO_DEPTH: usize = 256;
+
 // ****************************************************************************************** Types
 const Measurer = struct {
     content_w: f64,
@@ -71,23 +74,19 @@ const Measurer = struct {
     }
 };
 
-/// How a token is painted. Measurement only ever needs `.font`, so `fontForToken` stays a
-/// separate entry point and the `Measurer` signature is unaffected by anything here.
+/// How a token is painted.
 const Style = struct {
     font: Font,
-    /// No default: it comes from the active theme, which is not comptime-known.
     color: Color,
-    /// Filled behind the run before the text is drawn. `null` means "leave the page showing".
     background: ?Color = null,
     panel: Panel = .run,
 };
 
 /// How wide a token's background panel is drawn.
 const Panel = enum {
-    /// Hugs the run's measured width — for spans sitting inside a line of prose.
+    /// Hugs the run's measured width
     run,
-    /// Spans the rest of the content column — for blocks that own whole lines, so consecutive
-    /// rows tile into one slab with a straight right edge instead of a ragged one.
+    /// Spans the rest of the content column
     full,
 };
 
@@ -191,16 +190,7 @@ var placement_scratch: ?[]Placement = null;
 var md_arena: ?std.heap.ArenaAllocator = null;
 
 // ********************************************************************************** Top-Level Fns
-/// Lay the document out and draw it, after applying `in` to it.
-///
-/// `in` is whatever the caller decided the editor should see this frame — `app.zig` hands over
-/// an empty `Input` while the overlay holds the keyboard, so there is no need to check here.
-pub fn frame(
-    allocator: std.mem.Allocator,
-    canvas: *Canvas,
-    in: Input,
-    state: *AppState,
-) !void {
+pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *AppState) !void {
     { // scratch setup / init
         if (scratch == null) {
             scratch = try allocator.alloc(u8, BASE_SCRATCH_SIZE);
@@ -271,7 +261,11 @@ pub fn frame(
         if (follow_cursor) {
             state.scroll_y = scrollToCursor(lines, state.scroll_y, cursorLine(lines, state.cursor_i), viewport_h);
         }
-        state.scroll_y = clampScroll(state.scroll_y, lines, viewport_h);
+        state.scroll_y = v: {
+            var h: f64 = 0;
+            for (lines) |line| h += line.h;
+            break :v std.math.clamp(state.scroll_y, 0, @max(0, h - viewport_h));
+        };
 
         const placements = visiblePlacements(lines, state.scroll_y, viewport_h, placement_scratch.?);
         var caret_drawn = false;
@@ -375,6 +369,96 @@ pub fn frame(
         }
     }
 }
+
+/// Write the selection into `out`, returning the byte count. Zero if there is no selection or
+/// `out` is too small — check `selectionLen` first to size the buffer.
+pub fn copySelection(state: AppState, out: []u8) usize {
+    const sel = selectionRange(state) orelse return 0;
+    if (out.len < sel.hi - sel.lo) return 0;
+    return copyRange(state, sel.lo, sel.hi, out);
+}
+
+/// Drop the selected text, leaving the cursor where the selection started.
+pub fn deleteSelection(state: *AppState) void {
+    const anchor = state.selection_anchor orelse return;
+    if (state.cursor_i > anchor) {
+        // Selection is behind the cursor; drop it by walking the cursor back over it.
+        state.text_len -= state.cursor_i - anchor;
+        state.cursor_i = anchor;
+    } else {
+        // Selection is ahead of the cursor; drop it by advancing the gap end past it.
+        const removed = anchor - state.cursor_i;
+        state.gap_end += removed;
+        state.text_len -= removed;
+    }
+    state.selection_anchor = null;
+}
+
+/// Select the whole document, leaving the cursor at the end as macOS does.
+pub fn selectAll(state: *AppState) void {
+    if (state.text_len == 0) return;
+    moveCursorTo(state, state.text_len);
+    state.selection_anchor = 0;
+    state.history.coalesce = false;
+}
+
+/// Copy the selection into `out` and remove it, as one journalled edit. Returns the byte count,
+/// or 0 if there was no selection or `out` was too small — in which case nothing is removed.
+pub fn cutSelection(state: *AppState, alloc: Allocator, out: []u8) !usize {
+    const sel = selectionRange(state.*) orelse return 0;
+    const n = copySelection(state.*, out);
+    if (n == 0) return 0;
+
+    const cursor_before = state.cursor_i;
+    const anchor_before = state.selection_anchor;
+    deleteSelection(state);
+    try recordEdit(state, alloc, sel.lo, out[0..n], "", cursor_before, anchor_before);
+    state.dirty = true;
+    return n;
+}
+
+/// Reverse the most recent edit. Returns false when there is nothing left to undo.
+pub fn undo(state: *AppState, alloc: Allocator) !bool {
+    if (state.history.undo_stack.items.len == 0) return false;
+    const e = state.history.undo_stack.pop().?;
+
+    try applyReplace(state, alloc, e.at, e.at + e.inserted.len, e.removed);
+    moveCursorTo(state, e.cursor_before);
+    state.selection_anchor = e.anchor_before;
+
+    try state.history.redo_stack.append(alloc, e);
+    state.history.coalesce = false;
+    state.dirty = true;
+    return true;
+}
+
+/// Re-apply the most recently undone edit. Returns false when there is nothing to redo.
+pub fn redo(state: *AppState, alloc: Allocator) !bool {
+    if (state.history.redo_stack.items.len == 0) return false;
+    const e = state.history.redo_stack.pop().?;
+
+    try applyReplace(state, alloc, e.at, e.at + e.removed.len, e.inserted);
+
+    try state.history.undo_stack.append(alloc, e);
+    state.history.coalesce = false;
+    state.dirty = true;
+    return true;
+}
+
+/// Release every journalled edit.
+pub fn deinitHistory(state: *AppState, alloc: Allocator) void {
+    for (state.history.undo_stack.items) |e| freeEdit(alloc, e);
+    for (state.history.redo_stack.items) |e| freeEdit(alloc, e);
+    state.history.undo_stack.deinit(alloc);
+    state.history.redo_stack.deinit(alloc);
+    state.history = .{};
+}
+
+pub fn selectionLen(state: AppState) usize {
+    const sel = selectionRange(state) orelse return 0;
+    return sel.hi - sel.lo;
+}
+
 // ***************************************************************************** Testable Interface
 fn handleInput(
     allocator: std.mem.Allocator,
@@ -390,7 +474,8 @@ fn handleInput(
     var cursor_target: ?usize = null;
     // Anything that isn't typing ends the current run, so an undo can't reach back across a
     // click or an arrow key into text the user typed somewhere else entirely.
-    if (in.mouse_down or (in.lefts | in.rights | in.ups | in.downs) != 0) breakCoalesce(state);
+    if (in.mouse_down or (in.lefts | in.rights | in.ups | in.downs) != 0) state.history.coalesce = false;
+
     if (in.mouse_down) {
         const mouse_offset: usize = cursor: { // point to offset
             // Work in document space: drop the content margin, then add how far we are
@@ -549,185 +634,6 @@ fn handleInput(
     if (cursor_target) |target| moveCursorTo(state, target);
 }
 
-// **************************************************************************************** Helpers
-fn styleForToken(token: Token) Style {
-    var style = Style{ .font = fontForToken(token), .color = th().text };
-    switch (token.tType) {
-        .CODE => {
-            style.color = th().code;
-            style.background = th().code_bg;
-        },
-        .BLOCK_CODE => {
-            style.color = th().code;
-            style.background = th().code_bg;
-            style.panel = .full;
-        },
-        .QUOTE => style.color = th().quote,
-        .LINK => style.color = th().link,
-        else => {},
-    }
-    return style;
-}
-
-fn fontForToken(token: Token) Font {
-    return switch (token.tType) {
-        .HEADER => .{ .size = th().font_size * headerScale(token.degree) },
-        .BOLD => .{ .size = th().font_size, .bold = true },
-        .ITALIC => .{ .size = th().font_size, .italic = true },
-        .EMPHASIS => .{ .size = th().font_size, .bold = true, .italic = true },
-        .LINK => .{ .size = th().font_size, .underline = true },
-        else => .{ .size = th().font_size },
-    };
-}
-
-/// The font for whichever token covers source offset `i`.
-fn fontAt(tokens: []const Token, i: usize) Font {
-    return fontForToken(tokenAt(tokens, i));
-}
-
-/// The token covering source offset `i`, falling back to the last token when `i` is past the
-/// end of the document (an offset one past the final character is a legal cursor position).
-///
-/// `i` is a byte offset, matching `parseFlat`. Both are bytes on purpose: the renderer slices
-/// the source directly, so any other coordinate space would need converting on every lookup.
-fn tokenAt(tokens: []const Token, i: usize) Token {
-    for (tokens) |t| {
-        if (i >= t.startI and i < t.endI) return t;
-    }
-    return tokens[tokens.len - 1];
-}
-
-fn widthWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64 {
-    _ = end_i;
-    const canvas: *Canvas = @ptrCast(@alignCast(ctx));
-    return canvas.measureText(text, fontAt(tokens, start_i)).w;
-}
-
-fn heightWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64 {
-    _ = end_i;
-    const canvas: *Canvas = @ptrCast(@alignCast(ctx));
-    // An empty line (e.g. a blank line after a trailing '\n') still occupies vertical space.
-    const measured = if (text.len == 0) " " else text;
-    return canvas.measureText(measured, fontAt(tokens, start_i)).h;
-}
-
-/// The source line containing `cursor_i`, excluding its trailing newline.
-fn revealForCursor(text: []const u8, cursor_i: usize) Reveal {
-    const cursor = @min(cursor_i, text.len);
-    var start: usize = 0;
-    for (text[0..cursor], 0..) |c, i| {
-        if (c == '\n') start = i + 1;
-    }
-    var end = cursor;
-    while (end < text.len and text[end] != '\n') : (end += 1) {}
-    return .{ .start = start, .end = end };
-}
-
-/// Whether source offset `off` is drawn: either its line is revealed, or it falls inside the
-/// token's visible middle rather than in the delimiters the parser marked off.
-fn isVisible(token: Token, off: usize, reveal: Reveal) bool {
-    if (reveal.covers(off)) return true;
-    return off >= token.startI + token.renderStart and off < token.startI + token.renderEnd;
-}
-
-/// Open a row at `start`, inheriting the indent of the block that owns that offset. Looking the
-/// owner up by offset gets both cases right without tracking state: a hard newline hands off to
-/// the next token (a quote's '\n' is its last character, so the row after it is no longer
-/// quoted), while a soft wrap stays inside the current token and keeps the indent.
-fn beginRow(out: []Line, lineno: usize, start: usize, tokens: []const Token, m: Measurer, reveal: Reveal) void {
-    out[lineno].start = start;
-    out[lineno].indent = indentForRow(tokenAt(tokens, start), start, tokens, m, reveal);
-}
-
-/// How far right of the content margin the row starting at `start` sits.
-///
-/// Quotes indent every row by their nesting depth. Lists do the opposite: their first row sits
-/// flush, because a list's structure is already in the source as literal text — the leading
-/// tabs measure a real 28pt each in Menlo, and `- ` reads as the bullet — so indenting on top
-/// of that would double it. What a list needs instead is a *hanging* indent, so a wrapped item's
-/// continuation rows line up under the item's text rather than sliding back under its marker.
-///
-/// Everything inline sits flush: an indent applies to a whole row, and an inline span only
-/// covers part of one.
-///
-/// A list's indent therefore depends on whether its marker is currently concealed. Revealed,
-/// the marker is drawn and its own width does the indenting, so the first row sits flush.
-/// Concealed, the marker is gone — including the tabs — and the indent has to be supplied here
-/// or the nesting would collapse to the margin. Both cases put the item's *content* at the same
-/// x, so text doesn't slide sideways as the cursor enters and leaves the line.
-fn indentForRow(token: Token, start: usize, tokens: []const Token, m: Measurer, reveal: Reveal) f64 {
-    return switch (token.tType) {
-        .QUOTE => QUOTE_INDENT_PX * @as(f64, @floatFromInt(token.degree)),
-        .UNORDERED_LIST => if (reveal.covers(start) and start == token.startI)
-            0
-        else
-            markerWidth(token, tokens, m),
-        else => 0,
-    };
-}
-
-/// Width of a list item's leading marker (its tabs plus `- `), which the parser already
-/// delimits with `renderStart`. This is the offset a continuation row hangs at.
-fn markerWidth(token: Token, tokens: []const Token, m: Measurer) f64 {
-    const marker_end = @min(token.renderStart, token.contents.len);
-    return m.width(token.contents[0..marker_end], tokens, token.startI, token.startI + marker_end);
-}
-
-/// Headers shrink toward body size as the degree grows; degree 6 is body-sized, distinguished
-/// only by the `######` still being visible.
-fn headerScale(degree: u8) f64 {
-    return switch (degree) {
-        1 => 2.0,
-        2 => 1.75,
-        3 => 1.5,
-        4 => 1.25,
-        5 => 1.1,
-        else => 1.0,
-    };
-}
-
-/// Fill one row's background panel. The vertical extent is snapped to whole points so panels
-/// on consecutive rows share an exact edge. Line heights are fractional, so without this the
-/// shared boundary lands mid-pixel, Core Graphics antialiases both sides of it, and the two
-/// partial coverages composite to less than the full color — drawing a seam across every row
-/// boundary of a multi-line block.
-fn fillPanel(canvas: *Canvas, rect: geom.Rect, color: Color) void {
-    const top = @floor(rect.y);
-    const bottom = @floor(rect.y + rect.h);
-    canvas.fillRect(.{ .x = rect.x, .y = top, .w = rect.w, .h = bottom - top }, color);
-}
-
-fn pushFragment(
-    frags: []Fragment,
-    count: *usize,
-    tokens: []const Token,
-    tok: usize,
-    from: usize,
-    to: usize,
-    reveal: Reveal,
-) void {
-    if (to <= from) return;
-    // A fragment never straddles a newline, so the whole of it shares one reveal state.
-    var vis_start = from;
-    var vis_end = to;
-    if (!reveal.covers(from)) {
-        const token = tokens[tok];
-        vis_start = std.math.clamp(token.startI + token.renderStart, from, to);
-        vis_end = std.math.clamp(token.startI + token.renderEnd, vis_start, to);
-    }
-    frags[count.*] = .{ .tok = tok, .start = from, .end = to, .vis_start = vis_start, .vis_end = vis_end };
-    count.* += 1;
-}
-
-/// Width of the one character starting at `off`. A UTF-8 continuation byte measures zero — its
-/// lead byte already accounted for the whole codepoint — so summing this over a byte range
-/// gives the range's width without ever handing a partial sequence to the text engine.
-fn charWidth(full_text: []const u8, tokens: []const Token, off: usize, m: Measurer) f64 {
-    const seq_len = std.unicode.utf8ByteSequenceLength(full_text[off]) catch return 0;
-    const end = @min(off + seq_len, full_text.len);
-    return m.width(full_text[off..end], tokens, off, end);
-}
-
 /// Split `full_text` into renderable fragments bounded by lines.
 fn splitLines(
     full_text: []const u8,
@@ -774,7 +680,8 @@ fn splitLines(
                 continue;
             }
             // A concealed delimiter occupies no width, so it can never push a row over budget.
-            const char_w = if (isVisible(token, off, reveal)) charWidth(full_text, tokens, off, m) else 0;
+            const is_visible = reveal.covers(off) or (off >= token.startI + token.renderStart and off < token.startI + token.renderEnd);
+            const char_w = if (is_visible) charWidth(full_text, tokens, off, m) else 0;
             // An indented row has correspondingly less room before it has to wrap.
             if (row_w + char_w >= m.content_w - out[lineno].indent) {
                 out[lineno].text = full_text[out[lineno].start..off];
@@ -806,96 +713,21 @@ fn splitLines(
     return out[0..lineno];
 }
 
-/// The x of source offset `off`, relative to the row's text origin.
-///
-/// This is the one place the offset-to-pixel mapping lives. It walks the row's fragments so
-/// each run is measured in its own font — a row mixing a header, bold and plain text has no
-/// single font to measure against — and so concealed delimiters contribute no width. An offset
-/// inside a concealed run collapses onto the near edge of that run, which is the best answer
-/// available: it isn't drawn anywhere.
-fn xForOffset(
-    line: Line,
-    frags: []const Fragment,
-    full_text: []const u8,
-    tokens: []const Token,
-    off: usize,
-    m: Measurer,
-) f64 {
-    var x: f64 = 0;
-    for (frags[line.frag_start..line.frag_end]) |frag| {
-        if (off >= frag.end) {
-            x += m.width(full_text[frag.vis_start..frag.vis_end], tokens, frag.vis_start, frag.vis_end);
-            continue;
-        }
-        const stop = std.math.clamp(off, frag.vis_start, frag.vis_end);
-        x += m.width(full_text[frag.vis_start..stop], tokens, frag.vis_start, stop);
-        break;
+/// The source line containing `cursor_i`, excluding its trailing newline.
+fn revealForCursor(text: []const u8, cursor_i: usize) Reveal {
+    const cursor = @min(cursor_i, text.len);
+    var start: usize = 0;
+    for (text[0..cursor], 0..) |c, i| {
+        if (c == '\n') start = i + 1;
     }
-    return x;
+    var end = cursor;
+    while (end < text.len and text[end] != '\n') : (end += 1) {}
+    return .{ .start = start, .end = end };
 }
 
-/// Index of the rendered line containing `cursor_i`. At a soft-wrap boundary the
-/// offset matches two lines; the later one wins (consistent with up/down).
-fn cursorLine(lines: []const Line, cursor_i: usize) usize {
-    var result: usize = 0;
-    for (lines, 0..) |line, i| {
-        if (cursor_i >= line.start and cursor_i <= line.start + line.text.len) result = i;
-    }
-    return result;
-}
-
-/// Every line that intersects the viewport when scrolled to `scroll_y`, paired with its y
-/// relative to the top of the content area. The first and last are typically cut off, so their
-/// `y` may be negative or place their bottom past `viewport_h` — the render pass clips.
-fn visiblePlacements(lines: []const Line, scroll_y: f64, viewport_h: f64, out: []Placement) []Placement {
-    var count: usize = 0;
-    var doc_y: f64 = 0; // top of the current line, in document space
-    for (lines, 0..) |line, i| {
-        const top = doc_y - scroll_y;
-        doc_y += line.h;
-        if (doc_y - scroll_y <= 0) continue; // entirely above the viewport
-        if (top >= viewport_h) break; // entirely below it, and so is everything after
-        out[count] = .{ .line = i, .y = top };
-        count += 1;
-    }
-    return out[0..count];
-}
-
-/// Total height of the laid-out document.
-fn documentHeight(lines: []const Line) f64 {
-    var h: f64 = 0;
-    for (lines) |line| h += line.h;
-    return h;
-}
-
-/// Hold `scroll_y` within the document. The lower bound wins when the document is shorter than
-/// the viewport, which would otherwise give a negative maximum.
-fn clampScroll(scroll_y: f64, lines: []const Line, viewport_h: f64) f64 {
-    return std.math.clamp(scroll_y, 0, @max(0, documentHeight(lines) - viewport_h));
-}
-
-/// Document-space y of the top of `line_i`.
-fn lineTop(lines: []const Line, line_i: usize) f64 {
-    var y: f64 = 0;
-    for (lines[0..line_i]) |line| y += line.h;
-    return y;
-}
-
-/// The smallest adjustment to `scroll_y` that brings `cursor_line` fully into view.
-fn scrollToCursor(lines: []const Line, scroll_y: f64, cursor_line: usize, viewport_h: f64) f64 {
-    const top = lineTop(lines, cursor_line);
-    const bottom = top + lines[cursor_line].h;
-
-    var result = scroll_y;
-    if (bottom > result + viewport_h) result = bottom - viewport_h; // below the viewport
-    // Checked second on purpose: a line taller than the viewport satisfies both tests, and
-    // pinning it to its top is the more useful of the two outcomes.
-    if (top < result) result = top;
-    return clampScroll(result, lines, viewport_h);
-}
-
+// **************************************************************************************** Helpers
 /// Move the cursor to document offset `target`, shifting the gap to match.
-pub fn moveCursorTo(state: *AppState, target: usize) void {
+fn moveCursorTo(state: *AppState, target: usize) void {
     if (target > state.cursor_i) {
         // abc|def => abcd|ef : dest (cursor) precedes src (gap_end), copy front-to-back.
         const n = target - state.cursor_i;
@@ -919,12 +751,201 @@ pub fn moveCursorTo(state: *AppState, target: usize) void {
     }
 }
 
-/// How many edits are kept before the oldest is dropped.
-const MAX_UNDO_DEPTH: usize = 256;
+/// The selected span as doc offsets, or null when nothing selected. Single caret != selection.
+fn selectionRange(state: AppState) ?struct { lo: usize, hi: usize } {
+    const anchor = state.selection_anchor orelse return null;
+    const lo = @min(anchor, state.cursor_i);
+    const hi = @max(anchor, state.cursor_i);
+    return if (lo == hi) null else .{ .lo = lo, .hi = hi };
+}
 
-/// End any in-progress typing run, so the next insert starts a fresh undo entry.
-pub fn breakCoalesce(state: *AppState) void {
-    state.history.coalesce = false;
+fn styleForToken(token: Token) Style {
+    return switch (token.tType) {
+        .HEADER => .{
+            .color = th().text,
+            .font = .{
+                .size = th().font_size * @max(1.0, 2.0 - (@as(f64, @floatFromInt(token.degree - 1)) * 0.2)),
+            },
+        },
+        .BOLD => .{
+            .color = th().text,
+            .font = .{ .size = th().font_size, .bold = true },
+        },
+        .ITALIC => .{
+            .color = th().text,
+            .font = .{ .size = th().font_size, .italic = true },
+        },
+        .EMPHASIS => .{
+            .color = th().text,
+            .font = .{ .size = th().font_size, .bold = true, .italic = true },
+        },
+        .CODE => .{
+            .color = th().code,
+            .background = th().code_bg,
+            .font = .{ .size = th().font_size },
+        },
+        .BLOCK_CODE => .{
+            .color = th().code,
+            .background = th().code_bg,
+            .panel = .full,
+            .font = .{ .size = th().font_size },
+        },
+        .LINK => .{
+            .color = th().link,
+            .font = .{ .size = th().font_size, .underline = true },
+        },
+        .QUOTE => .{
+            .color = th().quote,
+            .font = .{ .size = th().font_size },
+        },
+        else => .{
+            .color = th().text,
+            .font = .{ .size = th().font_size },
+        },
+    };
+}
+
+/// The token covering source offset `i`, falling back to final token if `i` is past the end.
+fn tokenAt(tokens: []const Token, i: usize) Token {
+    for (tokens) |t| {
+        if (i >= t.startI and i < t.endI) return t;
+    }
+    return tokens[tokens.len - 1];
+}
+
+fn widthWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64 {
+    _ = end_i;
+    const canvas: *Canvas = @ptrCast(@alignCast(ctx));
+    return canvas.measureText(text, styleForToken(tokenAt(tokens, start_i)).font).w;
+}
+
+fn heightWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64 {
+    _ = end_i;
+    const canvas: *Canvas = @ptrCast(@alignCast(ctx));
+    // An empty line (e.g. a blank line after a trailing '\n') still occupies vertical space.
+    const measured = if (text.len == 0) " " else text;
+    return canvas.measureText(measured, styleForToken(tokenAt(tokens, start_i)).font).h;
+}
+
+/// Open a row at `start`, inheriting the indent of the block that owns that offset.
+fn beginRow(out: []Line, lineno: usize, start: usize, tokens: []const Token, m: Measurer, reveal: Reveal) void {
+    out[lineno].start = start;
+    const token = tokenAt(tokens, start);
+    out[lineno].indent = switch (token.tType) {
+        .QUOTE => QUOTE_INDENT_PX * @as(f64, @floatFromInt(token.degree)),
+        .UNORDERED_LIST => s: {
+            if (reveal.covers(start) and start == token.startI) {
+                break :s 0;
+            } else {
+                const marker_end = @min(token.renderStart, token.contents.len);
+                const marker_width = m.width(token.contents[0..marker_end], tokens, token.startI, token.startI + marker_end);
+                break :s marker_width;
+            }
+        },
+        else => 0,
+    };
+}
+
+/// Fill one row's background panel.
+fn fillPanel(canvas: *Canvas, rect: geom.Rect, color: Color) void {
+    const top = @floor(rect.y);
+    const bottom = @floor(rect.y + rect.h);
+    canvas.fillRect(.{ .x = rect.x, .y = top, .w = rect.w, .h = bottom - top }, color);
+}
+
+fn pushFragment(
+    frags: []Fragment,
+    count: *usize,
+    tokens: []const Token,
+    tok: usize,
+    from: usize,
+    to: usize,
+    reveal: Reveal,
+) void {
+    if (to <= from) return;
+    // A fragment never straddles a newline, so the whole of it shares one reveal state.
+    var vis_start = from;
+    var vis_end = to;
+    if (!reveal.covers(from)) {
+        const token = tokens[tok];
+        vis_start = std.math.clamp(token.startI + token.renderStart, from, to);
+        vis_end = std.math.clamp(token.startI + token.renderEnd, vis_start, to);
+    }
+    frags[count.*] = .{ .tok = tok, .start = from, .end = to, .vis_start = vis_start, .vis_end = vis_end };
+    count.* += 1;
+}
+
+/// Width of the one UTF-8 character starting at `off`.
+fn charWidth(full_text: []const u8, tokens: []const Token, off: usize, m: Measurer) f64 {
+    const seq_len = std.unicode.utf8ByteSequenceLength(full_text[off]) catch return 0;
+    const end = @min(off + seq_len, full_text.len);
+    return m.width(full_text[off..end], tokens, off, end);
+}
+
+/// The x of source offset `off`, relative to the row's text origin.
+fn xForOffset(
+    line: Line,
+    frags: []const Fragment,
+    full_text: []const u8,
+    tokens: []const Token,
+    off: usize,
+    m: Measurer,
+) f64 {
+    var x: f64 = 0;
+    for (frags[line.frag_start..line.frag_end]) |frag| {
+        if (off >= frag.end) {
+            x += m.width(full_text[frag.vis_start..frag.vis_end], tokens, frag.vis_start, frag.vis_end);
+            continue;
+        }
+        const stop = std.math.clamp(off, frag.vis_start, frag.vis_end);
+        x += m.width(full_text[frag.vis_start..stop], tokens, frag.vis_start, stop);
+        break;
+    }
+    return x;
+}
+
+/// Index of the rendered line containing `cursor_i`.
+fn cursorLine(lines: []const Line, cursor_i: usize) usize {
+    var result: usize = 0;
+    for (lines, 0..) |line, i| {
+        if (cursor_i >= line.start and cursor_i <= line.start + line.text.len) result = i;
+    }
+    return result;
+}
+
+/// The line and height of every line visible when scrolled to `scroll_y`.
+fn visiblePlacements(lines: []const Line, scroll_y: f64, viewport_h: f64, out: []Placement) []Placement {
+    var count: usize = 0;
+    var doc_y: f64 = 0; // top of the current line, in document space
+    for (lines, 0..) |line, i| {
+        const top = doc_y - scroll_y;
+        doc_y += line.h;
+        if (doc_y - scroll_y <= 0) continue; // entirely above the viewport
+        if (top >= viewport_h) break; // entirely below it, and so is everything after
+        out[count] = .{ .line = i, .y = top };
+        count += 1;
+    }
+    return out[0..count];
+}
+
+/// Document-space y of the top of `line_i`.
+fn lineTop(lines: []const Line, line_i: usize) f64 {
+    var y: f64 = 0;
+    for (lines[0..line_i]) |line| y += line.h;
+    return y;
+}
+
+/// The smallest adjustment to `scroll_y` that brings `cursor_line` fully into view.
+fn scrollToCursor(lines: []const Line, scroll_y: f64, cursor_line: usize, viewport_h: f64) f64 {
+    const top = lineTop(lines, cursor_line);
+    const bottom = top + lines[cursor_line].h;
+
+    var result = scroll_y;
+    if (bottom > result + viewport_h) result = bottom - viewport_h; // below the viewport
+    // Checked second on purpose: a line taller than the viewport satisfies both tests, and
+    // pinning it to its top is the more useful of the two outcomes.
+    if (top < result) result = top;
+    return result;
 }
 
 fn freeEdit(alloc: Allocator, e: Edit) void {
@@ -1024,57 +1045,6 @@ fn applyReplace(state: *AppState, alloc: Allocator, from: usize, to: usize, text
     state.selection_anchor = null;
 }
 
-/// Reverse the most recent edit. Returns false when there is nothing left to undo.
-pub fn undo(state: *AppState, alloc: Allocator) !bool {
-    if (state.history.undo_stack.items.len == 0) return false;
-    const e = state.history.undo_stack.pop().?;
-
-    try applyReplace(state, alloc, e.at, e.at + e.inserted.len, e.removed);
-    moveCursorTo(state, e.cursor_before);
-    state.selection_anchor = e.anchor_before;
-
-    try state.history.redo_stack.append(alloc, e);
-    state.history.coalesce = false;
-    state.dirty = true;
-    return true;
-}
-
-/// Re-apply the most recently undone edit. Returns false when there is nothing to redo.
-pub fn redo(state: *AppState, alloc: Allocator) !bool {
-    if (state.history.redo_stack.items.len == 0) return false;
-    const e = state.history.redo_stack.pop().?;
-
-    try applyReplace(state, alloc, e.at, e.at + e.removed.len, e.inserted);
-
-    try state.history.undo_stack.append(alloc, e);
-    state.history.coalesce = false;
-    state.dirty = true;
-    return true;
-}
-
-/// Release every journalled edit.
-pub fn deinitHistory(state: *AppState, alloc: Allocator) void {
-    for (state.history.undo_stack.items) |e| freeEdit(alloc, e);
-    for (state.history.redo_stack.items) |e| freeEdit(alloc, e);
-    state.history.undo_stack.deinit(alloc);
-    state.history.redo_stack.deinit(alloc);
-    state.history = .{};
-}
-
-/// The selected span as document offsets, or null when nothing is selected. An anchor sitting
-/// exactly on the cursor is an empty selection and counts as nothing.
-pub fn selectionRange(state: AppState) ?struct { lo: usize, hi: usize } {
-    const anchor = state.selection_anchor orelse return null;
-    const lo = @min(anchor, state.cursor_i);
-    const hi = @max(anchor, state.cursor_i);
-    return if (lo == hi) null else .{ .lo = lo, .hi = hi };
-}
-
-pub fn selectionLen(state: AppState) usize {
-    const sel = selectionRange(state) orelse return 0;
-    return sel.hi - sel.lo;
-}
-
 /// Copy document bytes `[from, to)` into `out`, returning how many were written.
 ///
 /// The gap sits at the cursor, so a range straddling it lives in two pieces of `gap_buf` that
@@ -1097,53 +1067,6 @@ fn copyRange(state: AppState, from: usize, to: usize, out: []u8) usize {
     return n;
 }
 
-/// Write the selection into `out`, returning the byte count. Zero if there is no selection or
-/// `out` is too small — check `selectionLen` first to size the buffer.
-pub fn copySelection(state: AppState, out: []u8) usize {
-    const sel = selectionRange(state) orelse return 0;
-    if (out.len < sel.hi - sel.lo) return 0;
-    return copyRange(state, sel.lo, sel.hi, out);
-}
-
-/// Drop the selected text, leaving the cursor where the selection started.
-pub fn deleteSelection(state: *AppState) void {
-    const anchor = state.selection_anchor orelse return;
-    if (state.cursor_i > anchor) {
-        // Selection is behind the cursor; drop it by walking the cursor back over it.
-        state.text_len -= state.cursor_i - anchor;
-        state.cursor_i = anchor;
-    } else {
-        // Selection is ahead of the cursor; drop it by advancing the gap end past it.
-        const removed = anchor - state.cursor_i;
-        state.gap_end += removed;
-        state.text_len -= removed;
-    }
-    state.selection_anchor = null;
-}
-
-/// Select the whole document, leaving the cursor at the end as macOS does.
-pub fn selectAll(state: *AppState) void {
-    if (state.text_len == 0) return;
-    moveCursorTo(state, state.text_len);
-    state.selection_anchor = 0;
-    breakCoalesce(state);
-}
-
-/// Copy the selection into `out` and remove it, as one journalled edit. Returns the byte count,
-/// or 0 if there was no selection or `out` was too small — in which case nothing is removed.
-pub fn cutSelection(state: *AppState, alloc: Allocator, out: []u8) !usize {
-    const sel = selectionRange(state.*) orelse return 0;
-    const n = copySelection(state.*, out);
-    if (n == 0) return 0;
-
-    const cursor_before = state.cursor_i;
-    const anchor_before = state.selection_anchor;
-    deleteSelection(state);
-    try recordEdit(state, alloc, sel.lo, out[0..n], "", cursor_before, anchor_before);
-    state.dirty = true;
-    return n;
-}
-
 fn condenseGapBuf(buf: []u8, state: AppState) []u8 {
     state.assertInvariant();
     @memcpy(buf[0..state.cursor_i], state.gap_buf[0..state.cursor_i]);
@@ -1159,7 +1082,7 @@ fn condenseGapBuf(buf: []u8, state: AppState) []u8 {
     return buf[0..state.text_len];
 }
 
-// ***************************************************************************** Tests and Helpers
+// ****************************************************************************************** Tests
 fn expectTextContentsEquals(expected: []const u8, state: AppState) !void {
     const buflen = 1024;
     var buf: [buflen]u8 = undefined;
@@ -1301,15 +1224,6 @@ test "visiblePlacements drops rows entirely above or below the viewport" {
     try expectEqual(@as(usize, 2), vis[0].line);
     try expectEqual(@as(f64, 0), vis[0].y);
     try expectEqual(@as(usize, 3), vis[1].line);
-}
-
-test "clampScroll keeps the view inside the document" {
-    const lines = [_]Line{ testLine(0, "a", 30), testLine(1, "b", 30), testLine(2, "c", 30) };
-    try expectEqual(@as(f64, 0), clampScroll(-40, &lines, 50)); // can't scroll above the start
-    try expectEqual(@as(f64, 40), clampScroll(999, &lines, 50)); // 90 tall - 50 viewport
-    try expectEqual(@as(f64, 20), clampScroll(20, &lines, 50)); // untouched in range
-    // A document shorter than the viewport has nowhere to scroll to.
-    try expectEqual(@as(f64, 0), clampScroll(30, &lines, 500));
 }
 
 test "scrollToCursor reveals a caret below the viewport, moving as little as possible" {
@@ -2091,15 +2005,15 @@ test "styling follows the active theme" {
     theme.active = theme.dark(20);
     try expectEqual(theme.dark(20).text, styleForToken(plain).color);
     try expectEqual(theme.dark(20).code_bg, styleForToken(code).background.?);
-    try expectEqual(@as(f64, 20), fontForToken(plain).size);
+    try expectEqual(@as(f64, 20), styleForToken(plain).font.size);
 
     // Swapping the theme changes what gets drawn, with no other state to invalidate.
     theme.active = theme.light(31);
     try expectEqual(theme.light(31).text, styleForToken(plain).color);
-    try expectEqual(@as(f64, 31), fontForToken(plain).size);
+    try expectEqual(@as(f64, 31), styleForToken(plain).font.size);
     // Headers scale off the theme's size rather than a fixed constant.
     const h1 = Token{ .tType = .HEADER, .startI = 0, .endI = 3, .contents = "# x", .degree = 1, .renderStart = 2, .renderEnd = 3 };
-    try expectEqual(@as(f64, 62), fontForToken(h1).size);
+    try expectEqual(@as(f64, 62), styleForToken(h1).font.size);
 
     // Light and dark must actually differ, or none of the above proves anything.
     try expect(theme.light(20).text.r != theme.dark(20).text.r);
