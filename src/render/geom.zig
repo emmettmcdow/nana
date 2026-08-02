@@ -42,6 +42,36 @@ pub const Font = struct {
     underline: bool = false,
 };
 
+/// A single line of text whose styling changes partway along it: a sequence of runs that,
+/// taken together, are shaped and measured as one line.
+///
+/// Describing a line this way rather than as a series of separate draw calls exists for one
+/// reason: the shaper gets to see the whole line at once. Run widths do not simply add up —
+/// the shaper kerns across a run boundary and rounds the line's advance once rather than once
+/// per run — so measuring run by run and summing drifts from what actually gets drawn, and the
+/// drift grows with the number of runs.
+pub const AttributedText = struct {
+    runs: []const Run,
+
+    /// One stretch of uniformly styled text.
+    pub const Run = struct {
+        text: []const u8,
+        font: Font,
+        /// Carried so that one value can describe a draw as well as a measurement. It has no
+        /// bearing on metrics.
+        color: Color = Color.black,
+    };
+
+    /// Whether there is anything here to measure or draw. An empty run is not an error — a
+    /// concealed delimiter leaves one behind — it simply contributes nothing.
+    pub fn isEmpty(self: AttributedText) bool {
+        for (self.runs) |run| {
+            if (run.text.len > 0) return false;
+        }
+        return true;
+    }
+};
+
 pub const Color = struct {
     r: f32,
     g: f32,
@@ -88,6 +118,21 @@ test "Color constructors" {
     try expect(c.a == 1.0);
     const t = Color.rgba(0.1, 0.2, 0.3, 0.5);
     try expect(t.a == 0.5);
+}
+
+test "AttributedText.isEmpty ignores runs that carry no text" {
+    const f = Font{ .size = 12 };
+    try expect((AttributedText{ .runs = &.{} }).isEmpty());
+    // Every run concealed: there are runs, but nothing to draw.
+    try expect((AttributedText{ .runs = &.{
+        .{ .text = "", .font = f },
+        .{ .text = "", .font = f },
+    } }).isEmpty());
+    // One run with text is enough, wherever it sits.
+    try expect(!(AttributedText{ .runs = &.{
+        .{ .text = "", .font = f },
+        .{ .text = "x", .font = f },
+    } }).isEmpty());
 }
 
 test "Color.withAlpha keeps the hue and replaces opacity" {

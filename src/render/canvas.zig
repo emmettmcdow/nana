@@ -17,6 +17,7 @@ const geom = @import("geom.zig");
 pub const CGContextRef = ?*anyopaque;
 const CFStringRef = ?*anyopaque;
 const CFAttributedStringRef = ?*anyopaque;
+const CFMutableAttributedStringRef = ?*anyopaque;
 const CFDictionaryRef = ?*anyopaque;
 const CTFontRef = ?*anyopaque;
 const CTLineRef = ?*anyopaque;
@@ -31,6 +32,9 @@ const CGPoint = extern struct { x: f64, y: f64 };
 const CGSize = extern struct { width: f64, height: f64 };
 const CGRect = extern struct { origin: CGPoint, size: CGSize };
 const CGAffineTransform = extern struct { a: f64, b: f64, c: f64, d: f64, tx: f64, ty: f64 };
+/// CFIndex is `long`, so `isize` here. Note that a CFRange over a string counts UTF-16 code
+/// units, never bytes — see `makeAttributedLine`.
+const CFRange = extern struct { location: isize, length: isize };
 
 const kCFStringEncodingUTF8: u32 = 0x0800_0100;
 
@@ -63,6 +67,22 @@ extern fn CFAttributedStringCreate(
     attributes: CFDictionaryRef,
 ) CFAttributedStringRef;
 extern fn CFNumberCreate(alloc: ?*anyopaque, theType: c_long, valuePtr: *const anyopaque) CFNumberRef;
+extern fn CFStringGetLength(theString: CFStringRef) isize;
+/// `max_length` of 0 means unbounded.
+extern fn CFAttributedStringCreateMutable(alloc: ?*anyopaque, max_length: isize) CFMutableAttributedStringRef;
+extern fn CFAttributedStringReplaceString(
+    a_str: CFMutableAttributedStringRef,
+    range: CFRange,
+    replacement: CFStringRef,
+) void;
+extern fn CFAttributedStringSetAttributes(
+    a_str: CFMutableAttributedStringRef,
+    range: CFRange,
+    replacement: CFDictionaryRef,
+    clear_other_attributes: u8,
+) void;
+extern fn CFAttributedStringBeginEditing(a_str: CFMutableAttributedStringRef) void;
+extern fn CFAttributedStringEndEditing(a_str: CFMutableAttributedStringRef) void;
 
 const kCFNumberSInt32Type: c_long = 3;
 const kCTUnderlineStyleSingle: i32 = 1;
@@ -165,6 +185,28 @@ pub const Canvas = struct {
         const width = CTLineGetTypographicBounds(line, &ascent, &descent, &leading);
         return .{ .w = width, .h = ascent + descent + leading };
     }
+
+    /// Measure a run-styled line without drawing it, shaping it as a single Core Text line.
+    ///
+    /// This is the one thing `measureText` cannot be made to do by calling it repeatedly: the
+    /// width of a mixed-style line is not the sum of its runs' widths, and its height is not
+    /// obtainable at all from the parts, because ascent and descent are the maxima taken over
+    /// every run rather than anything a single run knows. Both come back here from one call.
+    ///
+    /// Returns `Size.zero` when there is no text. That includes a line whose runs are all
+    /// empty, which is not the same as a blank line wanting a blank line's height — a caller
+    /// laying out rows still has to supply that height itself.
+    pub fn measureTextAttributed(self: *Canvas, text: geom.AttributedText) geom.Size {
+        _ = self;
+        const line = makeAttributedLine(text) orelse return geom.Size.zero;
+        defer CFRelease(line);
+
+        var ascent: f64 = 0;
+        var descent: f64 = 0;
+        var leading: f64 = 0;
+        const width = CTLineGetTypographicBounds(line, &ascent, &descent, &leading);
+        return .{ .w = width, .h = ascent + descent + leading };
+    }
 };
 
 /// Build a CTLine for one run of UTF-8 text. Caller owns the returned line (CFRelease).
@@ -174,6 +216,66 @@ fn makeLine(utf8: []const u8, font_req: geom.Font, color: geom.Color) ?CTLineRef
     if (cfstr == null) return null;
     defer CFRelease(cfstr);
 
+    const dict = makeAttrDict(font_req, color) orelse return null;
+    defer CFRelease(dict);
+
+    const attr = CFAttributedStringCreate(null, cfstr, dict);
+    if (attr == null) return null;
+    defer CFRelease(attr);
+
+    return CTLineCreateWithAttributedString(attr);
+}
+
+/// Build a CTLine spanning several differently styled runs, so Core Text shapes and measures
+/// them as one line. Caller owns the returned line (CFRelease).
+///
+/// Returns null for text with nothing in it, matching `makeLine` on an empty slice.
+fn makeAttributedLine(text: geom.AttributedText) ?CTLineRef {
+    if (text.isEmpty()) return null;
+
+    const attr = CFAttributedStringCreateMutable(null, 0);
+    if (attr == null) return null;
+    defer CFRelease(attr);
+
+    // The runs are appended one at a time and styled in place. Bracketing that in
+    // Begin/EndEditing keeps Core Foundation from re-deriving the string's bookkeeping after
+    // every single one.
+    CFAttributedStringBeginEditing(attr);
+
+    var pos: isize = 0;
+    for (text.runs) |run| {
+        if (run.text.len == 0) continue; // a concealed run: no glyphs, no range to style
+        const cfstr = CFStringCreateWithBytes(null, run.text.ptr, @intCast(run.text.len), kCFStringEncodingUTF8, 0);
+        if (cfstr == null) continue;
+        defer CFRelease(cfstr);
+
+        // Ranges into an attributed string are in UTF-16 code units, so the span to style has
+        // to be the CFString's own length. `run.text.len` is bytes, and the two part company
+        // for anything outside ASCII — using it would style the wrong span and, past the first
+        // multi-byte character, silently walk off the end of the string.
+        const len = CFStringGetLength(cfstr);
+        CFAttributedStringReplaceString(attr, .{ .location = pos, .length = 0 }, cfstr);
+
+        // A run that fails to produce a dictionary still occupies its range; leaving it
+        // unstyled measures it in the system default font, which is wrong but bounded, and
+        // keeps the offsets of every later run correct.
+        if (makeAttrDict(run.font, run.color)) |dict| {
+            defer CFRelease(dict);
+            CFAttributedStringSetAttributes(attr, .{ .location = pos, .length = len }, dict, 1);
+        }
+        pos += len;
+    }
+
+    CFAttributedStringEndEditing(attr);
+    if (pos == 0) return null; // every run was empty or could not be converted
+
+    return CTLineCreateWithAttributedString(attr);
+}
+
+/// The Core Text attribute dictionary describing one styled run. Caller owns the result
+/// (CFRelease); the font and color it holds are released here, the dictionary having retained
+/// them.
+fn makeAttrDict(font_req: geom.Font, color: geom.Color) ?CFDictionaryRef {
     const face = faceName(font_req);
     const name = CFStringCreateWithBytes(null, face.ptr, @intCast(face.len), kCFStringEncodingUTF8, 0);
     defer if (name != null) CFRelease(name);
@@ -202,7 +304,7 @@ fn makeLine(utf8: []const u8, font_req: geom.Font, color: geom.Color) ?CTLineRef
         values[2] = underline;
         attr_count = 3;
     }
-    const dict = CFDictionaryCreate(
+    return CFDictionaryCreate(
         null,
         &keys,
         &values,
@@ -210,12 +312,4 @@ fn makeLine(utf8: []const u8, font_req: geom.Font, color: geom.Color) ?CTLineRef
         &kCFTypeDictionaryKeyCallBacks,
         &kCFTypeDictionaryValueCallBacks,
     );
-    if (dict == null) return null;
-    defer CFRelease(dict);
-
-    const attr = CFAttributedStringCreate(null, cfstr, dict);
-    if (attr == null) return null;
-    defer CFRelease(attr);
-
-    return CTLineCreateWithAttributedString(attr);
 }

@@ -20,6 +20,7 @@ const geom = @import("geom.zig");
 const Color = geom.Color;
 const Rect = geom.Rect;
 const Font = geom.Font;
+const AttributedText = geom.AttributedText;
 
 const theme = @import("theme.zig");
 const th = theme.th;
@@ -64,6 +65,9 @@ const Measurer = struct {
     ctx: *anyopaque,
     widthFn: *const fn (ctx: *anyopaque, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64,
     heightFn: *const fn (ctx: *anyopaque, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64,
+    attrHeightFn: *const fn (ctx: *anyopaque, text: AttributedText) f64,
+    attrWidthFn: *const fn (ctx: *anyopaque, text: AttributedText) f64,
+    run_buf: []AttributedText.Run,
 
     fn width(self: Measurer, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64 {
         return self.widthFn(self.ctx, text, tokens, start_i, end_i);
@@ -71,6 +75,14 @@ const Measurer = struct {
 
     fn height(self: Measurer, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64 {
         return self.heightFn(self.ctx, text, tokens, start_i, end_i);
+    }
+
+    fn attributedW(self: Measurer, text: AttributedText) f64 {
+        return self.attrWidthFn(self.ctx, text);
+    }
+
+    fn attributedH(self: Measurer, text: AttributedText) f64 {
+        return self.attrHeightFn(self.ctx, text);
     }
 };
 
@@ -182,6 +194,9 @@ var line_scratch: ?[]Line = null;
 const BASE_FRAG_SCRATCH_SIZE = 1024; // max rendered fragments before regrow
 var frag_scratch: ?[]Fragment = null;
 
+// Runs staged for one attributed measurement. Bounded by the token count, itself ≤ text_len.
+var run_scratch: ?[]AttributedText.Run = null;
+
 // Visible-line placements for the current render pass; bounded by line count (≤ text_len).
 var placement_scratch: ?[]Placement = null;
 
@@ -204,6 +219,9 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
         if (placement_scratch == null) {
             placement_scratch = try allocator.alloc(Placement, BASE_LINE_SCRATCH_SIZE);
         }
+        if (run_scratch == null) {
+            run_scratch = try allocator.alloc(AttributedText.Run, BASE_FRAG_SCRATCH_SIZE);
+        }
         while (scratch.?.len <= state.text_len) {
             scratch = try allocator.realloc(scratch.?, scratch.?.len << 1);
         }
@@ -218,6 +236,10 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
         while (placement_scratch.?.len <= state.text_len) {
             placement_scratch = try allocator.realloc(placement_scratch.?, placement_scratch.?.len << 1);
         }
+        // One run per token at worst, and there is never more than one token per byte.
+        while (run_scratch.?.len <= state.text_len) {
+            run_scratch = try allocator.realloc(run_scratch.?, run_scratch.?.len << 1);
+        }
         if (md_arena == null) {
             md_arena = std.heap.ArenaAllocator.init(allocator);
         }
@@ -227,6 +249,9 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
         .ctx = canvas,
         .widthFn = widthWithCanvas,
         .heightFn = heightWithCanvas,
+        .attrWidthFn = attrWidthWithCanvas,
+        .attrHeightFn = attrHeightWithCanvas,
+        .run_buf = run_scratch.?,
     };
 
     // TODO: this is iffy, is this necessary?
@@ -643,74 +668,89 @@ fn splitLines(
     m: Measurer,
     reveal: Reveal,
 ) []Line {
-    var lineno: usize = 0;
-    beginRow(out, lineno, 0, tokens, m, reveal);
-
-    var frag_count: usize = 0;
-    var line_frag_start: usize = 0; // first fragment index of the current row
-    var frag_from: usize = 0; // start offset of the run being accumulated
-    var frag_tok: usize = 0; // token index of that run
-    // Visible width laid down on the current row. Accumulated per character rather than
-    // re-measuring the row's whole prefix each time, because hidden delimiters have to
-    // contribute nothing and a contiguous source slice can't express "skip the middle".
-    var row_w: f64 = 0;
-
-    var last_token = tokens[0];
-    for (tokens, 0..) |token, ti| {
-        last_token = token;
-        // Token boundary: close the previous token's run on this row (contiguous
-        // tokens mean it ends exactly where this one starts), then open this token's.
-        pushFragment(frags, &frag_count, tokens, frag_tok, frag_from, token.startI, reveal);
-        frag_tok = ti;
-        frag_from = token.startI;
-
-        for (token.contents, 0..) |c, token_off| {
-            const off = token.startI + token_off;
-            if (c == '\n') {
-                out[lineno].text = full_text[out[lineno].start..off];
-                pushFragment(frags, &frag_count, tokens, frag_tok, frag_from, off, reveal);
-                out[lineno].frag_start = line_frag_start;
-                out[lineno].frag_end = frag_count;
-                lineno += 1;
-                beginRow(out, lineno, off + 1, tokens, m, reveal);
-                out[lineno].text = "";
-                line_frag_start = frag_count;
-                frag_from = off + 1; // same token, resumes past the newline
-                row_w = 0;
-                continue;
-            }
-            // A concealed delimiter occupies no width, so it can never push a row over budget.
-            const is_visible = reveal.covers(off) or (off >= token.startI + token.renderStart and off < token.startI + token.renderEnd);
-            const char_w = if (is_visible) charWidth(full_text, tokens, off, m) else 0;
-            // An indented row has correspondingly less room before it has to wrap.
-            if (row_w + char_w >= m.content_w - out[lineno].indent) {
-                out[lineno].text = full_text[out[lineno].start..off];
-                pushFragment(frags, &frag_count, tokens, frag_tok, frag_from, off, reveal);
-                out[lineno].frag_start = line_frag_start;
-                out[lineno].frag_end = frag_count;
-                lineno += 1;
-                beginRow(out, lineno, off, tokens, m, reveal);
-                out[lineno].text = full_text[off .. off + 1];
-                line_frag_start = frag_count;
-                frag_from = off; // same token, the wrapped char begins the next row
-                row_w = char_w;
-                continue;
-            }
-            row_w += char_w;
-        }
-    }
+    const last_token = tokens[tokens.len - 1];
     const doc_end = last_token.startI + last_token.contents.len;
-    out[lineno].text = full_text[out[lineno].start..doc_end];
-    pushFragment(frags, &frag_count, tokens, frag_tok, frag_from, doc_end, reveal);
-    out[lineno].frag_start = line_frag_start;
-    out[lineno].frag_end = frag_count;
-    lineno += 1;
+
+    var lineno: usize = 0;
+    var frag_count: usize = 0;
+    var row_start: usize = 0;
+
+    while (true) {
+        beginRow(out, lineno, row_start, tokens, m, reveal);
+
+        const hard_end = std.mem.indexOfScalarPos(u8, full_text[0..doc_end], row_start, '\n') orelse doc_end;
+        const soft_end = maxFitLineEnd(
+            m,
+            reveal,
+            tokens,
+            full_text,
+            row_start,
+            hard_end,
+            m.content_w - out[lineno].indent, // an indented row has that much less to fill
+        );
+
+        out[lineno].text = full_text[row_start..soft_end];
+        out[lineno].frag_start = frag_count;
+        pushRowFragments(frags, &frag_count, tokens, row_start, soft_end, reveal);
+        out[lineno].frag_end = frag_count;
+        lineno += 1;
+
+        if (soft_end < hard_end) {
+            row_start = soft_end;
+        } else {
+            // The row reached the newline that ended it, or the end of the document.
+            if (hard_end >= doc_end) break;
+            row_start = hard_end + 1; // step over the '\n'; it is drawn by nothing
+        }
+        if (lineno == out.len) break; // out of rows: lay out what fits rather than overrun
+    }
 
     for (out[0..lineno]) |*line| {
-        line.h = m.height(line.text, tokens, line.start, line.start + line.text.len);
-        line.w = xForOffset(line.*, frags, full_text, tokens, line.start + line.text.len, m);
+        const line_end = line.start + line.text.len;
+        const attr = attributedRange(full_text, tokens, line.start, line_end, reveal, m.run_buf);
+        line.h = if (attr.isEmpty())
+            m.height(line.text, tokens, line.start, line_end)
+        else
+            m.attributedH(attr);
+        line.w = xForOffset(line.*, frags, full_text, tokens, line_end, m);
     }
     return out[0..lineno];
+}
+
+fn maxFitLineEnd(
+    m: Measurer,
+    reveal: Reveal,
+    tokens: []const Token,
+    full_text: []const u8,
+    start_i: usize,
+    end_i: usize,
+    max_width: f64,
+) usize {
+    if (end_i <= start_i) return start_i;
+
+    var best = start_i;
+    var lo = start_i;
+    var hi = end_i;
+
+    while (lo < hi) {
+        const mid = lo + ((hi - lo) + 1) / 2;
+        var probe = mid;
+        while (probe < end_i and (full_text[probe] & 0xC0) == 0x80) probe += 1;
+
+        const attr = attributedRange(full_text, tokens, start_i, probe, reveal, m.run_buf);
+        if (m.attributedW(attr) < max_width) {
+            best = @max(best, probe);
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+
+    if (best == start_i) {
+        const seq = std.unicode.utf8ByteSequenceLength(full_text[start_i]) catch 1;
+        best = @min(start_i + seq, end_i);
+    }
+    return best;
 }
 
 /// The source line containing `cursor_i`, excluding its trailing newline.
@@ -827,6 +867,16 @@ fn heightWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, st
     return canvas.measureText(measured, styleForToken(tokenAt(tokens, start_i)).font).h;
 }
 
+fn attrWidthWithCanvas(ctx: *anyopaque, text: AttributedText) f64 {
+    const canvas: *Canvas = @ptrCast(@alignCast(ctx));
+    return canvas.measureTextAttributed(text).w;
+}
+
+fn attrHeightWithCanvas(ctx: *anyopaque, text: AttributedText) f64 {
+    const canvas: *Canvas = @ptrCast(@alignCast(ctx));
+    return canvas.measureTextAttributed(text).h;
+}
+
 /// Open a row at `start`, inheriting the indent of the block that owns that offset.
 fn beginRow(out: []Line, lineno: usize, start: usize, tokens: []const Token, m: Measurer, reveal: Reveal) void {
     out[lineno].start = start;
@@ -873,6 +923,99 @@ fn pushFragment(
     }
     frags[count.*] = .{ .tok = tok, .start = from, .end = to, .vis_start = vis_start, .vis_end = vis_end };
     count.* += 1;
+}
+
+/// Tile the row `[from, to)` with one fragment per token it touches.
+///
+/// The old character loop accumulated these as it went, opening a run at every token boundary
+/// and closing it at every wrap. Now that a row's extent is known before anything is emitted,
+/// the row can simply be intersected with the token list — the same clipping `attributedRange`
+/// does, so what gets drawn and what got measured are derived the same way.
+fn pushRowFragments(
+    frags: []Fragment,
+    count: *usize,
+    tokens: []const Token,
+    from: usize,
+    to: usize,
+    reveal: Reveal,
+) void {
+    if (to <= from) return; // a blank row owns no fragments, only the block it sits in
+    for (tokens, 0..) |token, ti| {
+        const lo = @max(token.startI, from);
+        const hi = @min(token.startI + token.contents.len, to);
+        if (hi <= lo) continue;
+        if (count.* == frags.len) return;
+        pushFragment(frags, count, tokens, ti, lo, hi, reveal);
+    }
+}
+
+/// Describe `full_text[start_i..end_i)` the way the tokens style it: one run per styled span,
+/// ready to be measured or drawn as a single line. The runs are written into `out`, and the
+/// returned value views the prefix of it that was used.
+///
+/// Concealed delimiters are dropped rather than carried along as empty runs. What this
+/// describes is what actually gets drawn, and a hidden delimiter occupies no width — the same
+/// rule `pushFragment` applies, which is what makes a width measured through here agree with
+/// the row the render pass goes on to lay down.
+///
+/// Reveal is read once per token rather than per character, on `pushFragment`'s grounds: a row
+/// never straddles a newline, so its reveal state is uniform. A caller handing over a range
+/// that does span one is outside that assumption.
+fn attributedRange(
+    full_text: []const u8,
+    tokens: []const Token,
+    start_i: usize,
+    end_i: usize,
+    reveal: Reveal,
+    out: []AttributedText.Run,
+) AttributedText {
+    var count: usize = 0;
+    // Source bounds of the run sitting at `out[count - 1]`, so a span that continues it can be
+    // folded in without re-deriving where it started.
+    var run_start: usize = 0;
+    var run_end: usize = 0;
+
+    for (tokens) |token| {
+        // Clip the token to the requested range; most of the document falls outside it.
+        const from = @max(token.startI, start_i);
+        const to = @min(token.startI + token.contents.len, end_i);
+        if (to <= from) continue;
+
+        // Off the cursor's line only the token's middle is drawn, the delimiters around it
+        // being concealed. Same clamp as `pushFragment`, so the two agree on what is visible.
+        var vis_start = from;
+        var vis_end = to;
+        if (!reveal.covers(from)) {
+            vis_start = std.math.clamp(token.startI + token.renderStart, from, to);
+            vis_end = std.math.clamp(token.startI + token.renderEnd, vis_start, to);
+        }
+        if (vis_end <= vis_start) continue; // wholly concealed: no glyphs to shape
+
+        const style = styleForToken(token);
+        // Fold into the previous run where the two abut and are styled alike. Two plain tokens
+        // in a row are one run as far as the shaper is concerned, and keeping them one lets it
+        // kern across a boundary that exists only in the parse.
+        if (count > 0 and run_end == vis_start and
+            std.meta.eql(out[count - 1].font, style.font) and
+            std.meta.eql(out[count - 1].color, style.color))
+        {
+            run_end = vis_end;
+            out[count - 1].text = full_text[run_start..run_end];
+            continue;
+        }
+
+        if (count == out.len) break; // out of room: describe what fits rather than overrun
+        out[count] = .{
+            .text = full_text[vis_start..vis_end],
+            .font = style.font,
+            .color = style.color,
+        };
+        count += 1;
+        run_start = vis_start;
+        run_end = vis_end;
+    }
+
+    return .{ .runs = out[0..count] };
 }
 
 /// Width of the one UTF-8 character starting at `off`.
@@ -1120,12 +1263,32 @@ fn fakeHeight(
     return 1;
 }
 
+/// One unit per byte, matching `fakeWidth`, so a test can state its content width in
+/// characters. Summing the runs is the point: concealed text is not among them, so it costs
+/// nothing here exactly as it costs nothing on screen.
+fn fakeAttrWidth(_: *anyopaque, text: AttributedText) f64 {
+    var sum: f64 = 0.0;
+    for (text.runs) |run| sum += @floatFromInt(run.text.len);
+    return sum;
+}
+
+fn fakeAttrHeight(_: *anyopaque, _: AttributedText) f64 {
+    return 1;
+}
+
+/// Backs `Measurer.run_buf` for the tests. A document in a test is a few dozen bytes and one
+/// run per token is the ceiling, so this cannot be reached.
+var test_run_buf: [256]AttributedText.Run = undefined;
+
 fn testMeasurer(content_w: f64) Measurer {
     return .{
         .content_w = content_w,
         .ctx = &fake_ctx,
         .widthFn = fakeWidth,
         .heightFn = fakeHeight,
+        .attrWidthFn = fakeAttrWidth,
+        .attrHeightFn = fakeAttrHeight,
+        .run_buf = &test_run_buf,
     };
 }
 
@@ -1350,6 +1513,24 @@ test "splitLines start offsets account for newlines across wraps" {
     try expectEqualStrings("d", lines[1].text);
     try expectEqual(5, lines[2].start); // past the 'd' (4) and the '\n' (5)
     try expectEqualStrings("ef", lines[2].text);
+}
+
+test "splitLines wraps one long line across as many rows as it takes" {
+    var out: [8]Line = undefined;
+    var frags: [16]Fragment = undefined;
+    // No newline anywhere: every break here is the wrap loop going round again, which is the
+    // one thing the per-character version got for free and the row-at-a-time version does not.
+    const text = "abcdefgh";
+    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(4), Reveal.none);
+
+    try expectEqual(3, lines.len);
+    try expectEqualStrings("abc", lines[0].text);
+    try expectEqualStrings("def", lines[1].text);
+    try expectEqualStrings("gh", lines[2].text);
+    // Rows tile the source: each starts where the last ended, with nothing dropped between.
+    try expectEqual(0, lines[0].start);
+    try expectEqual(3, lines[1].start);
+    try expectEqual(6, lines[2].start);
 }
 
 test "splitLines handle multiple tokens" {
@@ -1603,6 +1784,97 @@ test "delimiters are concealed off the cursor's line and shown on it" {
         const lines = splitLines(link, link_tokens, &out, &frags, testMeasurer(1_000_000), Reveal.none);
         try expectEqualStrings("see label here", drawnText(&buf, lines[0], &frags, link));
     }
+}
+
+/// Everything an attributed range would actually shape, concatenated — the analogue of
+/// `drawnText` for a run list.
+fn attributedText(buf: []u8, at: AttributedText) []const u8 {
+    var n: usize = 0;
+    for (at.runs) |run| {
+        @memcpy(buf[n .. n + run.text.len], run.text);
+        n += run.text.len;
+    }
+    return buf[0..n];
+}
+
+test "attributedRange styles a span and drops what is concealed" {
+    var runs: [16]AttributedText.Run = undefined;
+    var buf: [64]u8 = undefined;
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+
+    const text = "a**b**c";
+    const tokens = try markdown.parseFlat(arena.allocator(), text);
+
+    // Off the cursor's line the asterisks go, exactly as the render pass drops them — so a
+    // width measured from this is the width of what the user will see.
+    const hidden = attributedRange(text, tokens, 0, text.len, Reveal.none, &runs);
+    try expectEqualStrings("abc", attributedText(&buf, hidden));
+    try expectEqual(@as(usize, 3), hidden.runs.len);
+    // The styling survives the concealment: only the middle run is bold.
+    try expect(!hidden.runs[0].font.bold);
+    try expect(hidden.runs[1].font.bold);
+    try expect(!hidden.runs[2].font.bold);
+
+    // On the cursor's line the delimiters come back, and they are the bold token's own text,
+    // so they are shaped bold too.
+    const shown = attributedRange(text, tokens, 0, text.len, revealAll(text), &runs);
+    try expectEqualStrings("a**b**c", attributedText(&buf, shown));
+}
+
+test "attributedRange joins abutting runs that share a style" {
+    var runs: [8]AttributedText.Run = undefined;
+    var buf: [32]u8 = undefined;
+    const text = "abcd";
+
+    // Two plain tokens tiling the text. The shaper must not be shown a boundary that exists
+    // only in the parse: kerning does not cross a run, so splitting here would measure wider
+    // than the same text drawn as one piece.
+    const plain = [_]Token{
+        .{ .tType = .PLAIN, .startI = 0, .endI = 2, .contents = "ab", .renderEnd = 2 },
+        .{ .tType = .PLAIN, .startI = 2, .endI = 4, .contents = "cd", .renderEnd = 2 },
+    };
+    const joined = attributedRange(text, &plain, 0, text.len, Reveal.none, &runs);
+    try expectEqual(@as(usize, 1), joined.runs.len);
+    try expectEqualStrings("abcd", attributedText(&buf, joined));
+
+    // A genuine style change is a genuine boundary, and stays one.
+    const mixed = [_]Token{
+        .{ .tType = .PLAIN, .startI = 0, .endI = 2, .contents = "ab", .renderEnd = 2 },
+        .{ .tType = .BOLD, .startI = 2, .endI = 4, .contents = "cd", .renderEnd = 2 },
+    };
+    const split = attributedRange(text, &mixed, 0, text.len, Reveal.none, &runs);
+    try expectEqual(@as(usize, 2), split.runs.len);
+    try expect(!split.runs[0].font.bold);
+    try expect(split.runs[1].font.bold);
+    try expectEqualStrings("abcd", attributedText(&buf, split));
+}
+
+test "attributedRange clips to the requested span" {
+    var runs: [8]AttributedText.Run = undefined;
+    var buf: [32]u8 = undefined;
+    const text = "hello world";
+    const tokens = &.{plainTokenize(text)};
+
+    // The point of the range: `maxFitLineEnd` asks about a prefix of a row, not the document.
+    const middle = attributedRange(text, tokens, 2, 7, Reveal.none, &runs);
+    try expectEqualStrings("llo w", attributedText(&buf, middle));
+
+    // An empty or inverted range describes nothing rather than the whole document.
+    try expect(attributedRange(text, tokens, 4, 4, Reveal.none, &runs).isEmpty());
+    try expect(attributedRange(text, tokens, 7, 2, Reveal.none, &runs).isEmpty());
+}
+
+test "attributedRange stops at the end of the run buffer" {
+    var runs: [1]AttributedText.Run = undefined;
+    const text = "abcd";
+    const tokens = [_]Token{
+        .{ .tType = .PLAIN, .startI = 0, .endI = 2, .contents = "ab", .renderEnd = 2 },
+        .{ .tType = .BOLD, .startI = 2, .endI = 4, .contents = "cd", .renderEnd = 2 },
+    };
+    // Describing a prefix is wrong, but it is bounded and it is not a buffer overrun.
+    const at = attributedRange(text, &tokens, 0, text.len, Reveal.none, &runs);
+    try expectEqual(@as(usize, 1), at.runs.len);
 }
 
 test "concealed delimiters take up no width" {
