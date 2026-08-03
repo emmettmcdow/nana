@@ -202,6 +202,7 @@ fn setDocument(allocator: Allocator, state: *AppState, content: []const u8) !voi
     state.selection_anchor = null;
     state.scroll_y = 0;
     state.dirty = false;
+    state.clear_view = false;
 }
 
 const std = @import("std");

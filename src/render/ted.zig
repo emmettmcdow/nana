@@ -184,6 +184,87 @@ const Reveal = struct {
     const none = Reveal{ .start = 0, .end = 0 };
 };
 
+/// A non-owning summary of the undo stack's top entry.
+///
+/// Keeping the `Edit` itself does not work: it carries `removed` and `inserted` as heap slices
+/// the history owns, and the history frees them underneath a copy — coalescing a run of
+/// keystrokes reallocates `inserted`, and passing `MAX_UNDO_DEPTH` frees the oldest entry
+/// outright. Comparing against a stored `Edit` therefore reads freed memory. Lengths and depths
+/// are enough to notice that *something* changed, and they own nothing.
+const EditPrint = struct {
+    at: usize = 0,
+    removed_len: usize = 0,
+    inserted_len: usize = 0,
+    cursor_before: usize = 0,
+    anchor_before: ?usize = null,
+    /// Both depths, so an undo or redo registers even when it leaves a similar entry on top.
+    undo_depth: usize = 0,
+    redo_depth: usize = 0,
+
+    fn of(state: *const AppState) EditPrint {
+        var p = EditPrint{
+            .undo_depth = state.history.undo_stack.items.len,
+            .redo_depth = state.history.redo_stack.items.len,
+        };
+        if (state.history.undo_stack.getLastOrNull()) |e| {
+            p.at = e.at;
+            p.removed_len = e.removed.len;
+            p.inserted_len = e.inserted.len;
+            p.cursor_before = e.cursor_before;
+            p.anchor_before = e.anchor_before;
+        }
+        return p;
+    }
+};
+
+const View = struct {
+    full_text: []u8,
+    tokens: []const Token,
+    reveal: Reveal,
+    lines: []Line,
+    /// What the layout was computed against, so staleness is detectable.
+    last_seen: EditPrint = .{},
+    content_w: f64 = 0,
+    /// Every `styleForToken` font is derived from this, so Cmd +/- rewraps everything. It
+    /// reaches the editor through the `theme.active` global rather than through `state`, so
+    /// nothing else here would notice it moved.
+    font_size: f64 = 0,
+
+    fn fullRecalc(text_buf: []u8, line_buf: []Line, frag_buf: []Fragment, measurer: Measurer, state: *AppState) !View {
+        const full_text = condenseGapBuf(text_buf, state.*);
+        const tokens = try tokenize(full_text);
+        const reveal = revealForCursor(full_text, state.cursor_i);
+        return .{
+            .full_text = full_text,
+            .tokens = tokens,
+            .reveal = reveal,
+            .lines = splitLines(full_text, tokens, line_buf, frag_buf, measurer, reveal),
+            .last_seen = EditPrint.of(state),
+            .content_w = measurer.content_w,
+            .font_size = th().font_size,
+        };
+    }
+
+    /// Redo the layout if anything it depends on moved. Despite the name this is still
+    /// all-or-nothing: a staleness check in front of `fullRecalc`, not an incremental layout.
+    fn partialRecalc(self: *View, text_buf: []u8, line_buf: []Line, frag_buf: []Fragment, measurer: Measurer, state: *AppState) !void {
+        // The document changed.
+        const now = EditPrint.of(state);
+        // The caret moved to another source line, so a different line shows its markup. Safe to
+        // compute against a possibly-stale `full_text`: if the text itself changed then `now`
+        // already differs and this comparison never gets to decide anything.
+        const reveal_now = revealForCursor(self.full_text, state.cursor_i);
+
+        if (!std.meta.eql(self.last_seen, now) or
+            !std.meta.eql(self.reveal, reveal_now) or
+            self.content_w != measurer.content_w or // the window was resized; rows wrap elsewhere
+            self.font_size != th().font_size)
+        {
+            self.* = try View.fullRecalc(text_buf, line_buf, frag_buf, measurer, state);
+        }
+    }
+};
+
 // *************************************************************************** Global Scratch Bufs.
 const BASE_SCRATCH_SIZE = 1024 * 1024; // 1MB
 var scratch: ?[]u8 = null;
@@ -204,6 +285,8 @@ var placement_scratch: ?[]Placement = null;
 // resets it (freeing the previous frame's tree) before parsing again.
 var md_arena: ?std.heap.ArenaAllocator = null;
 
+var view: ?View = null;
+
 // ********************************************************************************** Top-Level Fns
 pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *AppState) !void {
     { // scratch setup / init
@@ -222,6 +305,16 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
         if (run_scratch == null) {
             run_scratch = try allocator.alloc(AttributedText.Run, BASE_FRAG_SCRATCH_SIZE);
         }
+        // `view` holds slices into these three and survives across frames, so a realloc that
+        // relocates one leaves it pointing at freed memory. The growth bound is `text_len` in
+        // *bytes*, so this trips on any note past a kilobyte, not on some pathological
+        // document. Note the moves and force a full recalc below.
+        //
+        // HACK: the real fix is for the layout not to alias buffers it does not own.
+        const text_ptr_was = scratch.?.ptr;
+        const line_ptr_was = line_scratch.?.ptr;
+        const frag_ptr_was = frag_scratch.?.ptr;
+
         while (scratch.?.len <= state.text_len) {
             scratch = try allocator.realloc(scratch.?, scratch.?.len << 1);
         }
@@ -240,6 +333,12 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
         while (run_scratch.?.len <= state.text_len) {
             run_scratch = try allocator.realloc(run_scratch.?, run_scratch.?.len << 1);
         }
+        if (scratch.?.ptr != text_ptr_was or
+            line_scratch.?.ptr != line_ptr_was or
+            frag_scratch.?.ptr != frag_ptr_was)
+        {
+            view = null;
+        }
         if (md_arena == null) {
             md_arena = std.heap.ArenaAllocator.init(allocator);
         }
@@ -254,6 +353,11 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
         .run_buf = run_scratch.?,
     };
 
+    if (state.clear_view or view == null) {
+        state.clear_view = false;
+        view = try View.fullRecalc(scratch.?, line_scratch.?, frag_scratch.?, measurer, state);
+    }
+
     // TODO: this is iffy, is this necessary?
     // Whether the view should chase the caret this frame. Only true when the caret actually
     // went somewhere: otherwise a wheel scroll that pushes the caret off screen would be
@@ -261,38 +365,29 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
     var follow_cursor = false;
 
     { // Calculate the displayed text and handle inputs
-        const full_text = condenseGapBuf(scratch.?, state.*);
-        const tokens = try tokenize(full_text);
-        // Laid out against the cursor as it stands *before* this frame's input, which is the
-        // layout the user was looking at when they clicked or pressed a key.
-        const reveal = revealForCursor(full_text, state.cursor_i);
-        const lines = splitLines(full_text, tokens, line_scratch.?, frag_scratch.?, measurer, reveal);
         const cursor_before = state.cursor_i;
-        try handleInput(allocator, in, state, lines, tokens, frag_scratch.?, full_text, measurer);
+        try handleInput(allocator, in, state, view.?.lines, view.?.tokens, frag_scratch.?, view.?.full_text, measurer);
         // `dirty` covers deleting a selection ahead of the caret, which changes the text
         // without moving it.
         follow_cursor = state.cursor_i != cursor_before or state.dirty;
     }
     { // Render pass
-        const full_text = condenseGapBuf(scratch.?, state.*);
-        const tokens = try tokenize(full_text);
-        const reveal = revealForCursor(full_text, state.cursor_i);
-        const lines = splitLines(full_text, tokens, line_scratch.?, frag_scratch.?, measurer, reveal);
+        try view.?.partialRecalc(scratch.?, line_scratch.?, frag_scratch.?, measurer, state);
         const text_x: f64 = MARGIN_PX;
         const viewport_h = canvas.size.h - (MARGIN_PX * 2);
 
         // Wheel first, then the caret, so typing always wins over where the wheel had left us.
         state.scroll_y -= in.scroll_dy;
         if (follow_cursor) {
-            state.scroll_y = scrollToCursor(lines, state.scroll_y, cursorLine(lines, state.cursor_i), viewport_h);
+            state.scroll_y = scrollToCursor(view.?.lines, state.scroll_y, cursorLine(view.?.lines, state.cursor_i), viewport_h);
         }
         state.scroll_y = v: {
             var h: f64 = 0;
-            for (lines) |line| h += line.h;
+            for (view.?.lines) |line| h += line.h;
             break :v std.math.clamp(state.scroll_y, 0, @max(0, h - viewport_h));
         };
 
-        const placements = visiblePlacements(lines, state.scroll_y, viewport_h, placement_scratch.?);
+        const placements = visiblePlacements(view.?.lines, state.scroll_y, viewport_h, placement_scratch.?);
         var caret_drawn = false;
 
         // Rows at the edges are cut off mid-line; keep them inside the content area.
@@ -300,7 +395,7 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
         defer canvas.popClip();
 
         for (placements) |placement| {
-            const line = lines[placement.line];
+            const line = view.?.lines[placement.line];
             const line_h = line.h;
             const text_y = MARGIN_PX + placement.y;
             // Where this row's text actually starts. Everything that converts between an x
@@ -313,7 +408,7 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
             const row_w = measurer.content_w - line.indent;
             { // Quote rules: one bar per nesting level, standing in the gutter the text
                 // vacated. Drawn first so everything else layers over them.
-                const owner = tokenAt(tokens, line.start);
+                const owner = tokenAt(view.?.tokens, line.start);
                 if (owner.tType == .QUOTE) {
                     for (0..owner.degree) |level| {
                         const bar_x = text_x + (@as(f64, @floatFromInt(level)) * QUOTE_INDENT_PX);
@@ -327,7 +422,7 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                 if (cursor_in_line and !caret_drawn) {
                     // At a soft-wrap boundary the cursor offset matches both the end
                     // of one line and the start of the next; prefer the earlier line.
-                    const caret_x = line_x + xForOffset(line, frag_scratch.?, full_text, tokens, state.cursor_i, measurer);
+                    const caret_x = line_x + xForOffset(line, frag_scratch.?, view.?.full_text, view.?.tokens, state.cursor_i, measurer);
                     canvas.fillRect(.{ .x = caret_x, .y = text_y, .w = 2, .h = line_h }, th().caret);
                     caret_drawn = true;
                 }
@@ -341,15 +436,15 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                     const lo = @max(sel_lo, line.start);
                     const hi = @min(sel_hi, line_end);
                     if (lo <= hi) {
-                        const x0 = xForOffset(line, frag_scratch.?, full_text, tokens, lo, measurer);
-                        const x1 = xForOffset(line, frag_scratch.?, full_text, tokens, hi, measurer);
+                        const x0 = xForOffset(line, frag_scratch.?, view.?.full_text, view.?.tokens, lo, measurer);
+                        const x1 = xForOffset(line, frag_scratch.?, view.?.full_text, view.?.tokens, hi, measurer);
                         // A row wholly inside the selection but with nothing drawn on it — a
                         // blank line, or one that is all concealed markup — still shows a stub,
                         // so a multi-line selection doesn't look like it skipped a row.
                         const selection_w = if (x1 > x0)
                             x1 - x0
                         else if (sel_lo < line.start and sel_hi > line_end)
-                            measurer.width(" ", tokens, line.start, line.start + 1)
+                            measurer.width(" ", view.?.tokens, line.start, line.start + 1)
                         else
                             0;
                         if (selection_w > 0) {
@@ -365,7 +460,7 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                     // owns it — a blank line inside a fence, say. Paint that block's panel so
                     // the slab has no holes where the source had empty lines. Only a `.full`
                     // panel applies; a `.run` panel over an empty row has nothing to hug.
-                    const style = styleForToken(tokenAt(tokens, line.start));
+                    const style = styleForToken(tokenAt(view.?.tokens, line.start));
                     if (style.background) |bg| {
                         if (style.panel == .full) {
                             fillPanel(canvas, .{ .x = line_x, .y = text_y, .w = row_w, .h = line_h }, bg);
@@ -376,14 +471,14 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                 for (frags) |frag| {
                     // Only the visible middle is drawn; on a row whose line isn't revealed the
                     // delimiters were clipped off this range and so take up no space.
-                    const shown = full_text[frag.vis_start..frag.vis_end];
+                    const shown = view.?.full_text[frag.vis_start..frag.vis_end];
                     if (shown.len == 0) continue;
-                    const style = styleForToken(tokens[frag.tok]);
+                    const style = styleForToken(view.?.tokens[frag.tok]);
                     if (style.background) |bg| {
                         // The panel has to be down before the glyphs, so its width can't come
                         // from drawText's return — measure the run up front.
                         const w = switch (style.panel) {
-                            .run => measurer.width(shown, tokens, frag.vis_start, frag.vis_end),
+                            .run => measurer.width(shown, view.?.tokens, frag.vis_start, frag.vis_end),
                             .full => row_w - (frag_x - line_x),
                         };
                         fillPanel(canvas, .{ .x = frag_x, .y = text_y, .w = w, .h = line_h }, bg);
@@ -394,6 +489,9 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
         }
     }
 }
+
+// TODO: kind of seems like these VVV have race conditions if you don't always get a fresh View :(
+// these edit hooks need to be invoked within the frame lifecycle, they should not hook directly in
 
 /// Write the selection into `out`, returning the byte count. Zero if there is no selection or
 /// `out` is too small — check `selectionLen` first to size the buffer.

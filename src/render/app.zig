@@ -62,6 +62,8 @@ pub const AppState = struct {
     query_len: usize = 0,
     query_cursor: usize = 0,
 
+    clear_view: bool = true, // HACK: When this flag is set, globals are reset in the editor.
+
     /// Takes a pointer, not a value. `query_buf` is an array, so a by-value `self` would be a
     /// copy of it, and the returned slice would point into that copy — dead the moment the
     /// call returns.
