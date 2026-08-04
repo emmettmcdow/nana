@@ -487,6 +487,14 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                 }
             }
         }
+
+        // Scrolling to the caret has to actually put it on screen. `scrollToCursor` and
+        // `visiblePlacements` reach that conclusion separately — one from cumulative line tops,
+        // the other by walking the same heights again — and nothing reconciles them, so a
+        // disagreement shows up as a caret that was scrolled "into view" and still not drawn.
+        //
+        // Only when the caret moved: a wheel scroll is free to leave it off screen, and should.
+        if (follow_cursor) assert(caret_drawn);
     }
 }
 
@@ -812,7 +820,68 @@ fn splitLines(
             m.attributedH(attr);
         line.w = xForOffset(line.*, frags, full_text, tokens, line_end, m);
     }
+
+    // Running out of either buffer means the layout stops partway on purpose, so the "nothing
+    // was left over" halves of the check don't apply to it.
+    const truncated = lineno == out.len or frag_count == frags.len;
+    assertRowsTile(out[0..lineno], frags, full_text, doc_end, truncated);
+
     return out[0..lineno];
+}
+
+/// The structural contract of a laid-out row set: rows tile the source, and each row's
+/// fragments tile the row.
+///
+/// Everything downstream reads these as given. `handleInput` maps a click to an offset by
+/// walking rows and assuming the next one starts where the last ended; `xForOffset` walks a
+/// row's fragments and assumes they are contiguous and in order. Neither re-derives it, so a
+/// gap here surfaces far away as a caret in the wrong place rather than as a layout fault.
+///
+/// Checked here rather than in tests because it holds for *every* input `splitLines` is ever
+/// given, which no set of hand-picked examples can cover.
+///
+/// Guarded as a whole rather than left to the individual `assert`s. Those compile to nothing on
+/// their own, but the walk that feeds them does not, and this is O(rows + fragments) on top of a
+/// layout that already ran. `runtime_safety` is comptime-known, so in a release build the early
+/// return is the entire function and the call goes with it. Same shape as
+/// `std.debug.assertReadable`, for the same reason.
+fn assertRowsTile(
+    lines: []const Line,
+    frags: []const Fragment,
+    full_text: []const u8,
+    doc_end: usize,
+    truncated: bool,
+) void {
+    if (!std.debug.runtime_safety) return;
+    if (lines.len == 0) return;
+    assert(lines[0].start == 0);
+
+    for (lines, 0..) |line, i| {
+        const line_end = line.start + line.text.len;
+        assert(line_end <= doc_end);
+
+        if (i + 1 < lines.len) {
+            // A soft wrap continues at the offset the last row stopped at. A hard break steps
+            // over the '\n' that ended it, which belongs to no row because nothing draws it.
+            const next = lines[i + 1].start;
+            assert(next == line_end or
+                (next == line_end + 1 and line_end < full_text.len and full_text[line_end] == '\n'));
+        } else if (!truncated) {
+            assert(line_end == doc_end); // no tail of the document went unlaid
+        }
+
+        // A blank row carries no fragments. It still belongs to whatever block owns it — the
+        // render pass looks that up by offset — but there is nothing on it to tile.
+        if (line.frag_start == line.frag_end) continue;
+
+        var off = line.start;
+        for (frags[line.frag_start..line.frag_end]) |frag| {
+            assert(frag.start == off); // contiguous: no gaps, no overlaps, in order
+            assert(frag.end > frag.start); // an empty fragment is never pushed
+            off = frag.end;
+        }
+        if (!truncated) assert(off == line_end);
+    }
 }
 
 fn maxFitLineEnd(
@@ -1019,6 +1088,10 @@ fn pushFragment(
         vis_start = std.math.clamp(token.startI + token.renderStart, from, to);
         vis_end = std.math.clamp(token.startI + token.renderEnd, vis_start, to);
     }
+    // The drawn sub-range never escapes the fragment. The render pass slices `full_text` with
+    // these two directly, so an inverted or out-of-range pair is a bad slice rather than a
+    // wrong-looking row.
+    assert(from <= vis_start and vis_start <= vis_end and vis_end <= to);
     frags[count.*] = .{ .tok = tok, .start = from, .end = to, .vis_start = vis_start, .vis_end = vis_end };
     count.* += 1;
 }
@@ -1668,29 +1741,6 @@ test "splitLines output dimensions" {
     try expectEqual(2, lines[1].w);
     try expectEqual(1, lines[2].h);
     try expectEqual(3, lines[2].w);
-}
-
-test "splitLines fragments tile each line's text" {
-    var out: [8]Line = undefined;
-    var frags: [16]Fragment = undefined;
-    const text = "ab\ncd";
-    const lines = splitLines(text, &.{plainTokenize(text)}, &out, &frags, testMeasurer(1_000_000), Reveal.none);
-
-    for (lines) |line| {
-        // Concatenating a row's fragment slices reconstructs the row's text, in order.
-        var rebuilt_len: usize = 0;
-        var expect_off: usize = line.start;
-        for (frags[line.frag_start..line.frag_end]) |frag| {
-            try expectEqual(expect_off, frag.start); // contiguous, no gaps/overlaps
-            try expectEqualStrings(
-                text[frag.start..frag.end],
-                line.text[rebuilt_len .. rebuilt_len + (frag.end - frag.start)],
-            );
-            rebuilt_len += frag.end - frag.start;
-            expect_off = frag.end;
-        }
-        try expectEqual(line.text.len, rebuilt_len);
-    }
 }
 
 test "splitLines soft-wrap splits one token into a fragment per row" {

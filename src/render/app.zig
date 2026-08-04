@@ -78,6 +78,15 @@ pub const AppState = struct {
     /// Public because `ted.zig` does the buffer arithmetic that has to preserve this.
     pub fn assertInvariant(self: AppState) void {
         assert(self.text_len == self.cursor_i + (self.gap_buf.len - self.gap_end));
+        // The gap sits between head and tail: document up to `cursor_i`, gap, then document
+        // again from `gap_end`. Letting the two cross would make the "tail" read the head's
+        // bytes back a second time, which every range read here would then silently duplicate.
+        assert(self.cursor_i <= self.gap_end);
+        assert(self.gap_end <= self.gap_buf.len);
+        // An anchor past the end selects text that isn't there. Undo restores an anchor saved
+        // before an edit, so this is the assertion that catches it being restored into a
+        // document the edit made shorter.
+        if (self.selection_anchor) |a| assert(a <= self.text_len);
     }
 };
 
