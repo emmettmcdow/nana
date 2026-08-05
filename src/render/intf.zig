@@ -5,7 +5,7 @@
 //! CGContext + size + input snapshot, deinit on teardown. All UTF-16 <-> UTF-8 index
 //! conversion (when text editing arrives) belongs in render/utf.zig, not here.
 
-const canvas_mod = @import("canvas.zig");
+const coretext = @import("coretext.zig");
 const input_mod = @import("input.zig");
 const app = @import("app.zig");
 const runtime = @import("../runtime.zig");
@@ -15,7 +15,7 @@ const theme = @import("theme.zig");
 const std = @import("std");
 
 const AppState = app.AppState;
-const CGContextRef = canvas_mod.CGContextRef;
+const CGContextRef = coretext.CGContextRef;
 
 /// Mirror of the C `NanaInput` struct declared in include/nana.h. Field order and
 /// types must match exactly (C ABI layout).
@@ -234,10 +234,8 @@ fn seedDemoDocument() void {
 }
 
 export fn nana_render_frame(ctx: CGContextRef, width: f64, height: f64, in: *const NanaInput) void {
-    var canvas = canvas_mod.Canvas{
-        .ctx = ctx,
-        .size = .{ .w = width, .h = height },
-    };
+    var backend = coretext.CoreTextCanvas{ .ctx = ctx };
+    var canvas = backend.canvas(.{ .w = width, .h = height });
 
     const text: []const u8 = if (in.text_utf8) |p| p[0..@as(usize, in.text_len)] else &.{};
 

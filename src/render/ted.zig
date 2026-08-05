@@ -49,7 +49,9 @@ const MAX_BUF_LEN: usize = std.math.maxInt(u32);
 // (splitLines, tokenAt) needs at least one, so fall back to this.
 const EMPTY_DOC_TOKENS: []const Token = &.{.{ .tType = .PLAIN, .startI = 0, .endI = 0, .contents = "" }};
 
-const MARGIN_PX: f64 = 100;
+/// Public because the test harness maps canvas coordinates back to character cells, and the
+/// content origin is where that mapping starts.
+pub const MARGIN_PX: f64 = 100;
 
 /// Quoted text is pushed right, with a rule per nesting level standing in the gutter it was
 /// pushed out of.
@@ -286,6 +288,31 @@ var placement_scratch: ?[]Placement = null;
 var md_arena: ?std.heap.ArenaAllocator = null;
 
 var view: ?View = null;
+
+/// Drop everything held across frames.
+///
+/// The app allocates these once and keeps them for the life of the process, which is right for
+/// something with one document open at a time and wrong for a test binary running dozens of
+/// documents through the same globals: the layout would carry one test's text into the next, and
+/// the testing allocator would report every buffer as leaked. Tests call this between documents.
+///
+/// `view` goes last and unconditionally — it holds slices into the scratch buffers and tokens
+/// owned by the arena, so it is dangling the moment either is freed.
+pub fn resetGlobals(alloc: Allocator) void {
+    if (scratch) |s| alloc.free(s);
+    if (line_scratch) |s| alloc.free(s);
+    if (frag_scratch) |s| alloc.free(s);
+    if (placement_scratch) |s| alloc.free(s);
+    if (run_scratch) |s| alloc.free(s);
+    if (md_arena) |*a| a.deinit();
+    scratch = null;
+    line_scratch = null;
+    frag_scratch = null;
+    placement_scratch = null;
+    run_scratch = null;
+    md_arena = null;
+    view = null;
+}
 
 // ********************************************************************************** Top-Level Fns
 pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *AppState) !void {
