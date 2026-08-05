@@ -247,12 +247,44 @@ const Attr = enum(u8) {
     none = '.',
 };
 
+/// How a cell's text was styled — the half of the render pass the text plane cannot show,
+/// because a glyph looks the same in the grid whatever font drew it.
+///
+/// Read off the recorded draw call's font and color rather than from anything the layout kept,
+/// so what a test asserts is what Core Text would have been asked for.
+const StyleMark = enum(u8) {
+    plain = 'p',
+    bold = 'b',
+    italic = 'i',
+    emphasis = 'e',
+    header = 'h',
+    code = 'c',
+    link = 'l',
+    quote = 'q',
+    none = '.',
+};
+
+fn styleOf(font: geom.Font, color: geom.Color) StyleMark {
+    // Color first: `styleForToken` gives code, links and quotes a color of their own, and those
+    // are what distinguish them. Only body text is left to be told apart by its font.
+    if (isRole(color, test_theme.code)) return .code;
+    if (isRole(color, test_theme.link)) return .link;
+    if (isRole(color, test_theme.quote)) return .quote;
+    // A header is body-colored and told apart by size, which scales off the theme's own.
+    if (font.size != test_theme.font_size) return .header;
+    if (font.bold and font.italic) return .emphasis;
+    if (font.bold) return .bold;
+    if (font.italic) return .italic;
+    return .plain;
+}
+
 pub const Grid = struct {
     cols: usize,
     rows: usize,
     /// Codepoints, blank is ' '. A cell holds one character, which a `[]u8` could not.
     cells: []u21,
     attrs: []Attr,
+    styles: []StyleMark,
 
     fn at(self: Grid, col: usize, row: usize) usize {
         return row * self.cols + col;
@@ -285,12 +317,14 @@ pub const Harness = struct {
         const cells = try alloc.alloc(u21, opts.cols * opts.rows);
         errdefer alloc.free(cells);
         const attrs = try alloc.alloc(Attr, opts.cols * opts.rows);
+        errdefer alloc.free(attrs);
+        const styles = try alloc.alloc(StyleMark, opts.cols * opts.rows);
 
         return .{
             .alloc = alloc,
             .recorder = Recorder.init(alloc),
             .state = AppState.init(gap_buf),
-            .grid = .{ .cols = opts.cols, .rows = opts.rows, .cells = cells, .attrs = attrs },
+            .grid = .{ .cols = opts.cols, .rows = opts.rows, .cells = cells, .attrs = attrs, .styles = styles },
             // The editor reads the theme off a global. Saved so a test cannot leave the next one
             // running against sentinel colors.
             .saved_theme = theme.active,
@@ -304,6 +338,7 @@ pub const Harness = struct {
         self.alloc.free(self.state.gap_buf);
         self.alloc.free(self.grid.cells);
         self.alloc.free(self.grid.attrs);
+        self.alloc.free(self.grid.styles);
         theme.active = self.saved_theme;
     }
 
@@ -362,7 +397,27 @@ pub const Harness = struct {
 
     /// Click at a character cell: press one frame, release the next.
     pub fn clickCell(self: *Harness, col: usize, row: usize) !void {
-        const p = self.cellOrigin(col, row);
+        try self.pressCell(col, row);
+        try self.releaseCell(col, row);
+    }
+
+    /// Press at a cell and hold. The gesture is left open for `dragCell`/`releaseCell`.
+    pub fn pressCell(self: *Harness, col: usize, row: usize) !void {
+        try self.frame(.{ .mouse = self.cellOrigin(col, row), .mouse_down = true });
+    }
+
+    /// Move to a cell with the button still down — one frame, as a real drag arrives.
+    pub fn dragCell(self: *Harness, col: usize, row: usize) !void {
+        try self.frame(.{ .mouse = self.cellOrigin(col, row), .mouse_down = true });
+    }
+
+    pub fn releaseCell(self: *Harness, col: usize, row: usize) !void {
+        try self.frame(.{ .mouse = self.cellOrigin(col, row), .mouse_down = false });
+    }
+
+    /// A point in canvas coordinates, for the clicks that deliberately land outside the text —
+    /// the ones a cell index cannot name.
+    pub fn clickPoint(self: *Harness, p: geom.Point) !void {
         try self.frame(.{ .mouse = p, .mouse_down = true });
         try self.frame(.{ .mouse = p, .mouse_down = false });
     }
@@ -380,6 +435,7 @@ pub const Harness = struct {
     fn rasterise(self: *Harness) void {
         @memset(self.grid.cells, ' ');
         @memset(self.grid.attrs, .none);
+        @memset(self.grid.styles, .none);
 
         for (self.recorder.ops.items) |op| switch (op) {
             .push_clip, .pop_clip => {},
@@ -419,11 +475,13 @@ pub const Harness = struct {
         const row = self.rowOf(t.rect.y) orelse return;
         const col0 = self.colOf(t.rect.x) orelse return;
 
+        const style = styleOf(t.font, t.color);
         var it = (std.unicode.Utf8View.init(t.utf8) catch return).iterator();
         var col = col0;
         while (it.nextCodepoint()) |cp| : (col += 1) {
             if (col >= self.grid.cols) break;
             self.grid.cells[self.grid.at(col, row)] = cp;
+            self.grid.styles[self.grid.at(col, row)] = style;
         }
     }
 
@@ -478,6 +536,8 @@ pub const Harness = struct {
             }
             p("|\n      a |", .{});
             for (0..self.grid.cols) |col| p("{c}", .{@intFromEnum(self.grid.attrs[self.grid.at(col, row)])});
+            p("|\n      s |", .{});
+            for (0..self.grid.cols) |col| p("{c}", .{@intFromEnum(self.grid.styles[self.grid.at(col, row)])});
             p("|\n", .{});
         }
 
@@ -541,6 +601,24 @@ pub const Harness = struct {
             }
         }
         try expectPicture(self.alloc, want, got.items, @intFromEnum(Attr.none));
+    }
+
+    /// The style plane: how each cell's text was drawn, one character per cell. See `StyleMark`
+    /// for the legend.
+    ///
+    /// This is the half of the render pass the text plane cannot show — a bold `b` and a plain
+    /// `b` are the same glyph in a grid. Marks come off the recorded draw call's font and color,
+    /// so they are what the shaper would actually have been handed.
+    pub fn expectStyles(self: *Harness, want: []const u8) !void {
+        var got: std.ArrayList(u8) = .{};
+        defer got.deinit(self.alloc);
+        for (0..self.grid.rows) |row| {
+            if (row > 0) try got.append(self.alloc, '\n');
+            for (0..self.grid.cols) |col| {
+                try got.append(self.alloc, @intFromEnum(self.grid.styles[self.grid.at(col, row)]));
+            }
+        }
+        try expectPicture(self.alloc, want, got.items, @intFromEnum(StyleMark.none));
     }
 };
 

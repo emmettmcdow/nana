@@ -201,3 +201,201 @@ test "a fenced block paints a panel across the column, blank rows included" {
         \\cccccccc
     );
 }
+
+test "a trailing newline leaves a blank row the caret can reach" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 4 });
+    defer h.deinit();
+
+    try h.open("ab\n");
+    try h.frame(.{ .rights = 3 }); // past 'a', 'b', and the newline
+    try h.expectGrid("ab");
+    // The blank row is a row: the caret sits on it rather than at the end of "ab".
+    try h.expectAttrs(
+        \\
+        \\I
+    );
+}
+
+test "wrap offsets stay in step across a hard break" {
+    var h = try Harness.init(alloc, .{ .cols = 4, .rows = 6 });
+    defer h.deinit();
+
+    // The first logical line wraps, then a newline ends it. A row that mistook the '\n' for
+    // content would push everything after it one column right.
+    try h.open("abcd\nef");
+    try h.idle();
+    try h.expectGrid(
+        \\abc
+        \\d
+        \\ef
+    );
+}
+
+test "a soft-wrapped quote keeps its indent on every continuation row" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 6 });
+    defer h.deinit();
+
+    try h.open("x\n> aaaaaaaaaaaaaaaaaa");
+    try h.idle();
+    try h.expectGrid(
+        \\x
+        \\  aaaaaaaaa
+        \\  aaaaaaaaa
+    );
+    // The rule stands on every row of the quote, not just its first.
+    try h.expectAttrs(
+        \\I
+        \\|
+        \\|
+    );
+}
+
+test "a nested list keeps its content column whether or not the marker is shown" {
+    var h = try Harness.init(alloc, .{ .cols = 16, .rows = 5 });
+    defer h.deinit();
+
+    // Concealing a list marker also conceals the tabs that were doing the indenting, so the
+    // indent has to be supplied instead. Content must land in the same column either way — a
+    // reftest, so neither rendering has to state a magic column number.
+    try h.open("\t\t- three\nx");
+    try h.frame(.{ .rights = 1 }); // caret on the item: marker shown
+    try h.expectGrid("\t\t- three\nx");
+
+    try h.frame(.{ .downs = 1 }); // caret off it: marker concealed, indent supplied
+    try h.expectGrid("    three\nx");
+}
+
+test "a wrapped nested item hangs under its own marker" {
+    var h = try Harness.init(alloc, .{ .cols = 14, .rows = 6 });
+    defer h.deinit();
+
+    // Marker is "\t\t- ", four cells. Continuations hang under where the text began.
+    try h.open("\t\t- aaaaaaaaaaaaaaaaaaaa");
+    try h.idle();
+    try h.expectGrid("\t\t- aaaaaaaaa\n    aaaaaaaaa\n    aa");
+}
+
+test "each token is drawn in its own font" {
+    var h = try Harness.init(alloc, .{ .cols = 16, .rows = 4 });
+    defer h.deinit();
+
+    // Off the caret's line the delimiters go, but the styling they described stays.
+    try h.open("x\nfoo**bar**baz");
+    try h.idle();
+    try h.expectGrid(
+        \\x
+        \\foobarbaz
+    );
+    try h.expectStyles(
+        \\p
+        \\pppbbbppp
+    );
+}
+
+test "a header scales its font and hides its hashes" {
+    var h = try Harness.init(alloc, .{ .cols = 16, .rows = 4 });
+    defer h.deinit();
+
+    try h.open("x\n## Head");
+    try h.idle();
+    try h.expectGrid(
+        \\x
+        \\Head
+    );
+    try h.expectStyles(
+        \\p
+        \\hhhh
+    );
+}
+
+test "selection width follows what is drawn, not what is stored" {
+    var h = try Harness.init(alloc, .{ .cols = 16, .rows = 4 });
+    defer h.deinit();
+
+    // Line 1 conceals its asterisks, so it draws "abc". The selection over it must be measured
+    // against those three columns and not against the seven bytes of source.
+    //
+    // It has to be a *middle* line: the caret reveals whatever line it sits on, so a selection
+    // ending on the concealed line would un-conceal the very thing under test.
+    try h.open("xy\na**b**c\nz");
+    try h.frame(.{ .downs = 1, .modifiers = mod_shift });
+    try h.frame(.{ .downs = 1, .modifiers = mod_shift });
+    try h.expectGrid(
+        \\xy
+        \\abc
+        \\z
+    );
+    try h.expectAttrs(
+        \\##
+        \\###
+        \\I
+    );
+}
+
+// ***************************************************************************** Mouse selection
+test "a drag selects from where it began to where it ended" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 4 });
+    defer h.deinit();
+
+    try h.open("abcde");
+    try h.pressCell(1, 0);
+    try h.dragCell(4, 0);
+    try h.releaseCell(4, 0);
+    try h.expectAttrs(
+        \\.###I
+    );
+}
+
+test "the caret tracks the pointer while held and the anchor stays put" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 4 });
+    defer h.deinit();
+
+    try h.open("abcde");
+    try h.pressCell(3, 0);
+    try h.dragCell(5, 0);
+    try h.expectAttrs(
+        \\...##I
+    );
+
+    // Dragging back past the anchor flips the selection to its left; the anchor does not move,
+    // so what is selected is now [0,3) and the caret leads it from the other end.
+    try h.dragCell(0, 0);
+    try h.expectAttrs(
+        \\I##
+    );
+}
+
+test "a fresh click discards the selection a drag left behind" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 4 });
+    defer h.deinit();
+
+    try h.open("abcde");
+    try h.pressCell(1, 0);
+    try h.dragCell(4, 0);
+    try h.releaseCell(4, 0);
+
+    try h.clickCell(0, 0);
+    try h.expectAttrs(
+        \\I
+    );
+}
+
+test "clicks outside the text clamp to the nearest row and column" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 4 });
+    defer h.deinit();
+
+    try h.open("ab\ncd");
+
+    // Below and right of everything: the end of the last row.
+    try h.clickPoint(.{ .x = 10_000, .y = 10_000 });
+    try h.expectAttrs(
+        \\
+        \\..I
+    );
+
+    // Above and left of everything: the start of the first row.
+    try h.clickPoint(.{ .x = -10_000, .y = -10_000 });
+    try h.expectAttrs(
+        \\I
+    );
+}
