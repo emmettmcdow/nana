@@ -119,6 +119,8 @@ pub const FrameActions = struct {
 pub const deinitHistory = ted.deinitHistory;
 pub const selectionLen = ted.selectionLen;
 pub const copySelection = ted.copySelection;
+/// The editor's cross-frame scratch. Owned by whoever drives the frame loop — see `ted.Layout`.
+pub const Layout = ted.Layout;
 
 // ********************************************************************************** Top-Level Fns
 pub fn frame(
@@ -126,6 +128,7 @@ pub fn frame(
     canvas: *Canvas,
     in: Input,
     state: *AppState,
+    layout: *ted.Layout,
     notes: []const NoteEntry,
 ) !FrameActions {
     canvas.clear(th().background); // background
@@ -175,7 +178,7 @@ pub fn frame(
 
     // The editor draws first and the chrome over it. `overlay.frame` may add to `actions` —
     // a click on a row or a button — on top of whatever the query branch above recorded.
-    try ted.frame(allocator, canvas, editor_in, state);
+    try ted.frame(allocator, canvas, editor_in, state, layout);
     overlay.frame(canvas, in, state, notes, &actions);
     return actions;
 }

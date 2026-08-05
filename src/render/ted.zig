@@ -232,15 +232,121 @@ const View = struct {
     /// nothing else here would notice it moved.
     font_size: f64 = 0,
 
-    fn fullRecalc(text_buf: []u8, line_buf: []Line, frag_buf: []Fragment, measurer: Measurer, state: *AppState) !View {
-        const full_text = condenseGapBuf(text_buf, state.*);
-        const tokens = try tokenize(full_text);
-        const reveal = revealForCursor(full_text, state.cursor_i);
+};
+
+// ******************************************************************************* The Layout Cache
+const BASE_SCRATCH_SIZE = 1024 * 1024; // 1MB
+const BASE_LINE_SCRATCH_SIZE = 1024; // max rendered lines before regrow
+const BASE_FRAG_SCRATCH_SIZE = 1024; // max rendered fragments before regrow
+
+/// Everything the editor keeps between frames: the scratch buffers a document is laid out into,
+/// the arena its markdown tree lives in, and the `View` that results.
+///
+/// Handed to `frame` rather than reached for. The app makes one at startup and keeps it for the
+/// life of the process, which is right for something with a single document open; a test binary
+/// runs dozens of documents and wants one per harness, so that a layout cannot carry one test's
+/// text into the next and the testing allocator has an owner to hold responsible.
+///
+/// `view` aliases `text`, `lines` and `frags`, and its tokens belong to `arena` — so it is
+/// dangling the instant any of them is freed or moved, and every path that does either has to
+/// clear it. That is a real hazard, not a stylistic one, and it is the reason all of this is one
+/// struct with one owner instead of six variables.
+pub const Layout = struct {
+    /// The document condensed out of the gap buffer, NUL-terminated.
+    text: []u8,
+    lines: []Line,
+    frags: []Fragment,
+    /// Runs staged for one attributed measurement. Bounded by the token count, itself ≤ text_len.
+    runs: []AttributedText.Run,
+    /// Visible-line placements for the current render pass; bounded by line count (≤ text_len).
+    placements: []Placement,
+    /// Holds the parsed markdown tree. Kept across frames so it keeps its capacity — each
+    /// `tokenize` resets it, freeing the previous frame's tree, before parsing again.
+    arena: std.heap.ArenaAllocator,
+    /// The laid-out document, or null when there is nothing usable to draw from yet.
+    view: ?View = null,
+
+    pub fn init(alloc: Allocator) !Layout {
+        const text = try alloc.alloc(u8, BASE_SCRATCH_SIZE);
+        errdefer alloc.free(text);
+        const lines = try alloc.alloc(Line, BASE_LINE_SCRATCH_SIZE);
+        errdefer alloc.free(lines);
+        const frags = try alloc.alloc(Fragment, BASE_FRAG_SCRATCH_SIZE);
+        errdefer alloc.free(frags);
+        const runs = try alloc.alloc(AttributedText.Run, BASE_FRAG_SCRATCH_SIZE);
+        errdefer alloc.free(runs);
+        const placements = try alloc.alloc(Placement, BASE_LINE_SCRATCH_SIZE);
+
         return .{
+            .text = text,
+            .lines = lines,
+            .frags = frags,
+            .runs = runs,
+            .placements = placements,
+            .arena = std.heap.ArenaAllocator.init(alloc),
+        };
+    }
+
+    pub fn deinit(self: *Layout, alloc: Allocator) void {
+        // Before the buffers it points into, so nothing outlives it as a dangling view.
+        self.view = null;
+        alloc.free(self.text);
+        alloc.free(self.lines);
+        alloc.free(self.frags);
+        alloc.free(self.runs);
+        alloc.free(self.placements);
+        self.arena.deinit();
+    }
+
+    /// Throw away the laid-out document, so the next frame builds it afresh.
+    pub fn invalidate(self: *Layout) void {
+        self.view = null;
+    }
+
+    /// Grow every buffer to fit a document of `text_len` bytes.
+    fn ensure(self: *Layout, alloc: Allocator, text_len: usize) !void {
+        // `view` holds slices into the first three, so a realloc that relocates one leaves it
+        // pointing at freed memory. The growth bound is `text_len` in *bytes*, so this trips on
+        // any note past a kilobyte, not on some pathological document.
+        //
+        // HACK: the real fix is for the layout not to alias buffers it does not own.
+        const text_was = self.text.ptr;
+        const lines_was = self.lines.ptr;
+        const frags_was = self.frags.ptr;
+
+        while (self.text.len <= text_len) {
+            self.text = try alloc.realloc(self.text, self.text.len << 1);
+        }
+        while (self.lines.len <= text_len) {
+            self.lines = try alloc.realloc(self.lines, self.lines.len << 1);
+        }
+        // Fragment count is bounded by row/token intersections, itself ≤ text_len.
+        while (self.frags.len <= text_len) {
+            self.frags = try alloc.realloc(self.frags, self.frags.len << 1);
+        }
+        // One run per token at worst, and there is never more than one token per byte.
+        while (self.runs.len <= text_len) {
+            self.runs = try alloc.realloc(self.runs, self.runs.len << 1);
+        }
+        // Placements are bounded by line count, itself ≤ text_len.
+        while (self.placements.len <= text_len) {
+            self.placements = try alloc.realloc(self.placements, self.placements.len << 1);
+        }
+
+        if (self.text.ptr != text_was or self.lines.ptr != lines_was or self.frags.ptr != frags_was) {
+            self.invalidate();
+        }
+    }
+
+    fn fullRecalc(self: *Layout, measurer: Measurer, state: *AppState) !void {
+        const full_text = condenseGapBuf(self.text, state.*);
+        const tokens = try tokenize(&self.arena, full_text);
+        const reveal = revealForCursor(full_text, state.cursor_i);
+        self.view = .{
             .full_text = full_text,
             .tokens = tokens,
             .reveal = reveal,
-            .lines = splitLines(full_text, tokens, line_buf, frag_buf, measurer, reveal),
+            .lines = splitLines(full_text, tokens, self.lines, self.frags, measurer, reveal),
             .last_seen = EditPrint.of(state),
             .content_w = measurer.content_w,
             .font_size = th().font_size,
@@ -249,127 +355,35 @@ const View = struct {
 
     /// Redo the layout if anything it depends on moved. Despite the name this is still
     /// all-or-nothing: a staleness check in front of `fullRecalc`, not an incremental layout.
-    fn partialRecalc(self: *View, text_buf: []u8, line_buf: []Line, frag_buf: []Fragment, measurer: Measurer, state: *AppState) !void {
+    fn partialRecalc(self: *Layout, measurer: Measurer, state: *AppState) !void {
+        const v = self.view orelse return self.fullRecalc(measurer, state);
         // The document changed.
         const now = EditPrint.of(state);
         // The caret moved to another source line, so a different line shows its markup. Safe to
         // compute against a possibly-stale `full_text`: if the text itself changed then `now`
         // already differs and this comparison never gets to decide anything.
-        const reveal_now = revealForCursor(self.full_text, state.cursor_i);
+        const reveal_now = revealForCursor(v.full_text, state.cursor_i);
 
-        if (!std.meta.eql(self.last_seen, now) or
-            !std.meta.eql(self.reveal, reveal_now) or
-            self.content_w != measurer.content_w or // the window was resized; rows wrap elsewhere
-            self.font_size != th().font_size)
+        if (!std.meta.eql(v.last_seen, now) or
+            !std.meta.eql(v.reveal, reveal_now) or
+            v.content_w != measurer.content_w or // the window was resized; rows wrap elsewhere
+            v.font_size != th().font_size)
         {
-            self.* = try View.fullRecalc(text_buf, line_buf, frag_buf, measurer, state);
+            try self.fullRecalc(measurer, state);
         }
     }
 };
 
-// *************************************************************************** Global Scratch Bufs.
-const BASE_SCRATCH_SIZE = 1024 * 1024; // 1MB
-var scratch: ?[]u8 = null;
-
-const BASE_LINE_SCRATCH_SIZE = 1024; // max rendered lines before regrow
-var line_scratch: ?[]Line = null;
-
-const BASE_FRAG_SCRATCH_SIZE = 1024; // max rendered fragments before regrow
-var frag_scratch: ?[]Fragment = null;
-
-// Runs staged for one attributed measurement. Bounded by the token count, itself ≤ text_len.
-var run_scratch: ?[]AttributedText.Run = null;
-
-// Visible-line placements for the current render pass; bounded by line count (≤ text_len).
-var placement_scratch: ?[]Placement = null;
-
-// Persisted across frames so the parse arena keeps its capacity. Each `tokenize`
-// resets it (freeing the previous frame's tree) before parsing again.
-var md_arena: ?std.heap.ArenaAllocator = null;
-
-var view: ?View = null;
-
-/// Drop everything held across frames.
-///
-/// The app allocates these once and keeps them for the life of the process, which is right for
-/// something with one document open at a time and wrong for a test binary running dozens of
-/// documents through the same globals: the layout would carry one test's text into the next, and
-/// the testing allocator would report every buffer as leaked. Tests call this between documents.
-///
-/// `view` goes last and unconditionally — it holds slices into the scratch buffers and tokens
-/// owned by the arena, so it is dangling the moment either is freed.
-pub fn resetGlobals(alloc: Allocator) void {
-    if (scratch) |s| alloc.free(s);
-    if (line_scratch) |s| alloc.free(s);
-    if (frag_scratch) |s| alloc.free(s);
-    if (placement_scratch) |s| alloc.free(s);
-    if (run_scratch) |s| alloc.free(s);
-    if (md_arena) |*a| a.deinit();
-    scratch = null;
-    line_scratch = null;
-    frag_scratch = null;
-    placement_scratch = null;
-    run_scratch = null;
-    md_arena = null;
-    view = null;
-}
-
 // ********************************************************************************** Top-Level Fns
-pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *AppState) !void {
-    { // scratch setup / init
-        if (scratch == null) {
-            scratch = try allocator.alloc(u8, BASE_SCRATCH_SIZE);
-        }
-        if (line_scratch == null) {
-            line_scratch = try allocator.alloc(Line, BASE_LINE_SCRATCH_SIZE);
-        }
-        if (frag_scratch == null) {
-            frag_scratch = try allocator.alloc(Fragment, BASE_FRAG_SCRATCH_SIZE);
-        }
-        if (placement_scratch == null) {
-            placement_scratch = try allocator.alloc(Placement, BASE_LINE_SCRATCH_SIZE);
-        }
-        if (run_scratch == null) {
-            run_scratch = try allocator.alloc(AttributedText.Run, BASE_FRAG_SCRATCH_SIZE);
-        }
-        // `view` holds slices into these three and survives across frames, so a realloc that
-        // relocates one leaves it pointing at freed memory. The growth bound is `text_len` in
-        // *bytes*, so this trips on any note past a kilobyte, not on some pathological
-        // document. Note the moves and force a full recalc below.
-        //
-        // HACK: the real fix is for the layout not to alias buffers it does not own.
-        const text_ptr_was = scratch.?.ptr;
-        const line_ptr_was = line_scratch.?.ptr;
-        const frag_ptr_was = frag_scratch.?.ptr;
+pub fn frame(
+    allocator: std.mem.Allocator,
+    canvas: *Canvas,
+    in: Input,
+    state: *AppState,
+    layout: *Layout,
+) !void {
+    try layout.ensure(allocator, state.text_len);
 
-        while (scratch.?.len <= state.text_len) {
-            scratch = try allocator.realloc(scratch.?, scratch.?.len << 1);
-        }
-        while (line_scratch.?.len <= state.text_len) {
-            line_scratch = try allocator.realloc(line_scratch.?, line_scratch.?.len << 1);
-        }
-        // Fragment count is bounded by row/token intersections, itself ≤ text_len.
-        while (frag_scratch.?.len <= state.text_len) {
-            frag_scratch = try allocator.realloc(frag_scratch.?, frag_scratch.?.len << 1);
-        }
-        // Placements are bounded by line count, itself ≤ text_len.
-        while (placement_scratch.?.len <= state.text_len) {
-            placement_scratch = try allocator.realloc(placement_scratch.?, placement_scratch.?.len << 1);
-        }
-        // One run per token at worst, and there is never more than one token per byte.
-        while (run_scratch.?.len <= state.text_len) {
-            run_scratch = try allocator.realloc(run_scratch.?, run_scratch.?.len << 1);
-        }
-        if (scratch.?.ptr != text_ptr_was or
-            line_scratch.?.ptr != line_ptr_was or
-            frag_scratch.?.ptr != frag_ptr_was)
-        {
-            view = null;
-        }
-        if (md_arena == null) {
-            md_arena = std.heap.ArenaAllocator.init(allocator);
-        }
-    }
     const measurer = Measurer{
         .content_w = canvas.size.w - (MARGIN_PX * 2),
         .ctx = canvas,
@@ -377,13 +391,15 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
         .heightFn = heightWithCanvas,
         .attrWidthFn = attrWidthWithCanvas,
         .attrHeightFn = attrHeightWithCanvas,
-        .run_buf = run_scratch.?,
+        .run_buf = layout.runs,
     };
 
-    if (state.clear_view or view == null) {
+    if (state.clear_view) {
         state.clear_view = false;
-        view = try View.fullRecalc(scratch.?, line_scratch.?, frag_scratch.?, measurer, state);
+        layout.invalidate();
     }
+    // `handleInput` reads the laid-out rows, so there has to be a layout before it runs.
+    if (layout.view == null) try layout.fullRecalc(measurer, state);
 
     // TODO: this is iffy, is this necessary?
     // Whether the view should chase the caret this frame. Only true when the caret actually
@@ -392,29 +408,35 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
     var follow_cursor = false;
 
     { // Calculate the displayed text and handle inputs
+        // Last frame's layout, which is what the input is being interpreted against — a click
+        // lands on the rows the user was actually looking at when they clicked.
+        const prev = layout.view.?;
         const cursor_before = state.cursor_i;
-        try handleInput(allocator, in, state, view.?.lines, view.?.tokens, frag_scratch.?, view.?.full_text, measurer);
+        try handleInput(allocator, in, state, prev.lines, prev.tokens, layout.frags, prev.full_text, measurer);
         // `dirty` covers deleting a selection ahead of the caret, which changes the text
         // without moving it.
         follow_cursor = state.cursor_i != cursor_before or state.dirty;
     }
     { // Render pass
-        try view.?.partialRecalc(scratch.?, line_scratch.?, frag_scratch.?, measurer, state);
+        try layout.partialRecalc(measurer, state);
+        // Taken after the recalc, so it is this frame's layout rather than the one the input
+        // above was resolved against. A copy, not a pointer: nothing below re-lays it out.
+        const view = layout.view.?;
         const text_x: f64 = MARGIN_PX;
         const viewport_h = canvas.size.h - (MARGIN_PX * 2);
 
         // Wheel first, then the caret, so typing always wins over where the wheel had left us.
         state.scroll_y -= in.scroll_dy;
         if (follow_cursor) {
-            state.scroll_y = scrollToCursor(view.?.lines, state.scroll_y, cursorLine(view.?.lines, state.cursor_i), viewport_h);
+            state.scroll_y = scrollToCursor(view.lines, state.scroll_y, cursorLine(view.lines, state.cursor_i), viewport_h);
         }
         state.scroll_y = v: {
             var h: f64 = 0;
-            for (view.?.lines) |line| h += line.h;
+            for (view.lines) |line| h += line.h;
             break :v std.math.clamp(state.scroll_y, 0, @max(0, h - viewport_h));
         };
 
-        const placements = visiblePlacements(view.?.lines, state.scroll_y, viewport_h, placement_scratch.?);
+        const placements = visiblePlacements(view.lines, state.scroll_y, viewport_h, layout.placements);
         var caret_drawn = false;
 
         // Rows at the edges are cut off mid-line; keep them inside the content area.
@@ -422,7 +444,7 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
         defer canvas.popClip();
 
         for (placements) |placement| {
-            const line = view.?.lines[placement.line];
+            const line = view.lines[placement.line];
             const line_h = line.h;
             const text_y = MARGIN_PX + placement.y;
             // Where this row's text actually starts. Everything that converts between an x
@@ -435,7 +457,7 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
             const row_w = measurer.content_w - line.indent;
             { // Quote rules: one bar per nesting level, standing in the gutter the text
                 // vacated. Drawn first so everything else layers over them.
-                const owner = tokenAt(view.?.tokens, line.start);
+                const owner = tokenAt(view.tokens, line.start);
                 if (owner.tType == .QUOTE) {
                     for (0..owner.degree) |level| {
                         const bar_x = text_x + (@as(f64, @floatFromInt(level)) * QUOTE_INDENT_PX);
@@ -449,7 +471,7 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                 if (cursor_in_line and !caret_drawn) {
                     // At a soft-wrap boundary the cursor offset matches both the end
                     // of one line and the start of the next; prefer the earlier line.
-                    const caret_x = line_x + xForOffset(line, frag_scratch.?, view.?.full_text, view.?.tokens, state.cursor_i, measurer);
+                    const caret_x = line_x + xForOffset(line, layout.frags, view.full_text, view.tokens, state.cursor_i, measurer);
                     canvas.fillRect(.{ .x = caret_x, .y = text_y, .w = 2, .h = line_h }, th().caret);
                     caret_drawn = true;
                 }
@@ -463,15 +485,15 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                     const lo = @max(sel_lo, line.start);
                     const hi = @min(sel_hi, line_end);
                     if (lo <= hi) {
-                        const x0 = xForOffset(line, frag_scratch.?, view.?.full_text, view.?.tokens, lo, measurer);
-                        const x1 = xForOffset(line, frag_scratch.?, view.?.full_text, view.?.tokens, hi, measurer);
+                        const x0 = xForOffset(line, layout.frags, view.full_text, view.tokens, lo, measurer);
+                        const x1 = xForOffset(line, layout.frags, view.full_text, view.tokens, hi, measurer);
                         // A row wholly inside the selection but with nothing drawn on it — a
                         // blank line, or one that is all concealed markup — still shows a stub,
                         // so a multi-line selection doesn't look like it skipped a row.
                         const selection_w = if (x1 > x0)
                             x1 - x0
                         else if (sel_lo < line.start and sel_hi > line_end)
-                            measurer.width(" ", view.?.tokens, line.start, line.start + 1)
+                            measurer.width(" ", view.tokens, line.start, line.start + 1)
                         else
                             0;
                         if (selection_w > 0) {
@@ -481,13 +503,13 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                 }
             }
             { // Draw Text
-                const frags = frag_scratch.?[line.frag_start..line.frag_end];
+                const frags = layout.frags[line.frag_start..line.frag_end];
                 if (frags.len == 0) {
                     // A blank row carries no fragments, but it still belongs to whatever block
                     // owns it — a blank line inside a fence, say. Paint that block's panel so
                     // the slab has no holes where the source had empty lines. Only a `.full`
                     // panel applies; a `.run` panel over an empty row has nothing to hug.
-                    const style = styleForToken(tokenAt(view.?.tokens, line.start));
+                    const style = styleForToken(tokenAt(view.tokens, line.start));
                     if (style.background) |bg| {
                         if (style.panel == .full) {
                             fillPanel(canvas, .{ .x = line_x, .y = text_y, .w = row_w, .h = line_h }, bg);
@@ -498,14 +520,14 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
                 for (frags) |frag| {
                     // Only the visible middle is drawn; on a row whose line isn't revealed the
                     // delimiters were clipped off this range and so take up no space.
-                    const shown = view.?.full_text[frag.vis_start..frag.vis_end];
+                    const shown = view.full_text[frag.vis_start..frag.vis_end];
                     if (shown.len == 0) continue;
-                    const style = styleForToken(view.?.tokens[frag.tok]);
+                    const style = styleForToken(view.tokens[frag.tok]);
                     if (style.background) |bg| {
                         // The panel has to be down before the glyphs, so its width can't come
                         // from drawText's return — measure the run up front.
                         const w = switch (style.panel) {
-                            .run => measurer.width(shown, view.?.tokens, frag.vis_start, frag.vis_end),
+                            .run => measurer.width(shown, view.tokens, frag.vis_start, frag.vis_end),
                             .full => row_w - (frag_x - line_x),
                         };
                         fillPanel(canvas, .{ .x = frag_x, .y = text_y, .w = w, .h = line_h }, bg);
@@ -1537,11 +1559,11 @@ fn plainTokenize(full_text: []const u8) Token {
 }
 
 /// Parse `full_text` into flat markdown tokens, falling back to a single plain token for an empty
-/// document (which the parser returns none for). Tokens live in the parse arena and are valid only
-/// until the next `tokenize` call, which resets it.
-fn tokenize(full_text: []const u8) ![]const Token {
-    _ = md_arena.?.reset(.retain_capacity);
-    const parsed = try markdown.parseFlat(md_arena.?.allocator(), full_text);
+/// document (which the parser returns none for). Tokens live in `arena` and are valid only until
+/// the next `tokenize` call against it, which resets it.
+fn tokenize(arena: *std.heap.ArenaAllocator, full_text: []const u8) ![]const Token {
+    _ = arena.reset(.retain_capacity);
+    const parsed = try markdown.parseFlat(arena.allocator(), full_text);
     return if (parsed.len == 0) EMPTY_DOC_TOKENS else parsed;
 }
 

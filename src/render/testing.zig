@@ -317,6 +317,9 @@ pub const Harness = struct {
     alloc: Allocator,
     recorder: Recorder,
     state: AppState,
+    /// One per harness rather than one per process, so a document laid out by one test cannot
+    /// reach the next and every buffer has an owner the testing allocator can hold responsible.
+    layout: ted.Layout,
     grid: Grid,
     saved_theme: theme.Theme,
 
@@ -342,6 +345,8 @@ pub const Harness = struct {
         const attrs = try alloc.alloc(Attr, opts.cols * opts.rows);
         errdefer alloc.free(attrs);
         const styles = try alloc.alloc(StyleMark, opts.cols * opts.rows);
+        errdefer alloc.free(styles);
+        const layout = try ted.Layout.init(alloc);
 
         return .{
             .alloc = alloc,
@@ -351,6 +356,7 @@ pub const Harness = struct {
                 break :blk r;
             },
             .state = AppState.init(gap_buf),
+            .layout = layout,
             .grid = .{ .cols = opts.cols, .rows = opts.rows, .cells = cells, .attrs = attrs, .styles = styles },
             // The editor reads the theme off a global. Saved so a test cannot leave the next one
             // running against sentinel colors.
@@ -360,7 +366,7 @@ pub const Harness = struct {
 
     pub fn deinit(self: *Harness) void {
         ted.deinitHistory(&self.state, self.alloc);
-        ted.resetGlobals(self.alloc);
+        self.layout.deinit(self.alloc);
         self.recorder.deinit();
         self.alloc.free(self.state.gap_buf);
         self.alloc.free(self.grid.cells);
@@ -383,7 +389,6 @@ pub const Harness = struct {
     /// delimiters and every other line conceals them. Tests move it with real input rather than
     /// by assignment, so the reveal they see is the one the editor would compute.
     pub fn open(self: *Harness, doc: []const u8) !void {
-        ted.resetGlobals(self.alloc); // no layout carried over from the previous document
         ted.deinitHistory(&self.state, self.alloc);
 
         const buf = self.state.gap_buf;
@@ -396,7 +401,9 @@ pub const Harness = struct {
         self.state.selection_anchor = null;
         self.state.scroll_y = 0;
         self.state.dirty = false;
-        self.state.clear_view = true;
+        // Nothing of the previous document survives into this one. The buffers are reused —
+        // they are this harness's own — but the layout laid out over them is not.
+        self.layout.invalidate();
         self.state.assertInvariant();
     }
 
@@ -405,7 +412,7 @@ pub const Harness = struct {
         theme.active = test_theme;
         self.recorder.reset();
         var canvas = self.recorder.canvas(self.canvasSize());
-        try ted.frame(self.alloc, &canvas, in, &self.state);
+        try ted.frame(self.alloc, &canvas, in, &self.state, &self.layout);
         if (self.recorder.oom) return error.OutOfMemory;
         self.rasterise();
     }

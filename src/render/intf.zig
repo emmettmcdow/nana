@@ -44,6 +44,10 @@ const NanaInput = extern struct {
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const GAP_BUF_SIZE = 4000; // 4Kb
 var state: ?AppState = null;
+/// The editor's cross-frame scratch, allocated once and kept for the life of the process. Held
+/// here beside `state` because this is the layer that drives the frame loop, and `ted.frame` is
+/// handed it rather than reaching for one of its own.
+var layout: ?app.Layout = null;
 var settings_store: settings.Settings = .{};
 
 /// Menu commands that have come in since the last frame, folded into that frame's `Input` and
@@ -136,6 +140,7 @@ fn defaultWorkspacePath(alloc: std.mem.Allocator) ![]u8 {
 export fn nana_render_init(path: ?[*:0]const u8) void {
     settings_store = settings.load(gpa.allocator());
     state = AppState.init(gpa.allocator().alloc(u8, GAP_BUF_SIZE) catch unreachable);
+    layout = app.Layout.init(gpa.allocator()) catch unreachable;
 
     const allocator = gpa.allocator();
     const chosen: ?[]const u8 = if (path) |p| std.mem.sliceTo(p, 0) else null;
@@ -194,6 +199,8 @@ export fn nana_render_deinit() void {
         session.flush(s);
         app.deinitHistory(s, gpa.allocator());
     }
+    if (layout) |*l| l.deinit(gpa.allocator());
+    layout = null;
     session.close();
     runtime.mutex.lock();
     defer runtime.mutex.unlock();
@@ -281,7 +288,7 @@ export fn nana_render_frame(ctx: CGContextRef, width: f64, height: f64, in: *con
     if (state.?.list_visible and notes_stale) refreshNotes(state.?.query());
     const notes = if (state.?.list_visible) note_entries[0..note_count] else &[_]app.NoteEntry{};
 
-    const actions = app.frame(gpa.allocator(), &canvas, input, &(state.?), notes) catch unreachable;
+    const actions = app.frame(gpa.allocator(), &canvas, input, &(state.?), &(layout.?), notes) catch unreachable;
     // After the frame, so it sees this frame's edits.
     session.tick(&(state.?));
 
