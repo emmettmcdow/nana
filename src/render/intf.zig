@@ -46,6 +46,14 @@ const GAP_BUF_SIZE = 4000; // 4Kb
 var state: ?AppState = null;
 var settings_store: settings.Settings = .{};
 
+/// Menu commands that have come in since the last frame, folded into that frame's `Input` and
+/// cleared once it has consumed them.
+///
+/// Accumulated here for the same reason the Swift host accumulates keystrokes: AppKit dispatches
+/// a menu item whenever it likes, and the editor may only touch the document inside `frame`.
+/// The redraw is timer-driven at 60Hz, so nothing waits longer than a frame.
+var pending: input_mod.Commands = .{};
+
 /// The note listing shown in the file list, rebuilt only when it could have changed — walking
 /// the workspace every frame at 60Hz would be absurd.
 const MAX_LISTED_NOTES = 512;
@@ -251,7 +259,12 @@ export fn nana_render_frame(ctx: CGContextRef, width: f64, height: f64, in: *con
         .downs = @intCast(in.downs),
         .lefts = @intCast(in.lefts),
         .rights = @intCast(in.rights),
+        .cmds = pending,
     };
+    // Handed off, so the queue starts empty again. Nothing accumulates across frames: a command
+    // the editor accepts is applied by this frame — `applyCommands` runs unconditionally rather
+    // than competing with the keyboard — and one it doesn't is meant to be thrown away.
+    pending = .{};
 
     // Cheap enough to redo per frame, and it means an appearance change takes effect on the
     // next redraw with no invalidation to remember.
@@ -310,6 +323,9 @@ fn applyActions(actions: app.FrameActions, notes: []const app.NoteEntry) void {
 // The host owns the pasteboard (an AppKit service); we own what "selected" means. These are
 // called from AppKit action handlers, which run on the main thread — the same thread that
 // drives the frame loop — so they never overlap with `nana_render_frame`.
+//
+// The two that only read answer immediately. The rest queue a command and let the next frame
+// carry it out, so no edit lands where the layout cannot see it.
 
 export fn nana_render_selection_len() c_uint {
     const s = state orelse return 0;
@@ -321,21 +337,60 @@ export fn nana_render_copy_selection(out: [*]u8, out_len: c_uint) c_int {
     return @intCast(app.copySelection(s, out[0..@as(usize, out_len)]));
 }
 
+/// Whether the editor is accepting commands at all.
+///
+/// It is disabled while the note list is up — `app.frame` masks its input away entirely — and a
+/// command queued now would be thrown out by the frame it reached. Refused here instead, so the
+/// caller learns that nothing will happen rather than being told it will.
+fn editorEnabled() bool {
+    const s = state orelse return false;
+    return !s.list_visible;
+}
+
+/// Copy the selection out and ask for it to be removed next frame.
+///
+/// The copy cannot wait: the host has a pasteboard to fill in this call and no way to be handed
+/// the bytes later. The removal can, and does — it is the half that touches the document.
+///
+/// Both halves hang on the same check, and that is the point of doing it here rather than
+/// leaving the frame to drop the command: copying without removing would silently turn a cut
+/// into a copy. Nothing is queued unless the copy succeeded either, so a cut into too small a
+/// buffer cannot lose text.
 export fn nana_render_cut_selection(out: [*]u8, out_len: c_uint) c_int {
-    const s = &(state orelse return 0);
-    // Journalled, so a cut is undoable like any other edit. Nothing is removed unless the copy
-    // succeeded, so a failure here can't lose text.
-    const n = app.cutSelection(s, gpa.allocator(), out[0..@as(usize, out_len)]) catch return 0;
+    if (!editorEnabled()) return 0;
+    const n = app.copySelection(state.?, out[0..@as(usize, out_len)]);
+    if (n == 0) return 0;
+    pending.delete_selection = true;
     return @intCast(n);
 }
 
 export fn nana_render_select_all() void {
-    const s = &(state orelse return);
-    app.selectAll(s);
+    if (!editorEnabled()) return;
+    pending.select_all = true;
 }
 
-/// Returns whether anything was undone/redone, so the host can leave the system beep to AppKit
-/// when the stack is empty.
+// ── Undo ─────────────────────────────────────────────────────────────────────
+//
+// Both return whether anything will be undone/redone, so the host can leave the system beep to
+// AppKit when the stack is empty. Predicted rather than observed, since the work happens next
+// frame — but nothing else can reach the stacks in between, so a run of presses in one direction
+// is answered exactly. Interleaving an undo and a redo inside a single frame is not modelled,
+// and is not something a person does in 16ms.
+
+export fn nana_render_undo() bool {
+    if (!editorEnabled()) return false;
+    if (pending.undos >= state.?.history.undo_stack.items.len) return false;
+    pending.undos += 1;
+    return true;
+}
+
+export fn nana_render_redo() bool {
+    if (!editorEnabled()) return false;
+    if (pending.redos >= state.?.history.redo_stack.items.len) return false;
+    pending.redos += 1;
+    return true;
+}
+
 // ── Settings ─────────────────────────────────────────────────────────────────
 
 export fn nana_render_font_size() f64 {
@@ -352,14 +407,4 @@ export fn nana_render_set_font_size(size: f64) void {
 /// Nudge the type size, for the menu's increase/decrease commands.
 export fn nana_render_adjust_font_size(delta: f64) void {
     nana_render_set_font_size(settings_store.font_size + delta);
-}
-
-export fn nana_render_undo() bool {
-    const s = &(state orelse return false);
-    return app.undo(s, gpa.allocator()) catch false;
-}
-
-export fn nana_render_redo() bool {
-    const s = &(state orelse return false);
-    return app.redo(s, gpa.allocator()) catch false;
 }

@@ -112,13 +112,13 @@ pub const FrameActions = struct {
 // ****************************************************************************** Editor Re-exports
 // `intf.zig` reaches these across the C boundary. They are the editor's, but the host knows
 // only this module, so they are surfaced here rather than making it import `ted.zig` too.
+//
+// Only the reads are here. Undo, redo, select-all and cut mutate the document, so they cannot be
+// called at whatever moment AppKit dispatches a menu item — the host records them in
+// `Input.cmds` instead and the editor applies them inside the frame.
 pub const deinitHistory = ted.deinitHistory;
-pub const undo = ted.undo;
-pub const redo = ted.redo;
-pub const selectAll = ted.selectAll;
 pub const selectionLen = ted.selectionLen;
 pub const copySelection = ted.copySelection;
-pub const cutSelection = ted.cutSelection;
 
 // ********************************************************************************** Top-Level Fns
 pub fn frame(
@@ -160,7 +160,11 @@ pub fn frame(
     var editor_in = in;
     var actions = FrameActions{};
     if (state.list_visible) {
-        editor_in = Input{}; // The editor should receive no inputs while the list is active
+        // The editor is disabled outright while the list is up, menu commands included: an undo
+        // or a cut aimed at a document you are not looking at is not something to hold onto and
+        // spring later. Dropped rather than deferred — `intf.zig` clears the queue on handoff,
+        // so what is masked here is gone.
+        editor_in = Input{};
         actions.query_changed = overlay.editQuery(state, in);
         if (std.mem.indexOfScalar(u8, in.text, '\n') != null) {
             // Enter accepts the top hit, the usual way out of a search field.

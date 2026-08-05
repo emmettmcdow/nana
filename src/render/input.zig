@@ -10,6 +10,22 @@ pub const mod_control: u32 = 1 << 1;
 pub const mod_option: u32 = 1 << 2;
 pub const mod_command: u32 = 1 << 3;
 
+/// Editing commands that arrive from the host's menus and key equivalents rather than from the
+/// keyboard proper.
+///
+/// Counted the same way `backspaces` and `lefts` are, and for the same reason: AppKit dispatches
+/// them whenever it likes, which is between frames, so the host accumulates them until the next
+/// one comes round. Carrying them out then rather than the moment they arrive is what keeps every
+/// mutation of the document inside the frame — see `ted.applyCommands`.
+pub const Commands = struct {
+    undos: u32 = 0,
+    redos: u32 = 0,
+    select_all: bool = false,
+    /// Remove the selection as one journalled edit. Asked for by a cut, whose copy half already
+    /// ran: the host has a pasteboard to fill and cannot wait a frame for the bytes.
+    delete_selection: bool = false,
+};
+
 pub const Input = struct {
     /// Cursor position in top-left-origin canvas points.
     mouse: geom.Point = .{ .x = 0, .y = 0 },
@@ -32,6 +48,8 @@ pub const Input = struct {
     downs: u32 = 0,
     lefts: u32 = 0,
     rights: u32 = 0,
+    /// Menu commands accumulated since the last frame.
+    cmds: Commands = .{},
 
     pub fn has(self: Input, mask: u32) bool {
         return (self.modifiers & mask) != 0;

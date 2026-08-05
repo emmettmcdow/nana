@@ -525,19 +525,44 @@ pub fn frame(allocator: std.mem.Allocator, canvas: *Canvas, in: Input, state: *A
     }
 }
 
-// TODO: kind of seems like these VVV have race conditions if you don't always get a fresh View :(
-// these edit hooks need to be invoked within the frame lifecycle, they should not hook directly in
-
 /// Write the selection into `out`, returning the byte count. Zero if there is no selection or
 /// `out` is too small — check `selectionLen` first to size the buffer.
+///
+/// Safe to call from outside the frame, unlike everything under "Commands" below: it reads the
+/// gap buffer and mutates nothing, so there is no layout for it to leave stale.
 pub fn copySelection(state: AppState, out: []u8) usize {
     const sel = selectionRange(state) orelse return 0;
     if (out.len < sel.hi - sel.lo) return 0;
     return copyRange(state, sel.lo, sel.hi, out);
 }
 
-/// Drop the selected text, leaving the cursor where the selection started.
-pub fn deleteSelection(state: *AppState) void {
+pub fn selectionLen(state: AppState) usize {
+    const sel = selectionRange(state) orelse return 0;
+    return sel.hi - sel.lo;
+}
+
+/// Release every journalled edit.
+pub fn deinitHistory(state: *AppState, alloc: Allocator) void {
+    for (state.history.undo_stack.items) |e| freeEdit(alloc, e);
+    for (state.history.redo_stack.items) |e| freeEdit(alloc, e);
+    state.history.undo_stack.deinit(alloc);
+    state.history.redo_stack.deinit(alloc);
+    state.history = .{};
+}
+
+// ******************************************************************************* Menu Commands
+// Undo, redo, select-all and the removal half of a cut. Every one of them moves the document or
+// the caret, so none may run outside the frame: the layout is cached across frames and holds
+// slices into the previous pass's buffers, and an edit landing between two frames is an edit the
+// cache has no way to hear about.
+//
+// They are therefore private, and reached only through `input.Commands` — the host records what
+// the user asked for and `applyCommands` carries it out at a defined point in the frame, in the
+// same place the keyboard is handled.
+
+/// Drop the selected text, leaving the cursor where the selection started. Records nothing;
+/// callers that need the removal to be undoable want `deleteSelectionJournalled`.
+fn deleteSelection(state: *AppState) void {
     const anchor = state.selection_anchor orelse return;
     if (state.cursor_i > anchor) {
         // Selection is behind the cursor; drop it by walking the cursor back over it.
@@ -552,31 +577,36 @@ pub fn deleteSelection(state: *AppState) void {
     state.selection_anchor = null;
 }
 
+/// Drop the selected text and journal it as one edit, so it can be undone. Does nothing when
+/// there is no selection.
+///
+/// Shared by backspace-over-a-selection and the removal half of a cut: the two differ only in
+/// what prompted them, and both owe the history the same record.
+fn deleteSelectionJournalled(state: *AppState, alloc: Allocator) !void {
+    const sel = selectionRange(state.*) orelse return;
+    const cursor_before = state.cursor_i;
+    const anchor_before = state.selection_anchor;
+
+    // Capture the text before dropping it — afterwards there is nothing left to read.
+    const removed = try alloc.alloc(u8, sel.hi - sel.lo);
+    defer alloc.free(removed);
+    _ = copyRange(state.*, sel.lo, sel.hi, removed);
+
+    deleteSelection(state);
+    try recordEdit(state, alloc, sel.lo, removed, "", cursor_before, anchor_before);
+    state.dirty = true;
+}
+
 /// Select the whole document, leaving the cursor at the end as macOS does.
-pub fn selectAll(state: *AppState) void {
+fn selectAll(state: *AppState) void {
     if (state.text_len == 0) return;
     moveCursorTo(state, state.text_len);
     state.selection_anchor = 0;
     state.history.coalesce = false;
 }
 
-/// Copy the selection into `out` and remove it, as one journalled edit. Returns the byte count,
-/// or 0 if there was no selection or `out` was too small — in which case nothing is removed.
-pub fn cutSelection(state: *AppState, alloc: Allocator, out: []u8) !usize {
-    const sel = selectionRange(state.*) orelse return 0;
-    const n = copySelection(state.*, out);
-    if (n == 0) return 0;
-
-    const cursor_before = state.cursor_i;
-    const anchor_before = state.selection_anchor;
-    deleteSelection(state);
-    try recordEdit(state, alloc, sel.lo, out[0..n], "", cursor_before, anchor_before);
-    state.dirty = true;
-    return n;
-}
-
 /// Reverse the most recent edit. Returns false when there is nothing left to undo.
-pub fn undo(state: *AppState, alloc: Allocator) !bool {
+fn undo(state: *AppState, alloc: Allocator) !bool {
     if (state.history.undo_stack.items.len == 0) return false;
     const e = state.history.undo_stack.pop().?;
 
@@ -591,7 +621,7 @@ pub fn undo(state: *AppState, alloc: Allocator) !bool {
 }
 
 /// Re-apply the most recently undone edit. Returns false when there is nothing to redo.
-pub fn redo(state: *AppState, alloc: Allocator) !bool {
+fn redo(state: *AppState, alloc: Allocator) !bool {
     if (state.history.redo_stack.items.len == 0) return false;
     const e = state.history.redo_stack.pop().?;
 
@@ -603,18 +633,25 @@ pub fn redo(state: *AppState, alloc: Allocator) !bool {
     return true;
 }
 
-/// Release every journalled edit.
-pub fn deinitHistory(state: *AppState, alloc: Allocator) void {
-    for (state.history.undo_stack.items) |e| freeEdit(alloc, e);
-    for (state.history.redo_stack.items) |e| freeEdit(alloc, e);
-    state.history.undo_stack.deinit(alloc);
-    state.history.redo_stack.deinit(alloc);
-    state.history = .{};
-}
-
-pub fn selectionLen(state: AppState) usize {
-    const sel = selectionRange(state) orelse return 0;
-    return sel.hi - sel.lo;
+/// Carry out the commands the host recorded since the last frame.
+///
+/// Applied before the keyboard and *outside* its `else if` ladder, rather than as another rung
+/// of it. That ladder is exclusive because the rungs are categories of keypress and only one
+/// category can have arrived in a given frame; a menu command is a different source entirely, so
+/// making it compete with the keyboard would mean a Cmd+Z swallowing text typed in the same
+/// 16ms — or the other way round.
+fn applyCommands(allocator: Allocator, cmds: input.Commands, state: *AppState) !void {
+    // A run of presses replays as a run of edits. Both stacks run dry silently: the host already
+    // told the user by declining to beep, and there is nothing further to report from here.
+    for (0..cmds.undos) |_| {
+        if (!try undo(state, allocator)) break;
+    }
+    for (0..cmds.redos) |_| {
+        if (!try redo(state, allocator)) break;
+    }
+    if (cmds.select_all) selectAll(state);
+    // The copy half of the cut already happened host-side; this is the removal it still owes.
+    if (cmds.delete_selection) try deleteSelectionJournalled(state, allocator);
 }
 
 // ***************************************************************************** Testable Interface
@@ -629,6 +666,8 @@ fn handleInput(
     measurer: Measurer,
 ) !void {
     state.assertInvariant();
+    try applyCommands(allocator, in.cmds, state);
+
     var cursor_target: ?usize = null;
     // Anything that isn't typing ends the current run, so an undo can't reach back across a
     // click or an arrow key into text the user typed somewhere else entirely.
@@ -687,17 +726,11 @@ fn handleInput(
         // A click leaves an empty selection; collapse it so only a real drag keeps the anchor.
         if (state.selection_anchor == state.cursor_i) state.selection_anchor = null;
     } else if (in.backspaces != 0) {
-        const cursor_before = state.cursor_i;
-        const anchor_before = state.selection_anchor;
-        if (selectionRange(state.*)) |sel| {
-            state.dirty = true;
-            // Capture the text before dropping it — afterwards there is nothing left to read.
-            const removed = try allocator.alloc(u8, sel.hi - sel.lo);
-            defer allocator.free(removed);
-            _ = copyRange(state.*, sel.lo, sel.hi, removed);
-            deleteSelection(state);
-            try recordEdit(state, allocator, sel.lo, removed, "", cursor_before, anchor_before);
+        if (selectionRange(state.*) != null) {
+            try deleteSelectionJournalled(state, allocator);
         } else {
+            const cursor_before = state.cursor_i;
+            const anchor_before = state.selection_anchor;
             const backspaces = @min(state.cursor_i, in.backspaces);
             if (backspaces > 0) {
                 state.dirty = true;
@@ -1841,7 +1874,7 @@ test "undo of a selection replacement restores both the text and the selection" 
     try expectEqual(4, state.cursor_i);
 }
 
-test "cut is undoable" {
+test "cut copies immediately and removes on the next frame, undoably" {
     var buf: [64]u8 = undefined;
     var state = AppState.init(&buf);
     defer deinitHistory(&state, testing_allocator);
@@ -1851,13 +1884,50 @@ test "cut is undoable" {
     state.selection_anchor = 1;
     moveCursorTo(&state, 5); // "bcde", straddling the gap
 
+    // The host's half: read the bytes out now, because it has a pasteboard to fill and cannot
+    // be handed them a frame later. The document is untouched at this point.
     var out: [16]u8 = undefined;
-    const n = try cutSelection(&state, testing_allocator, &out);
+    const n = copySelection(state, &out);
     try expectEqualStrings("bcde", out[0..n]);
+    try expectTextContentsEquals("abcdef", state);
+
+    // The editor's half, on the next frame.
+    try feed(&state, .{ .cmds = .{ .delete_selection = true } });
     try expectTextContentsEquals("af", state);
 
     try expect(try undo(&state, testing_allocator));
     try expectTextContentsEquals("abcdef", state);
+}
+
+test "a command and a keystroke in the same frame both take effect" {
+    // The keyboard's `else if` ladder is exclusive; commands must not join it. If they did, one
+    // of these two would be silently dropped — and which one would depend on rung order.
+    var buf: [64]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
+
+    try feed(&state, .{ .text = "abc" });
+    try feed(&state, .{ .rights = 1 }); // ends the run, so "def" journals separately
+    try feed(&state, .{ .text = "def" });
+
+    try feed(&state, .{ .cmds = .{ .undos = 1 }, .text = "Z" });
+    // The undo took "def" off, and the "Z" still landed.
+    try expectTextContentsEquals("abcZ", state);
+}
+
+test "repeated undo commands in one frame replay as a run, and stop at the bottom" {
+    var buf: [64]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer deinitHistory(&state, testing_allocator);
+
+    try feed(&state, .{ .text = "abc" });
+    try feed(&state, .{ .lefts = 1 }); // ends the coalescing run
+    try feed(&state, .{ .text = "X" });
+
+    // More undos than there are edits: the surplus is dropped rather than underflowing.
+    try feed(&state, .{ .cmds = .{ .undos = 5 } });
+    try expectTextContentsEquals("", state);
+    try expectEqual(@as(usize, 0), state.history.undo_stack.items.len);
 }
 
 test "redo replays an undone edit, and a new edit discards the redo stack" {
