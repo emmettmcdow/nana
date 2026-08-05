@@ -399,3 +399,263 @@ test "clicks outside the text clamp to the nearest row and column" {
         \\I
     );
 }
+
+// ****************************************************************************** Scrolling
+test "a wheel scroll moves the view without dragging the caret along" {
+    var h = try Harness.init(alloc, .{ .cols = 8, .rows = 3 });
+    defer h.deinit();
+
+    try h.open("aa\nbb\ncc\ndd\nee");
+    try h.frame(.{ .scroll_dy = -2 * testing.CELL }); // two rows' worth
+    try h.expectGrid(
+        \\cc
+        \\dd
+        \\ee
+    );
+    // The caret stayed on row 0, which is now above the viewport, so it is not drawn at all.
+    try h.expectAttrs("");
+    try std.testing.expect(h.caret() == null);
+}
+
+test "a fractional scroll offsets rows by part of a cell" {
+    var h = try Harness.init(alloc, .{ .cols = 8, .rows = 3 });
+    defer h.deinit();
+
+    try h.open("aa\nbb\ncc\ndd\nee");
+    try h.frame(.{ .scroll_dy = -testing.CELL / 2 }); // half a row
+
+    // A grid cannot see this: half a cell up is still the same cell. The point of scrolling by
+    // points rather than by whole rows is that the offset is *not* quantised, so the assertion
+    // has to be against the recording.
+    const row0 = h.findText("aa").?;
+    const row1 = h.findText("bb").?;
+    try std.testing.expectEqual(testing.MARGIN - testing.CELL / 2, row0.rect.y);
+    try std.testing.expectEqual(testing.MARGIN + testing.CELL / 2, row1.rect.y);
+}
+
+test "moving the caret below the viewport scrolls just far enough to show it" {
+    var h = try Harness.init(alloc, .{ .cols = 8, .rows = 3 });
+    defer h.deinit();
+
+    try h.open("aa\nbb\ncc\ndd\nee");
+    try h.frame(.{ .downs = 3 });
+    // Scrolled by exactly one row — the least that brings row 3 into view, not enough to centre
+    // it or to jump a page.
+    try h.expectGrid(
+        \\bb
+        \\cc
+        \\dd
+    );
+    try h.expectAttrs(
+        \\
+        \\
+        \\I
+    );
+}
+
+test "moving the caret back above the viewport scrolls the other way" {
+    var h = try Harness.init(alloc, .{ .cols = 8, .rows = 3 });
+    defer h.deinit();
+
+    try h.open("aa\nbb\ncc\ndd\nee");
+    try h.frame(.{ .downs = 4 });
+    try h.frame(.{ .ups = 4 });
+    try h.expectGrid(
+        \\aa
+        \\bb
+        \\cc
+    );
+    try h.expectAttrs(
+        \\I
+    );
+}
+
+test "a caret move inside the viewport does not scroll at all" {
+    var h = try Harness.init(alloc, .{ .cols = 8, .rows = 3 });
+    defer h.deinit();
+
+    try h.open("aa\nbb\ncc\ndd\nee");
+    try h.frame(.{ .downs = 1 });
+    try h.expectGrid(
+        \\aa
+        \\bb
+        \\cc
+    );
+    try h.expectAttrs(
+        \\
+        \\I
+    );
+}
+
+// ************************************************************************** Caret movement
+test "the caret at a soft-wrap boundary is drawn at the end of the earlier row" {
+    var h = try Harness.init(alloc, .{ .cols = 4, .rows = 4 });
+    defer h.deinit();
+
+    // "abcdef" wraps into "abc" / "def". Offset 3 is both the end of the first row and the start
+    // of the second; the render pass prefers the earlier, so the caret sits after the 'c'.
+    try h.open("abcdef");
+    try h.frame(.{ .rights = 3 });
+    try h.expectGrid(
+        \\abc
+        \\def
+    );
+    try h.expectAttrs(
+        \\...I
+    );
+}
+
+test "a caret that starts at a line end stays at the line end going down" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 5 });
+    defer h.deinit();
+
+    // The preferred column is stackless (see `handleInput`): sitting at the end of a line is
+    // remembered as "the end", not as a column number, so the caret tracks each line's end
+    // rather than clamping to a fixed column and staying there.
+    try h.open("aaaa\nbb\ncccc");
+    try h.frame(.{ .rights = 4 }); // column 4, which is the end of line 0
+    try h.frame(.{ .downs = 1 });
+    try h.expectAttrs(
+        \\
+        \\..I
+    );
+    try h.frame(.{ .downs = 1 });
+    try h.expectAttrs(
+        \\
+        \\
+        \\....I
+    );
+}
+
+test "up from a soft-wrapped row lands on the row above, not the line above" {
+    var h = try Harness.init(alloc, .{ .cols = 4, .rows = 5 });
+    defer h.deinit();
+
+    // "abcdef" is one source line wrapped across two rows. Up from the second row must reach the
+    // first row of the same line, not skip the whole line.
+    //
+    // Column 1, deliberately: a caret at the end of its line takes the other branch in
+    // `handleInput` and tracks line ends instead of keeping a column.
+    try h.open("xyz\nabcdef");
+    try h.frame(.{ .rights = 1 });
+    try h.frame(.{ .downs = 2 }); // onto the wrapped continuation row
+    try h.expectGrid(
+        \\xyz
+        \\abc
+        \\def
+    );
+    try h.expectAttrs(
+        \\
+        \\
+        \\.I
+    );
+    try h.frame(.{ .ups = 1 });
+    try h.expectAttrs(
+        \\
+        \\.I
+    );
+}
+
+test "a mid-line caret keeps its column moving down" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 5 });
+    defer h.deinit();
+
+    // Every line long enough that the column is never clamped, which is the case the preferred
+    // column is actually about.
+    try h.open("aaaa\nbbbb\ncccc");
+    try h.frame(.{ .rights = 2 });
+    try h.frame(.{ .downs = 1 });
+    try h.expectAttrs(
+        \\
+        \\..I
+    );
+    try h.frame(.{ .downs = 1 });
+    try h.expectAttrs(
+        \\
+        \\
+        \\..I
+    );
+}
+
+test "a header takes the vertical space its type size asks for" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 6, .scale_heights = true });
+    defer h.deinit();
+
+    // An h1 is twice the body size, so it occupies two rows and the line after it starts two
+    // rows down rather than one.
+    try h.open("x\n# Big\ny");
+    try h.idle();
+    try h.expectGrid(
+        \\x
+        \\Big
+        \\
+        \\y
+    );
+}
+
+test "a caret line taller than the viewport is pinned to its top" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 1, .scale_heights = true });
+    defer h.deinit();
+
+    // The header is two rows tall in a one-row viewport, so it is at once below the viewport and
+    // above it. Showing its top is the useful answer — scrolling to its bottom would hide where
+    // the text starts.
+    try h.open("x\n# Big");
+    try h.frame(.{ .downs = 1 });
+    try h.expectGrid("# Big");
+}
+
+test "scrolling accounts for lines of differing height" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 3, .scale_heights = true });
+    defer h.deinit();
+
+    // Rows: "aa"(1) "Big"(2) "bb"(1) "cc"(1) — five rows of space in a three-row viewport. Moving
+    // to the last line must scroll by two rows, not by the two *lines* a uniform-height
+    // calculation would have counted.
+    try h.open("aa\n# Big\nbb\ncc");
+    try h.frame(.{ .downs = 3 });
+    try h.expectGrid(
+        \\
+        \\bb
+        \\cc
+    );
+    try h.expectAttrs(
+        \\
+        \\
+        \\I
+    );
+}
+
+test "a click clears a selection the keyboard made" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 4 });
+    defer h.deinit();
+
+    try h.open("abcde");
+    try h.frame(.{ .rights = 3, .modifiers = mod_shift });
+    try h.expectAttrs(
+        \\###I
+    );
+
+    try h.clickCell(1, 0);
+    try h.expectAttrs(
+        \\.I
+    );
+}
+
+test "a plain arrow collapses a selection to the edge it points at" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 4 });
+    defer h.deinit();
+
+    try h.open("abcde");
+    try h.frame(.{ .rights = 3, .modifiers = mod_shift }); // select [0,3)
+    try h.frame(.{ .rights = 1 }); // plain right: to the right edge, not one past it
+    try h.expectAttrs(
+        \\...I
+    );
+
+    try h.frame(.{ .lefts = 2, .modifiers = mod_shift }); // select [1,3)
+    try h.frame(.{ .lefts = 1 }); // plain left: to the left edge
+    try h.expectAttrs(
+        \\.I
+    );
+}

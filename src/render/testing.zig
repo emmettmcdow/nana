@@ -47,6 +47,10 @@ pub const AppState = app.AppState;
 /// Points per character cell. See the module comment for why 12.
 pub const CELL: f64 = 12;
 
+/// Canvas coordinate of the content area's top-left corner, re-exported so a test asserting on
+/// raw op coordinates doesn't have to reach into `ted.zig` for it.
+pub const MARGIN: f64 = ted.MARGIN_PX;
+
 // ****************************************************************************** Recorded drawing
 pub const Op = union(enum) {
     fill: Fill,
@@ -78,6 +82,11 @@ pub const Recorder = struct {
     /// Backs the copied run text. Reset per frame along with `ops`.
     arena: std.heap.ArenaAllocator,
     ops: std.ArrayList(Op) = .{},
+    /// Whether a row's height follows its font. Off by default: every line is one cell tall, so
+    /// a grid row is a document row and pictures stay dense. Turned on for the tests that are
+    /// *about* vertical space — scrolling past a line taller than the viewport can't be posed
+    /// at all when every line is the same height.
+    scale_heights: bool = false,
     /// Set when an append failed. Checked by `frame`, so a test can never quietly assert against
     /// a truncated recording.
     oom: bool = false,
@@ -151,19 +160,31 @@ fn drawText(ctx: *anyopaque, utf8: []const u8, x: f64, y: f64, font: geom.Font, 
     return size;
 }
 
-fn measureText(_: *anyopaque, utf8: []const u8, font: geom.Font) geom.Size {
-    _ = font; // deliberate — see the module comment on the cell model
+fn measureText(ctx: *anyopaque, utf8: []const u8, font: geom.Font) geom.Size {
     if (utf8.len == 0) return geom.Size.zero;
-    return .{ .w = @as(f64, @floatFromInt(cellLen(utf8))) * CELL, .h = CELL };
+    return .{ .w = @as(f64, @floatFromInt(cellLen(utf8))) * CELL, .h = rowHeight(rec(ctx), font) };
 }
 
-fn measureTextAttributed(_: *anyopaque, text: geom.AttributedText) geom.Size {
+fn measureTextAttributed(ctx: *anyopaque, text: geom.AttributedText) geom.Size {
     // Matching the Core Text backend, which returns zero for a line with no glyphs on it — a row
     // of wholly concealed markup is not the same as a blank row wanting a blank row's height.
     if (text.isEmpty()) return geom.Size.zero;
     var cells: usize = 0;
-    for (text.runs) |run| cells += cellLen(run.text);
-    return .{ .w = @as(f64, @floatFromInt(cells)) * CELL, .h = CELL };
+    var h: f64 = 0;
+    for (text.runs) |run| {
+        cells += cellLen(run.text);
+        // The tallest run sets the line's height, as ascent and descent are maxima taken over
+        // the whole line rather than anything one run knows.
+        h = @max(h, rowHeight(rec(ctx), run.font));
+    }
+    return .{ .w = @as(f64, @floatFromInt(cells)) * CELL, .h = h };
+}
+
+/// One cell, or the font's multiple of one when `scale_heights` is on. A 2x header is two rows
+/// tall, which is the only way a test can put a line taller than the viewport on screen.
+fn rowHeight(self: *const Recorder, font: geom.Font) f64 {
+    if (!self.scale_heights) return CELL;
+    return CELL * @round(font.size / test_theme.font_size);
 }
 
 /// Cells occupied by a run: characters, not bytes, so a multi-byte codepoint is one column.
@@ -309,6 +330,8 @@ pub const Harness = struct {
         rows: usize = 10,
         /// Gap buffer size. Only has to exceed the document plus whatever a test types.
         buf_len: usize = 4096,
+        /// See `Recorder.scale_heights`.
+        scale_heights: bool = false,
     };
 
     pub fn init(alloc: Allocator, opts: Options) !Harness {
@@ -322,7 +345,11 @@ pub const Harness = struct {
 
         return .{
             .alloc = alloc,
-            .recorder = Recorder.init(alloc),
+            .recorder = blk: {
+                var r = Recorder.init(alloc);
+                r.scale_heights = opts.scale_heights;
+                break :blk r;
+            },
             .state = AppState.init(gap_buf),
             .grid = .{ .cols = opts.cols, .rows = opts.rows, .cells = cells, .attrs = attrs, .styles = styles },
             // The editor reads the theme off a global. Saved so a test cannot leave the next one
@@ -498,6 +525,37 @@ pub const Harness = struct {
         const c = @round((x - ted.MARGIN_PX) / CELL);
         if (c < 0 or c >= @as(f64, @floatFromInt(self.grid.cols))) return null;
         return @intFromFloat(c);
+    }
+
+    // ── The recording ────────────────────────────────────────────────────────────────────────
+    /// Every op from the last frame, in draw order.
+    ///
+    /// For the assertions a grid cannot make. A grid quantises to whole cells, so it is blind to
+    /// exactly the things that matter when scrolling by points rather than by rows: a row half a
+    /// cell above where it was still lands in the same cell. It also cannot show draw order, and
+    /// it flattens a run's font down to one style mark.
+    pub fn ops(self: *const Harness) []const Op {
+        return self.recorder.ops.items;
+    }
+
+    /// The first run drawn with exactly this text, or null. Runs are the render pass's quanta,
+    /// so a fragment split by a token boundary or a wrap is looked up by its own piece.
+    pub fn findText(self: *const Harness, needle: []const u8) ?Op.Text {
+        for (self.ops()) |op| switch (op) {
+            .text => |t| if (std.mem.eql(u8, t.utf8, needle)) return t,
+            else => {},
+        };
+        return null;
+    }
+
+    /// Where the caret was drawn, in canvas points. Null when it was not drawn at all — which is
+    /// legitimate, a wheel scroll may leave it off screen.
+    pub fn caret(self: *const Harness) ?geom.Rect {
+        for (self.ops()) |op| switch (op) {
+            .fill => |f| if (isRole(f.color, test_theme.caret)) return f.rect,
+            else => {},
+        };
+        return null;
     }
 
     // ── Debugging ────────────────────────────────────────────────────────────────────────────
