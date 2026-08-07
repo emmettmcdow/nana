@@ -711,50 +711,18 @@ fn handleInput(
     // click or an arrow key into text the user typed somewhere else entirely.
     if (in.mouse_down or (in.lefts | in.rights | in.ups | in.downs) != 0) state.history.coalesce = false;
 
+    // A right-click that landed away from a selection. Handled ahead of the ladder below rather
+    // than as a rung of it: it arrives from the host's menu machinery, not the keyboard, so the
+    // same reasoning as `applyCommands` applies — and unlike the commands there, it needs this
+    // frame's layout to turn the point into an offset.
+    if (in.cmds.place_caret) |point| {
+        state.selection_anchor = null;
+        state.history.coalesce = false;
+        cursor_target = offsetAtPoint(point, state.scroll_y, lines, tokens, frags, full_text, measurer);
+    }
+
     if (in.mouse_down) {
-        const mouse_offset: usize = cursor: { // point to offset
-            // Work in document space: drop the content margin, then add how far we are
-            // scrolled. Falling off either end of the loop clamps to the first or last row,
-            // which is what a click above or below the text should do.
-            const doc_y = (in.mouse.y - padding()) + state.scroll_y;
-            var lineno: usize = lines.len - 1;
-            var y: f64 = 0;
-            for (lines, 0..) |l, i| {
-                // The row's own height, margins and all, rather than a fresh measurement of its
-                // text: the rows were *placed* by these, so anything else drifts from where the
-                // user is actually looking — by a whole block margin next to a heading, and by
-                // the difference between a measured line and a shaped one everywhere else.
-                if (doc_y < y + l.h) {
-                    lineno = i;
-                    break;
-                }
-                y += l.h;
-            }
-            const line = lines[lineno];
-            var col: usize = line.text.len;
-            // Start where the row's glyphs start, not at the margin: on an indented row the
-            // two differ, and walking from the margin would map every click an indent's worth
-            // of characters to the right.
-            var curr_x: f64 = padding() + line.indent;
-            // Walk the row's visible runs, the inverse of `xForOffset`. Concealed delimiters
-            // measure zero, so a click never lands past them by their source length — and
-            // landing *inside* one is harmless, since arriving there reveals the line.
-            walk: for (frags[line.frag_start..line.frag_end]) |frag| {
-                var off = frag.start;
-                while (off < frag.end) : (off += 1) {
-                    const w = if (off >= frag.vis_start and off < frag.vis_end)
-                        charWidth(full_text, tokens, off, measurer)
-                    else
-                        0;
-                    if (in.mouse.x < curr_x + (w / 2.0)) {
-                        col = off - line.start;
-                        break :walk;
-                    }
-                    curr_x += w;
-                }
-            }
-            break :cursor line.start + col;
-        };
+        const mouse_offset = offsetAtPoint(in.mouse, state.scroll_y, lines, tokens, frags, full_text, measurer);
         if (state.mouse_was_down) {
             cursor_target = mouse_offset;
         } else {
@@ -1035,6 +1003,60 @@ fn revealForCursor(text: []const u8, cursor_i: usize) Reveal {
 }
 
 // **************************************************************************************** Helpers
+/// Map a canvas point to the document offset the caret would take there — the inverse of
+/// `xForOffset`, and the one place a pointer position becomes a text position.
+fn offsetAtPoint(
+    point: geom.Point,
+    scroll_y: f64,
+    lines: []const Line,
+    tokens: []const Token,
+    frags: []const Fragment,
+    full_text: []const u8,
+    measurer: Measurer,
+) usize {
+    // Work in document space: drop the content margin, then add how far we are scrolled. Falling
+    // off either end of the loop clamps to the first or last row, which is what a click above or
+    // below the text should do.
+    const doc_y = (point.y - padding()) + scroll_y;
+    var lineno: usize = lines.len - 1;
+    var y: f64 = 0;
+    for (lines, 0..) |l, i| {
+        // The row's own height, margins and all, rather than a fresh measurement of its text: the
+        // rows were *placed* by these, so anything else drifts from where the user is actually
+        // looking — by a whole block margin next to a heading, and by the difference between a
+        // measured line and a shaped one everywhere else.
+        if (doc_y < y + l.h) {
+            lineno = i;
+            break;
+        }
+        y += l.h;
+    }
+    const line = lines[lineno];
+    var col: usize = line.text.len;
+    // Start where the row's glyphs start, not at the margin: on an indented row the two differ,
+    // and walking from the margin would map every click an indent's worth of characters to the
+    // right.
+    var curr_x: f64 = padding() + line.indent;
+    // Walk the row's visible runs. Concealed delimiters measure zero, so a click never lands past
+    // them by their source length — and landing *inside* one is harmless, since arriving there
+    // reveals the line.
+    walk: for (frags[line.frag_start..line.frag_end]) |frag| {
+        var off = frag.start;
+        while (off < frag.end) : (off += 1) {
+            const w = if (off >= frag.vis_start and off < frag.vis_end)
+                charWidth(full_text, tokens, off, measurer)
+            else
+                0;
+            if (point.x < curr_x + (w / 2.0)) {
+                col = off - line.start;
+                break :walk;
+            }
+            curr_x += w;
+        }
+    }
+    return line.start + col;
+}
+
 /// Move the cursor to document offset `target`, shifting the gap to match.
 fn moveCursorTo(state: *AppState, target: usize) void {
     if (target > state.cursor_i) {

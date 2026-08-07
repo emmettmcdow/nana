@@ -24,6 +24,11 @@ pub const Commands = struct {
     /// Remove the selection as one journalled edit. Asked for by a cut, whose copy half already
     /// ran: the host has a pasteboard to fill and cannot wait a frame for the bytes.
     delete_selection: bool = false,
+    /// Drop the caret at a canvas point, discarding any selection. A right-click asks for this so
+    /// the context menu's Paste lands where the user pointed rather than wherever the caret was
+    /// left. A point rather than an offset because mapping one to the other needs the frame's
+    /// layout, which the host does not have.
+    place_caret: ?geom.Point = null,
 };
 
 pub const Input = struct {

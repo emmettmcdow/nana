@@ -391,6 +391,16 @@ export fn nana_render_select_all() void {
     pending.select_all = true;
 }
 
+/// Put the caret at a canvas point, dropping any selection.
+///
+/// For the host's right-click: the context menu's Paste should land where the user pointed, and
+/// the pointer is all the host has — which row and column that is depends on the layout, and the
+/// layout is ours. Deferred to the next frame like every other command that moves the caret.
+export fn nana_render_place_caret(x: f64, y: f64) void {
+    if (!editorEnabled()) return;
+    pending.place_caret = .{ .x = @max(x, 0), .y = @max(y, 0) };
+}
+
 // ── Undo ─────────────────────────────────────────────────────────────────────
 //
 // Both return whether anything will be undone/redone, so the host can leave the system beep to

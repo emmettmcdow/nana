@@ -323,6 +323,39 @@ test "a click places the caret at the cell that was clicked" {
     );
 }
 
+test "a right-click places the caret at the cell that was clicked" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 4 });
+    defer h.deinit();
+
+    try h.open("ab\ncd");
+    try h.rightClickCell(1, 1); // between 'c' and 'd'
+    try h.expectAttrs(
+        \\............
+        \\.I
+    );
+}
+
+test "a right-click discards the selection it lands away from" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 4 });
+    defer h.deinit();
+
+    // The host only asks for this when nothing is selected, but the editor must not be left
+    // holding an anchor if it ever does — a stale one would make the next arrow key extend a
+    // selection the user cannot see.
+    try h.open("abcdef");
+    try h.pressCell(0, 0);
+    try h.dragCell(3, 0);
+    try h.releaseCell(3, 0);
+    try h.expectAttrs(
+        \\###I
+    );
+
+    try h.rightClickCell(5, 0);
+    try h.expectAttrs(
+        \\.....I
+    );
+}
+
 // ***************************************************************************** Code and panels
 test "a fenced block paints a panel across the column, blank rows included" {
     var h = try Harness.init(alloc, .{ .cols = 8, .rows = 8 });

@@ -100,7 +100,7 @@ import AppKit
         }
     }
 
-    final class NanaCanvasView: NSView {
+    final class NanaCanvasView: NSView, NSMenuItemValidation {
         private var timer: Timer?
 
         // Input state, accumulated from events and snapshotted each frame.
@@ -283,6 +283,55 @@ import AppKit
             default: return false
             }
             return true
+        }
+
+        // MARK: - Context menu
+        //
+        // Built here for the same reason the pasteboard is: it is an AppKit service. The items
+        // route to the very same handlers as the Cmd shortcuts, so there is one implementation of
+        // each command and no way for the two routes to drift.
+
+        /// Right-click puts up the editing menu. A selection is left alone — the user is almost
+        /// certainly acting on it — but with nothing selected the caret follows the click, so a
+        /// Paste from the menu lands where they pointed rather than wherever the caret was left.
+        override func rightMouseDown(with event: NSEvent) {
+            window?.makeFirstResponder(self)
+            let point = convert(event.locationInWindow, from: nil)
+            mousePoint = point
+
+            if nana_render_selection_len() == 0 {
+                nana_render_place_caret(Double(point.x), Double(point.y))
+                needsDisplay = true
+            }
+
+            let menu = NSMenu()
+            for (title, action) in [
+                ("Cut", #selector(cut(_:))),
+                ("Copy", #selector(copy(_:))),
+                ("Paste", #selector(paste(_:))),
+            ] {
+                menu.addItem(withTitle: title, action: action, keyEquivalent: "")
+            }
+            menu.addItem(.separator())
+            menu.addItem(withTitle: "Select All", action: #selector(selectAll(_:)), keyEquivalent: "")
+            // Explicit, since the view is not in the responder chain AppKit walks for a menu it
+            // was not asked to validate through the main menu.
+            for item in menu.items { item.target = self }
+
+            NSMenu.popUpContextMenu(menu, with: event, for: self)
+        }
+
+        /// Grey out what cannot happen, rather than offering it and doing nothing. The selection
+        /// length is read live from Zig — it is the same answer the command itself would get.
+        func validateMenuItem(_ item: NSMenuItem) -> Bool {
+            switch item.action {
+            case #selector(cut(_:)), #selector(copy(_:)):
+                return nana_render_selection_len() > 0
+            case #selector(paste(_:)):
+                return NSPasteboard.general.canReadObject(forClasses: [NSString.self], options: nil)
+            default:
+                return true
+            }
         }
 
         // MARK: - Input

@@ -480,6 +480,12 @@ pub const Harness = struct {
         try self.frame(.{ .mouse = self.cellOrigin(col, row), .mouse_down = false });
     }
 
+    /// Right-click at a character cell. One frame, since the command carries the point with it
+    /// and there is no press/release pair to model.
+    pub fn rightClickCell(self: *Harness, col: usize, row: usize) !void {
+        try self.frame(.{ .cmds = .{ .place_caret = self.cellOrigin(col, row) } });
+    }
+
     /// A point in canvas coordinates, for the clicks that deliberately land outside the text —
     /// the ones a cell index cannot name.
     pub fn clickPoint(self: *Harness, p: geom.Point) !void {

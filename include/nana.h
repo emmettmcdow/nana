@@ -101,6 +101,10 @@ int nana_render_copy_selection(char *out, unsigned int);   // bytes written, or 
 int nana_render_cut_selection(char *out, unsigned int);    // copies, then deletes
 void nana_render_select_all(void);
 
+// Drop the caret at a canvas point (top-left origin, points), clearing any selection. For the
+// right-click context menu, so a Paste from it lands where the user pointed.
+void nana_render_place_caret(double x, double y);
+
 // Undo/redo. Return false when the corresponding stack is empty, so the host can fall back to
 // AppKit's usual "nothing to undo" behaviour rather than silently swallowing the shortcut.
 // Settings. Owned and persisted by Zig; the host reads them back for its own UI.
