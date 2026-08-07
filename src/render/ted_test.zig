@@ -323,26 +323,56 @@ test "a click places the caret at the cell that was clicked" {
     );
 }
 
-test "a right-click places the caret at the cell that was clicked" {
+test "a right-click takes the word under the pointer" {
     var h = try Harness.init(alloc, .{ .cols = 12, .rows = 4 });
     defer h.deinit();
 
-    try h.open("ab\ncd");
-    try h.rightClickCell(1, 1); // between 'c' and 'd'
+    try h.open("one two");
+    try h.rightClickCell(5, 0); // inside "two"
     try h.expectAttrs(
-        \\............
-        \\.I
+        \\....###I
     );
 }
 
-test "a right-click discards the selection it lands away from" {
+test "a right-click off a word places the bare caret" {
     var h = try Harness.init(alloc, .{ .cols = 12, .rows = 4 });
     defer h.deinit();
 
-    // The host only asks for this when nothing is selected, but the editor must not be left
-    // holding an anchor if it ever does — a stale one would make the next arrow key extend a
-    // selection the user cannot see.
+    // Between the two spaces, so neither side of the offset is a word byte. A single space would
+    // not do: its left edge is the offset just past "a", which counts as that word's trailing
+    // edge and rightly selects it.
+    try h.open("a  b");
+    try h.rightClickCell(2, 0);
+    try h.expectAttrs(
+        \\..I
+    );
+}
+
+test "a right-click inside the selection leaves it alone" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 4 });
+    defer h.deinit();
+
+    // The whole point of the hit test: the menu is about to act on this selection, so pointing at
+    // it must not be what destroys it.
     try h.open("abcdef");
+    try h.pressCell(1, 0);
+    try h.dragCell(4, 0);
+    try h.releaseCell(4, 0);
+    try h.expectAttrs(
+        \\.###I
+    );
+
+    try h.rightClickCell(2, 0);
+    try h.expectAttrs(
+        \\.###I
+    );
+}
+
+test "a right-click outside the selection retargets it" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 4 });
+    defer h.deinit();
+
+    try h.open("one two");
     try h.pressCell(0, 0);
     try h.dragCell(3, 0);
     try h.releaseCell(3, 0);
@@ -350,9 +380,107 @@ test "a right-click discards the selection it lands away from" {
         \\###I
     );
 
-    try h.rightClickCell(5, 0);
+    try h.rightClickCell(5, 0); // inside "two", clear of the selection
     try h.expectAttrs(
-        \\.....I
+        \\....###I
+    );
+}
+
+// ***************************************************************************** Word selection
+test "a double-click selects the word under the pointer" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 4 });
+    defer h.deinit();
+
+    try h.open("one two");
+    try h.doubleClickCell(5, 0); // inside "two"
+    try h.expectAttrs(
+        \\....###I
+    );
+}
+
+test "a double-click at a word's trailing edge still selects it" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 4 });
+    defer h.deinit();
+
+    // Clicking the right half of 'e' lands on the offset just past the word. Reading that as
+    // "no word here" would make double-click miss on about half of every word.
+    try h.open("one two");
+    try h.doubleClickCell(3, 0);
+    try h.expectAttrs(
+        \\###I
+    );
+}
+
+test "a double-click off a word places the bare caret" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 4 });
+    defer h.deinit();
+
+    try h.open("a  b"); // the second space belongs to no word
+    try h.doubleClickCell(2, 0);
+    try h.expectAttrs(
+        \\..I
+    );
+}
+
+test "dragging after a double-click extends a whole word at a time" {
+    var h = try Harness.init(alloc, .{ .cols = 16, .rows = 4 });
+    defer h.deinit();
+
+    try h.open("one two six");
+    try h.pressCellDouble(0, 0); // "one"
+    try h.expectAttrs(
+        \\###I
+    );
+
+    // Partway into "two": the whole word comes along rather than stopping under the pointer.
+    try h.dragCell(5, 0);
+    try h.expectAttrs(
+        \\#######I
+    );
+    try h.releaseCell(5, 0);
+    try h.expectAttrs(
+        \\#######I
+    );
+}
+
+test "dragging back past the double-clicked word pivots around it" {
+    var h = try Harness.init(alloc, .{ .cols = 16, .rows = 4 });
+    defer h.deinit();
+
+    // The original word has to stay selected whichever side the pointer ends up on, which is why
+    // the gesture remembers it rather than either edge of the live selection.
+    try h.open("one two six");
+    try h.pressCellDouble(5, 0); // "two"
+    try h.expectAttrs(
+        \\....###I
+    );
+
+    try h.dragCell(1, 0); // back into "one"
+    try h.expectAttrs(
+        \\I######
+    );
+    try h.releaseCell(1, 0);
+    try h.expectAttrs(
+        \\I######
+    );
+}
+
+test "a single click after a double-click is an ordinary click again" {
+    var h = try Harness.init(alloc, .{ .cols = 16, .rows = 4 });
+    defer h.deinit();
+
+    try h.open("one two six");
+    try h.doubleClickCell(1, 0);
+    try h.expectAttrs(
+        \\###I
+    );
+
+    // The word-drag state has to be cleared by the release, or this drag would snap to words.
+    try h.pressCell(4, 0);
+    try h.dragCell(6, 0);
+    try h.releaseCell(6, 0);
+    try h.expectAttrs(
+        \\....##I
     );
 }
 

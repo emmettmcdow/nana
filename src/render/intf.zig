@@ -24,6 +24,8 @@ const NanaInput = extern struct {
     mouse_x: f64,
     mouse_y: f64,
     mouse_down: bool,
+    /// AppKit's `clickCount` for the press currently held: 2 is a double-click.
+    clicks: c_uint,
     modifiers: c_uint,
     /// Whether the host's window is currently in a dark appearance. Resolved host-side from
     /// the user's preference plus the system setting, since that same answer drives the
@@ -264,6 +266,7 @@ export fn nana_render_frame(ctx: CGContextRef, width: f64, height: f64, in: *con
     const input = input_mod.Input{
         .mouse = .{ .x = @max(in.mouse_x, 0), .y = @max(in.mouse_y, 0) },
         .mouse_down = in.mouse_down,
+        .clicks = @intCast(in.clicks),
         .modifiers = @intCast(in.modifiers),
         .scroll_dy = in.scroll_dy,
         .text = text,
@@ -391,14 +394,15 @@ export fn nana_render_select_all() void {
     pending.select_all = true;
 }
 
-/// Put the caret at a canvas point, dropping any selection.
+/// Aim the editor at a canvas point, as a right-click does: a point inside the selection leaves
+/// it alone, anywhere else takes the word under the pointer or the bare caret.
 ///
-/// For the host's right-click: the context menu's Paste should land where the user pointed, and
-/// the pointer is all the host has — which row and column that is depends on the layout, and the
-/// layout is ours. Deferred to the next frame like every other command that moves the caret.
-export fn nana_render_place_caret(x: f64, y: f64) void {
+/// The pointer is all the host has — which row, column and word that is depends on the layout,
+/// and the layout is ours. Deferred to the next frame like every other command that moves the
+/// caret, so the host should force a redraw before reading the selection back.
+export fn nana_render_context_click(x: f64, y: f64) void {
     if (!editorEnabled()) return;
-    pending.place_caret = .{ .x = @max(x, 0), .y = @max(y, 0) };
+    pending.context_click = .{ .x = @max(x, 0), .y = @max(y, 0) };
 }
 
 // ── Undo ─────────────────────────────────────────────────────────────────────

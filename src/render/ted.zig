@@ -45,6 +45,9 @@ const testing_allocator = std.testing.allocator;
 /// indexable by a u32. Every growth is asserted against this bound.
 const MAX_BUF_LEN: usize = std.math.maxInt(u32);
 
+/// A half-open span of document offsets, `lo` up to but not including `hi`.
+pub const Range = struct { lo: usize, hi: usize };
+
 // The parser yields zero tokens for an empty document; the rest of the pipeline
 // (splitLines, tokenAt) needs at least one, so fall back to this.
 const EMPTY_DOC_TOKENS: []const Token = &.{.{ .tType = .PLAIN, .startI = 0, .endI = 0, .contents = "" }};
@@ -711,27 +714,59 @@ fn handleInput(
     // click or an arrow key into text the user typed somewhere else entirely.
     if (in.mouse_down or (in.lefts | in.rights | in.ups | in.downs) != 0) state.history.coalesce = false;
 
-    // A right-click that landed away from a selection. Handled ahead of the ladder below rather
-    // than as a rung of it: it arrives from the host's menu machinery, not the keyboard, so the
-    // same reasoning as `applyCommands` applies — and unlike the commands there, it needs this
-    // frame's layout to turn the point into an offset.
-    if (in.cmds.place_caret) |point| {
-        state.selection_anchor = null;
-        state.history.coalesce = false;
-        cursor_target = offsetAtPoint(point, state.scroll_y, lines, tokens, frags, full_text, measurer);
+    // A right-click. Handled ahead of the ladder below rather than as a rung of it: it arrives
+    // from the host's menu machinery, not the keyboard, so the same reasoning as `applyCommands`
+    // applies — and unlike the commands there, it needs this frame's layout to turn the point
+    // into an offset.
+    if (in.cmds.context_click) |point| {
+        const at = offsetAtPoint(point, state.scroll_y, lines, tokens, frags, full_text, measurer);
+        // Inclusive of both ends: an offset equal to `hi` is a click on the right half of the
+        // last selected character, which is visibly on top of the highlight. Reading that as
+        // "outside" would throw away a selection the user was pointing straight at.
+        const inside = if (selectionRange(state.*)) |sel| at >= sel.lo and at <= sel.hi else false;
+        if (!inside) {
+            state.history.coalesce = false;
+            if (wordAt(full_text, at)) |word| {
+                state.selection_anchor = word.lo;
+                cursor_target = word.hi;
+            } else {
+                state.selection_anchor = null;
+                cursor_target = at;
+            }
+        }
     }
 
     if (in.mouse_down) {
         const mouse_offset = offsetAtPoint(in.mouse, state.scroll_y, lines, tokens, frags, full_text, measurer);
-        if (state.mouse_was_down) {
-            cursor_target = mouse_offset;
-        } else {
+        if (state.mouse_was_down) { // Drag
+            if (state.word_drag) |origin| {
+                // Started from a double-click, so the selection grows a word at a time and never
+                // shrinks below the one that began it. Which edge is the anchor flips depending
+                // on which side of that word the pointer has reached.
+                const word = wordAt(full_text, mouse_offset) orelse Range{ .lo = mouse_offset, .hi = mouse_offset };
+                if (word.lo < origin.lo) {
+                    state.selection_anchor = origin.hi;
+                    cursor_target = word.lo;
+                } else {
+                    state.selection_anchor = origin.lo;
+                    cursor_target = word.hi;
+                }
+            } else {
+                cursor_target = mouse_offset;
+            }
+        } else { // Press
             state.mouse_was_down = true;
-            state.selection_anchor = mouse_offset;
-            cursor_target = mouse_offset;
+            // A double-click takes the whole word under the pointer. On anything that isn't a
+            // word — whitespace, a line end — it falls back to placing the caret, which is what
+            // a single click there would have done anyway.
+            const word = if (in.clicks >= 2) wordAt(full_text, mouse_offset) else null;
+            state.word_drag = word;
+            state.selection_anchor = if (word) |w| w.lo else mouse_offset;
+            cursor_target = if (word) |w| w.hi else mouse_offset;
         }
     } else if (!in.mouse_down and state.mouse_was_down) { // Click release
         state.mouse_was_down = false;
+        state.word_drag = null;
         // A click leaves an empty selection; collapse it so only a real drag keeps the anchor.
         if (state.selection_anchor == state.cursor_i) state.selection_anchor = null;
     } else if (in.backspaces != 0) {
@@ -1083,11 +1118,37 @@ fn moveCursorTo(state: *AppState, target: usize) void {
 }
 
 /// The selected span as doc offsets, or null when nothing selected. Single caret != selection.
-fn selectionRange(state: AppState) ?struct { lo: usize, hi: usize } {
+fn selectionRange(state: AppState) ?Range {
     const anchor = state.selection_anchor orelse return null;
     const lo = @min(anchor, state.cursor_i);
     const hi = @max(anchor, state.cursor_i);
     return if (lo == hi) null else .{ .lo = lo, .hi = hi };
+}
+
+/// Whether `c` belongs to a word, for the purposes of double-click and right-click selection.
+///
+/// Every non-ASCII byte counts. They are the lead and continuation bytes of a multi-byte
+/// codepoint, and treating them as separators would cut an accented word in half — worse, in the
+/// middle of a codepoint, which is not a position the caret may take.
+fn isWordByte(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '_' or c >= 0x80;
+}
+
+/// The word surrounding caret offset `at`, or null when there is no word there.
+///
+/// The offset just past a word's last byte counts as on it: that is where a click on the right
+/// half of the final character lands, and answering "no word" for the trailing edge of every word
+/// would make double-click miss about half the time.
+fn wordAt(text: []const u8, at: usize) ?Range {
+    const on_word = at < text.len and isWordByte(text[at]);
+    const after_word = at > 0 and at <= text.len and isWordByte(text[at - 1]);
+    if (!on_word and !after_word) return null;
+
+    var lo = at;
+    while (lo > 0 and isWordByte(text[lo - 1])) lo -= 1;
+    var hi = at;
+    while (hi < text.len and isWordByte(text[hi])) hi += 1;
+    return .{ .lo = lo, .hi = hi };
 }
 
 fn styleForToken(token: Token) Style {

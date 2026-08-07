@@ -106,6 +106,7 @@ import AppKit
         // Input state, accumulated from events and snapshotted each frame.
         private var mousePoint = CGPoint.zero
         private var mouseIsDown = false
+        private var clickCount: UInt32 = 1
         private var modifiers: UInt32 = 0
         private var scrollDelta: Double = 0
         private var pendingText = ""
@@ -164,6 +165,7 @@ import AppKit
             input.mouse_x = Double(mousePoint.x)
             input.mouse_y = Double(mousePoint.y)
             input.mouse_down = mouseIsDown
+            input.clicks = clickCount
             input.modifiers = modifiers
 
             // Resolved here because the same answer drives the titlebar: whatever appearance
@@ -291,18 +293,20 @@ import AppKit
         // route to the very same handlers as the Cmd shortcuts, so there is one implementation of
         // each command and no way for the two routes to drift.
 
-        /// Right-click puts up the editing menu. A selection is left alone — the user is almost
-        /// certainly acting on it — but with nothing selected the caret follows the click, so a
-        /// Paste from the menu lands where they pointed rather than wherever the caret was left.
+        /// Right-click puts up the editing menu, aimed at what was clicked: a click inside the
+        /// selection leaves it alone, and anywhere else takes the word under the pointer — the
+        /// same thing an NSTextView does. Which of those it is depends on the layout, so the
+        /// decision is Zig's; this only reports the point.
         override func rightMouseDown(with event: NSEvent) {
             window?.makeFirstResponder(self)
             let point = convert(event.locationInWindow, from: nil)
             mousePoint = point
+            nana_render_context_click(Double(point.x), Double(point.y))
 
-            if nana_render_selection_len() == 0 {
-                nana_render_place_caret(Double(point.x), Double(point.y))
-                needsDisplay = true
-            }
+            // Draw now rather than setting `needsDisplay` and waiting on the timer. The command
+            // above is carried out by the frame, and the menu is about to validate its items
+            // against the result — asking a frame later would validate against the old selection.
+            display()
 
             let menu = NSMenu()
             for (title, action) in [
@@ -358,6 +362,11 @@ import AppKit
 
         override func mouseDown(with event: NSEvent) {
             mouseIsDown = true
+            // Held past the release rather than reset with it: the frame loop samples the button,
+            // so whichever frame first catches the press is the one that has to see how many
+            // clicks it was, and that can be several frames after this call. The next press
+            // overwrites it, which is the only time it becomes wrong.
+            clickCount = UInt32(max(event.clickCount, 1))
             mousePoint = convert(event.locationInWindow, from: nil)
             window?.makeFirstResponder(self)
         }

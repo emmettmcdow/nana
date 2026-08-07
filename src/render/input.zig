@@ -24,11 +24,13 @@ pub const Commands = struct {
     /// Remove the selection as one journalled edit. Asked for by a cut, whose copy half already
     /// ran: the host has a pasteboard to fill and cannot wait a frame for the bytes.
     delete_selection: bool = false,
-    /// Drop the caret at a canvas point, discarding any selection. A right-click asks for this so
-    /// the context menu's Paste lands where the user pointed rather than wherever the caret was
-    /// left. A point rather than an offset because mapping one to the other needs the frame's
-    /// layout, which the host does not have.
-    place_caret: ?geom.Point = null,
+    /// Aim the editor at a canvas point the way a right-click does: a point already inside the
+    /// selection leaves it alone, since the menu is about to act on it. Anywhere else takes the
+    /// word under the pointer, or the bare caret when there is no word there.
+    ///
+    /// A point rather than an offset because mapping one to the other needs the frame's layout,
+    /// which the host does not have.
+    context_click: ?geom.Point = null,
 };
 
 pub const Input = struct {
@@ -36,6 +38,10 @@ pub const Input = struct {
     mouse: geom.Point = .{ .x = 0, .y = 0 },
     /// Whether the primary mouse button is currently held.
     mouse_down: bool = false,
+    /// Click count of the press currently held — AppKit's `clickCount`, so 2 is a double-click.
+    /// Only read on the frame that first sees the press; a drag that follows is characterised by
+    /// what that press selected, not by re-reading this.
+    clicks: u32 = 1,
     /// Active modifier keys (see `mod_*` masks above).
     modifiers: u32 = 0,
     /// UTF-8 text entered during this frame (empty if none). Borrowed; valid only

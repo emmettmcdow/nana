@@ -47,6 +47,12 @@ pub const AppState = struct {
     scroll_y: f64 = 0,
     selection_anchor: ?usize = null,
     mouse_was_down: bool = false,
+    /// The word a double-click landed on, held for as long as that gesture lasts.
+    ///
+    /// Its presence is what makes the drag after a double-click extend by whole words, and it has
+    /// to be the *original* word rather than either end of the live selection: dragging back
+    /// across the start pivots the selection around it, so both edges have to stay recoverable.
+    word_drag: ?ted.Range = null,
     /// Set whenever this frame's input changed the document's *text*, so a layer above can
     /// persist it. Cursor and selection movement don't count — nothing to write. Whoever
     /// consumes it clears it; the render modules only ever set it.

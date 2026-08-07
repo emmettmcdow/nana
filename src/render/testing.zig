@@ -483,7 +483,20 @@ pub const Harness = struct {
     /// Right-click at a character cell. One frame, since the command carries the point with it
     /// and there is no press/release pair to model.
     pub fn rightClickCell(self: *Harness, col: usize, row: usize) !void {
-        try self.frame(.{ .cmds = .{ .place_caret = self.cellOrigin(col, row) } });
+        try self.frame(.{ .cmds = .{ .context_click = self.cellOrigin(col, row) } });
+    }
+
+    /// Double-click at a character cell: the press that reports two clicks, then the release.
+    pub fn doubleClickCell(self: *Harness, col: usize, row: usize) !void {
+        try self.pressCellDouble(col, row);
+        try self.releaseCell(col, row);
+    }
+
+    /// The press half of a double-click, left open for `dragCell`/`releaseCell`. The drag frames
+    /// need no click count of their own — what the press selected is what characterises the
+    /// gesture from then on.
+    pub fn pressCellDouble(self: *Harness, col: usize, row: usize) !void {
+        try self.frame(.{ .mouse = self.cellOrigin(col, row), .mouse_down = true, .clicks = 2 });
     }
 
     /// A point in canvas coordinates, for the clicks that deliberately land outside the text —

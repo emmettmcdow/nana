@@ -70,6 +70,7 @@ typedef struct {
     double mouse_x;          // top-left origin, points
     double mouse_y;
     bool mouse_down;
+    unsigned int clicks;     // AppKit clickCount of the held press; 2 is a double-click
     unsigned int modifiers;  // NANA_MOD_* bitmask
     bool system_dark;        // host window is in a dark appearance
     double scroll_dy;        // wheel/trackpad points this frame; + scrolls toward doc start
@@ -101,9 +102,10 @@ int nana_render_copy_selection(char *out, unsigned int);   // bytes written, or 
 int nana_render_cut_selection(char *out, unsigned int);    // copies, then deletes
 void nana_render_select_all(void);
 
-// Drop the caret at a canvas point (top-left origin, points), clearing any selection. For the
-// right-click context menu, so a Paste from it lands where the user pointed.
-void nana_render_place_caret(double x, double y);
+// Aim the editor at a canvas point (top-left origin, points), as a right-click does: a point
+// inside the selection leaves it alone, anywhere else takes the word under the pointer or the
+// bare caret. Applied by the next frame, so force a redraw before reading the selection back.
+void nana_render_context_click(double x, double y);
 
 // Undo/redo. Return false when the corresponding stack is empty, so the host can fall back to
 // AppKit's usual "nothing to undo" behaviour rather than silently swallowing the shortcut.
