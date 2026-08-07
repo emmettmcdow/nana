@@ -38,5 +38,13 @@
 	<true/>
 	<key>com.apple.security.network.server</key>
 	<true/>
+	<!-- The style file (~/.config/nana/style.toml) is edited by hand alongside the user's other
+	     dotfiles, so it sits in the real home directory rather than in the sandbox container.
+	     Reaching it needs an exception; this is the narrowest one that covers it. Debug only —
+	     the release entitlements have no such grant, and a release build reads nothing here. -->
+	<key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>
+	<array>
+		<string>/.config/nana/</string>
+	</array>
 </dict>
 </plist>

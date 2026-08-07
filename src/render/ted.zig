@@ -49,14 +49,14 @@ const MAX_BUF_LEN: usize = std.math.maxInt(u32);
 // (splitLines, tokenAt) needs at least one, so fall back to this.
 const EMPTY_DOC_TOKENS: []const Token = &.{.{ .tType = .PLAIN, .startI = 0, .endI = 0, .contents = "" }};
 
+/// Space between the window's edge and the content column. Read off the theme rather than fixed
+/// here, since the user's style file sets it.
+///
 /// Public because the test harness maps canvas coordinates back to character cells, and the
 /// content origin is where that mapping starts.
-pub const MARGIN_PX: f64 = 100;
-
-/// Quoted text is pushed right, with a rule per nesting level standing in the gutter it was
-/// pushed out of.
-const QUOTE_INDENT_PX: f64 = 24;
-const QUOTE_RULE_W: f64 = 3;
+pub fn padding() f64 {
+    return th().metrics.padding;
+}
 
 /// How many edits are kept before the oldest is dropped.
 const MAX_UNDO_DEPTH: usize = 256;
@@ -105,7 +105,7 @@ const Panel = enum {
 };
 
 /// A visible line and where to draw it: `y` is relative to the top of the content area
-/// (add `MARGIN_PX` for an absolute canvas y).
+/// (add the editor padding for an absolute canvas y).
 const Placement = struct {
     line: usize,
     y: f64,
@@ -141,8 +141,16 @@ const Line = struct {
     /// byte offset relative to the start of the document
     start: usize,
     text: []const u8,
+    /// The row's full vertical extent, block margins included. Everything that stacks rows —
+    /// placement, scrolling, hit-testing — works in these, so a margin is space the document
+    /// genuinely occupies rather than something the render pass adds on top.
     h: f64 = 0,
     w: f64 = 0,
+    /// The margin above and below this row, part of `h`. Non-zero only on the first and last row
+    /// of a block that asks for one; what gets *drawn* — glyphs, caret, selection, panels — sits
+    /// in `h - lead - trail`, so the margin stays empty.
+    lead: f64 = 0,
+    trail: f64 = 0,
     /// End-exclusive range into the fragment buffer: styled runs constitute this line.
     frag_start: usize = 0,
     frag_end: usize = 0,
@@ -151,6 +159,11 @@ const Line = struct {
     /// amount. Everything that maps between x and a text offset — caret, selection, mouse
     /// hit-testing — has to add it, so it lives on the line rather than being recomputed.
     indent: f64 = 0,
+
+    /// The height of what is actually drawn on this row, the margins excluded.
+    fn contentH(self: Line) f64 {
+        return self.h - self.lead - self.trail;
+    }
 };
 
 /// A token's slice of one visual row, the render loop quanta. Frags don't cross line bounds.
@@ -385,7 +398,7 @@ pub fn frame(
     try layout.ensure(allocator, state.text_len);
 
     const measurer = Measurer{
-        .content_w = canvas.size.w - (MARGIN_PX * 2),
+        .content_w = canvas.size.w - (padding() * 2),
         .ctx = canvas,
         .widthFn = widthWithCanvas,
         .heightFn = heightWithCanvas,
@@ -422,8 +435,8 @@ pub fn frame(
         // Taken after the recalc, so it is this frame's layout rather than the one the input
         // above was resolved against. A copy, not a pointer: nothing below re-lays it out.
         const view = layout.view.?;
-        const text_x: f64 = MARGIN_PX;
-        const viewport_h = canvas.size.h - (MARGIN_PX * 2);
+        const text_x: f64 = padding();
+        const viewport_h = canvas.size.h - (padding() * 2);
 
         // Wheel first, then the caret, so typing always wins over where the wheel had left us.
         state.scroll_y -= in.scroll_dy;
@@ -440,13 +453,16 @@ pub fn frame(
         var caret_drawn = false;
 
         // Rows at the edges are cut off mid-line; keep them inside the content area.
-        canvas.pushClip(.{ .x = 0, .y = MARGIN_PX, .w = canvas.size.w, .h = viewport_h });
+        canvas.pushClip(.{ .x = 0, .y = padding(), .w = canvas.size.w, .h = viewport_h });
         defer canvas.popClip();
 
         for (placements) |placement| {
             const line = view.lines[placement.line];
-            const line_h = line.h;
-            const text_y = MARGIN_PX + placement.y;
+            // The row's drawable band, which is the row less whatever block margin it carries.
+            // Everything below is drawn against these two, so a margin is space nothing paints
+            // into — no panel spilling into it, no selection reaching across it.
+            const line_h = line.contentH();
+            const text_y = padding() + placement.y + line.lead;
             // Where this row's text actually starts. Everything that converts between an x
             // and a text offset below works from this, not from `text_x` — an indented row
             // would otherwise draw its caret and selection a full indent to the left of its
@@ -460,8 +476,8 @@ pub fn frame(
                 const owner = tokenAt(view.tokens, line.start);
                 if (owner.tType == .QUOTE) {
                     for (0..owner.degree) |level| {
-                        const bar_x = text_x + (@as(f64, @floatFromInt(level)) * QUOTE_INDENT_PX);
-                        fillPanel(canvas, .{ .x = bar_x, .y = text_y, .w = QUOTE_RULE_W, .h = line_h }, th().quote_rule);
+                        const bar_x = text_x + (@as(f64, @floatFromInt(level)) * th().metrics.quote_indent);
+                        fillPanel(canvas, .{ .x = bar_x, .y = text_y, .w = th().metrics.quote_rule_w, .h = line_h }, th().quote_rule);
                     }
                 }
             }
@@ -700,23 +716,26 @@ fn handleInput(
             // Work in document space: drop the content margin, then add how far we are
             // scrolled. Falling off either end of the loop clamps to the first or last row,
             // which is what a click above or below the text should do.
-            const doc_y = (in.mouse.y - MARGIN_PX) + state.scroll_y;
+            const doc_y = (in.mouse.y - padding()) + state.scroll_y;
             var lineno: usize = lines.len - 1;
             var y: f64 = 0;
             for (lines, 0..) |l, i| {
-                const line_h = measurer.height(l.text, tokens, l.start, l.start + l.text.len);
-                if (doc_y < y + line_h) {
+                // The row's own height, margins and all, rather than a fresh measurement of its
+                // text: the rows were *placed* by these, so anything else drifts from where the
+                // user is actually looking — by a whole block margin next to a heading, and by
+                // the difference between a measured line and a shaped one everywhere else.
+                if (doc_y < y + l.h) {
                     lineno = i;
                     break;
                 }
-                y += line_h;
+                y += l.h;
             }
             const line = lines[lineno];
             var col: usize = line.text.len;
             // Start where the row's glyphs start, not at the margin: on an indented row the
             // two differ, and walking from the margin would map every click an indent's worth
             // of characters to the right.
-            var curr_x: f64 = MARGIN_PX + line.indent;
+            var curr_x: f64 = padding() + line.indent;
             // Walk the row's visible runs, the inverse of `xForOffset`. Concealed delimiters
             // measure zero, so a click never lands past them by their source length — and
             // landing *inside* one is harmless, since arriving there reveals the line.
@@ -902,6 +921,7 @@ fn splitLines(
             m.attributedH(attr);
         line.w = xForOffset(line.*, frags, full_text, tokens, line_end, m);
     }
+    applyBlockMargins(out[0..lineno], tokens);
 
     // Running out of either buffer means the layout stops partway on purpose, so the "nothing
     // was left over" halves of the check don't apply to it.
@@ -1052,9 +1072,7 @@ fn styleForToken(token: Token) Style {
     return switch (token.tType) {
         .HEADER => .{
             .color = th().text,
-            .font = .{
-                .size = th().font_size * @max(1.0, 2.0 - (@as(f64, @floatFromInt(token.degree - 1)) * 0.2)),
-            },
+            .font = .{ .size = th().font_size * th().metrics.headingScale(token.degree) },
         },
         .BOLD => .{
             .color = th().text,
@@ -1096,10 +1114,62 @@ fn styleForToken(token: Token) Style {
 
 /// The token covering source offset `i`, falling back to final token if `i` is past the end.
 fn tokenAt(tokens: []const Token, i: usize) Token {
-    for (tokens) |t| {
-        if (i >= t.startI and i < t.endI) return t;
+    return tokens[tokenIndexAt(tokens, i)];
+}
+
+/// Where that token sits in the list. Two rows belong to the same block when this is equal for
+/// both, which is what tells a soft-wrapped continuation from the start of something new.
+fn tokenIndexAt(tokens: []const Token, i: usize) usize {
+    for (tokens, 0..) |t, ti| {
+        if (i >= t.startI and i < t.endI) return ti;
     }
-    return tokens[tokens.len - 1];
+    return tokens.len - 1;
+}
+
+/// The vertical space a block-level element asks for above and below itself. Zero for anything
+/// that isn't one — body text is spaced by its own line height.
+fn blockMarginY(token: Token) f64 {
+    const m = th().metrics;
+    return switch (token.tType) {
+        .HEADER => m.heading_margin_y,
+        .BLOCK_CODE => m.code_margin_y,
+        .QUOTE => m.quote_margin_y,
+        else => 0,
+    };
+}
+
+/// Whether two rows belong to the same block, and so should not have a margin between them.
+fn sameBlock(tokens: []const Token, a_start: usize, b_start: usize) bool {
+    const ai = tokenIndexAt(tokens, a_start);
+    const bi = tokenIndexAt(tokens, b_start);
+    if (ai == bi) return true; // one token soft-wrapped across rows, or a fence's inner lines
+    // A quote tokenizes one token per source line, so a five-line quote is five tokens. Left at
+    // token identity it would be five blocks, and the margin would land *between* its lines
+    // rather than around the whole of it.
+    return tokens[ai].tType == .QUOTE and tokens[bi].tType == .QUOTE;
+}
+
+/// Give each block's first and last row the margin it asks for.
+///
+/// Run over the finished rows rather than folded into the height loop above: whether a row ends a
+/// block is only knowable once the row after it exists. Margins are added to `h`, so every
+/// consumer of a row's height — placement, scrolling, hit-testing — accounts for them without
+/// knowing they are there.
+///
+/// Both fields are written for every row, never left alone. `lines` is the layout's scratch,
+/// reused by every recalc, so a row that carried a margin before the window was resized is still
+/// holding it when a rewrap makes that slot an ordinary paragraph. Skipping the write would leave
+/// the stale value to be drawn against a height that no longer includes it — the row's glyphs
+/// pushed down into the row below.
+fn applyBlockMargins(lines: []Line, tokens: []const Token) void {
+    for (lines, 0..) |*line, i| {
+        const margin = blockMarginY(tokenAt(tokens, line.start));
+        const opens = i == 0 or !sameBlock(tokens, lines[i - 1].start, line.start);
+        const closes = i + 1 == lines.len or !sameBlock(tokens, line.start, lines[i + 1].start);
+        line.lead = if (opens) margin else 0;
+        line.trail = if (closes) margin else 0;
+        line.h += line.lead + line.trail;
+    }
 }
 
 fn widthWithCanvas(ctx: *anyopaque, text: []const u8, tokens: []const Token, start_i: usize, end_i: usize) f64 {
@@ -1131,7 +1201,7 @@ fn beginRow(out: []Line, lineno: usize, start: usize, tokens: []const Token, m: 
     out[lineno].start = start;
     const token = tokenAt(tokens, start);
     out[lineno].indent = switch (token.tType) {
-        .QUOTE => QUOTE_INDENT_PX * @as(f64, @floatFromInt(token.degree)),
+        .QUOTE => th().metrics.quote_indent * @as(f64, @floatFromInt(token.degree)),
         .UNORDERED_LIST => s: {
             if (reveal.covers(start) and start == token.startI) {
                 break :s 0;
@@ -2312,10 +2382,10 @@ test "handleInput ignores non-alphanumeric input we don't define" {
 // handleInput ignores the mouse today, so these are red until hit-testing lands.
 //
 // Coordinate model (matches the render pass + `testMeasurer`): text origin is
-// (MARGIN_PX, MARGIN_PX); `fakeWidth` is 1 unit per byte and `line_h` is 1, so for
+// (padding(), padding()); `fakeWidth` is 1 unit per byte and `line_h` is 1, so for
 // a click at (x, y):
-//   column = clamp(x - MARGIN_PX, 0, line.text.len)
-//   line   = window_offset + (y - MARGIN_PX) / line_h     (clamped to last line)
+//   column = clamp(x - padding(), 0, line.text.len)
+//   line   = window_offset + (y - padding()) / line_h     (clamped to last line)
 //   offset = line.start + column
 //
 // Interaction model (standard editor behaviour):
@@ -2327,5 +2397,5 @@ test "handleInput ignores non-alphanumeric input we don't define" {
 //     `selection_anchor` becomes null and the caret sits at the click offset.
 // The tests assert the observable state after a complete gesture, not mid-drag.
 
-const X0 = MARGIN_PX; // x of column 0
-const Y0 = MARGIN_PX; // y of the first visible line (line_h == 1 under testMeasurer)
+const X0 = (theme.Metrics{}).padding; // x of column 0
+const Y0 = (theme.Metrics{}).padding; // y of the first visible line (line_h == 1 under testMeasurer)

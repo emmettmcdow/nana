@@ -227,6 +227,19 @@ pub fn build(b: *std.Build) !void {
         test_settings.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
     }
 
+    const test_style = b.step("test-style", "run the tests for src/style.zig");
+    {
+        const t = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/style.zig"),
+                .target = x86_target,
+                .optimize = optimize,
+            }),
+            .filters = if (test_filter != null) filters else &.{},
+        });
+        test_style.dependOn(&runTest(b, t, use_lldb, use_objc_leakcheck).step);
+    }
+
     const test_diff = b.step("test-diff", "run the tests for src/diff.zig");
     {
         const t = b.addTest(.{
@@ -311,6 +324,7 @@ pub fn build(b: *std.Build) !void {
         .{ "render", test_render },
         .{ "session", test_session },
         .{ "settings", test_settings },
+        .{ "style", test_style },
     };
     inline for (file_tests) |entry| {
         const name = entry[0];

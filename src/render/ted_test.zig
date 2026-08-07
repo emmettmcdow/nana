@@ -140,6 +140,146 @@ test "a wrapped list item hangs under its own text" {
     );
 }
 
+// ******************************************************************* Style-file lengths (metrics)
+//
+// The user's style file sets these; the harness passes them in as `Options.metrics`. A margin of
+// one `CELL` is one blank grid row, so the expected picture shows the spacing directly.
+
+test "a block margin puts space above and below a heading" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 8, .metrics = .{ .heading_margin_y = testing.CELL } });
+    defer h.deinit();
+
+    // Caret at the start, so the heading's own line keeps its '#'.
+    try h.open("x\n# H\ny");
+    try h.idle();
+    try h.expectGrid(
+        \\x
+        \\
+        \\H
+        \\
+        \\y
+    );
+}
+
+test "the rows inside one block are not pushed apart by its margin" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 10, .metrics = .{ .code_margin_y = testing.CELL } });
+    defer h.deinit();
+
+    // The margin belongs to the fence as a whole: one blank row before it and one after, with
+    // its own lines left tight against each other.
+    try h.open("x\n```\na\nb\n```\ny");
+    try h.idle();
+    try h.expectGrid(
+        \\x
+        \\
+        \\```
+        \\a
+        \\b
+        \\```
+        \\
+        \\y
+    );
+}
+
+test "a quote is one block however many lines it spans" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 8, .metrics = .{ .quote_margin_y = testing.CELL } });
+    defer h.deinit();
+
+    // Quoted lines tokenize one per line. Spaced per token there would be a blank row between
+    // "one" and "two" as well as around the pair.
+    try h.open("x\n> one\n> two\ny");
+    try h.idle();
+    try h.expectGrid(
+        \\x
+        \\
+        \\  one
+        \\  two
+        \\
+        \\y
+    );
+}
+
+test "nothing is painted into a block's margin" {
+    var h = try Harness.init(alloc, .{ .cols = 8, .rows = 8, .metrics = .{ .code_margin_y = testing.CELL } });
+    defer h.deinit();
+
+    // The panel is the block's background, and a margin is outside the block: the blank rows
+    // around the fence stay unpainted rather than the slab growing into them.
+    try h.open("z\n```\na\n```");
+    try h.idle();
+    try h.expectAttrs(
+        \\I
+        \\
+        \\cccccccc
+        \\cccccccc
+        \\cccccccc
+    );
+}
+
+test "a click lands on the row it looks like it landed on across a margin" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 8, .metrics = .{ .heading_margin_y = testing.CELL } });
+    defer h.deinit();
+
+    // Hit-testing walks the same row heights the render pass placed rows with. Measuring the
+    // text afresh instead would ignore the margin and put the caret a row early.
+    try h.open("x\n# H\ny");
+    try h.idle();
+    try h.clickCell(1, 4); // the 'y', two rows below the heading's own row
+    try h.expectAttrs(
+        \\
+        \\
+        \\
+        \\
+        \\.I
+    );
+}
+
+test "a rewrap does not leave a margin behind on the row that inherits a block's slot" {
+    var h = try Harness.init(alloc, .{ .cols = 20, .rows = 10, .metrics = .{ .heading_margin_y = testing.CELL } });
+    defer h.deinit();
+
+    // Wide enough that the paragraph is one row, so the heading is row 1 and picks up a margin.
+    try h.open("aaaa bbbb cccc\n# H\nx");
+    try h.idle();
+    try h.expectGrid(
+        \\aaaa bbbb cccc
+        \\
+        \\H
+        \\
+        \\x
+    );
+
+    // Narrower: the paragraph now takes two rows, so row 1 is a paragraph continuation and the
+    // heading has moved down. Row 1's slot is the one the heading used to own — and rows are the
+    // layout's reused scratch, so a margin left in it would draw this row a cell low, on top of
+    // the row below.
+    try h.resize(10);
+    try h.idle();
+    // (The continuation row keeps the space the wrap fell on, which is the layout's own
+    // behaviour and not what this test is about.)
+    try h.expectGrid(
+        \\aaaa bbbb
+        \\ cccc
+        \\
+        \\H
+        \\
+        \\x
+    );
+}
+
+test "the heading scale is the style file's to set" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 6, .metrics = .{ .heading_scale = 3.0, .heading_step = 1.0 } });
+    defer h.deinit();
+
+    try h.open("x\n# H\n## H2\n### H3");
+    try h.idle();
+    // 3x for an h1, stepping by a whole multiple: 2x for an h2, and an h3 bottoms out at body
+    // size rather than going under it.
+    try std.testing.expectEqual(@as(f64, 3.0 * testing.CELL), h.findText("H").?.font.size);
+    try std.testing.expectEqual(@as(f64, 2.0 * testing.CELL), h.findText("H2").?.font.size);
+    try std.testing.expectEqual(@as(f64, testing.CELL), h.findText("H3").?.font.size);
+}
+
 // ************************************************************************** Caret and selection
 test "typing puts the caret after what was typed" {
     var h = try Harness.init(alloc, .{ .cols = 12, .rows = 4 });

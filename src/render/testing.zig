@@ -23,7 +23,7 @@
 //! expectation as a picture instead of as a sum.
 //!
 //! `CELL` is 12 because the layout's own constants are in points and have to divide into it:
-//! `QUOTE_INDENT_PX` (24) is exactly two cells, so an indented quote is legible in a grid rather
+//! The quote indent (24) is exactly two cells, so an indented quote is legible in a grid rather
 //! than being pushed 24 columns right. The decorations narrower than a cell — the 2pt caret, the
 //! 3pt quote rule — mark the single cell they start in.
 //!
@@ -48,8 +48,9 @@ pub const AppState = app.AppState;
 pub const CELL: f64 = 12;
 
 /// Canvas coordinate of the content area's top-left corner, re-exported so a test asserting on
-/// raw op coordinates doesn't have to reach into `ted.zig` for it.
-pub const MARGIN: f64 = ted.MARGIN_PX;
+/// raw op coordinates doesn't have to reach into `ted.zig` for it. The harness runs under
+/// `test_theme`, whose metrics are the defaults, so this is fixed for the whole of a test run.
+pub const MARGIN: f64 = (theme.Metrics{}).padding;
 
 // ****************************************************************************** Recorded drawing
 pub const Op = union(enum) {
@@ -209,6 +210,9 @@ comptime {
 pub const test_theme = theme.Theme{
     .background = mark(0),
     .text = mark(1),
+    // Distinct from the roles derived from it for the same reason as the rest: a fill drawn in
+    // the accent itself should not read as a link.
+    .tertiary = mark(9),
     .highlight = mark(2),
     .code = mark(3),
     .code_bg = mark(4),
@@ -322,6 +326,8 @@ pub const Harness = struct {
     layout: ted.Layout,
     grid: Grid,
     saved_theme: theme.Theme,
+    /// This harness's theme: the sentinel palette with `Options.metrics` in it.
+    active_theme: theme.Theme,
 
     pub const Options = struct {
         /// Content width in cells. Note that a row holds at most `cols - 1` characters: the fit
@@ -335,6 +341,12 @@ pub const Harness = struct {
         buf_len: usize = 4096,
         /// See `Recorder.scale_heights`.
         scale_heights: bool = false,
+        /// The lengths the layout is built from, for tests about the ones the user's style file
+        /// sets. Defaults to the shipped metrics, which is what every other test wants.
+        ///
+        /// Sizes given in cells stay legible in a grid: a `code_margin_y` of `CELL` is one blank
+        /// row above and below the fence, which the expected grid shows directly.
+        metrics: theme.Metrics = .{},
     };
 
     pub fn init(alloc: Allocator, opts: Options) !Harness {
@@ -361,6 +373,11 @@ pub const Harness = struct {
             // The editor reads the theme off a global. Saved so a test cannot leave the next one
             // running against sentinel colors.
             .saved_theme = theme.active,
+            .active_theme = blk: {
+                var t = test_theme;
+                t.metrics = opts.metrics;
+                break :blk t;
+            },
         };
     }
 
@@ -378,9 +395,23 @@ pub const Harness = struct {
     /// The canvas the editor draws into: the content area plus the margin on every side.
     fn canvasSize(self: *const Harness) geom.Size {
         return .{
-            .w = (@as(f64, @floatFromInt(self.grid.cols)) * CELL) + (ted.MARGIN_PX * 2),
-            .h = (@as(f64, @floatFromInt(self.grid.rows)) * CELL) + (ted.MARGIN_PX * 2),
+            .w = (@as(f64, @floatFromInt(self.grid.cols)) * CELL) + (MARGIN * 2),
+            .h = (@as(f64, @floatFromInt(self.grid.rows)) * CELL) + (MARGIN * 2),
         };
+    }
+
+    /// Change the content width, as dragging the window's edge does.
+    ///
+    /// The layout is deliberately *not* invalidated: the editor is being asked to lay out again a
+    /// document it has already laid out, reusing the same row scratch, which is exactly the
+    /// situation a width-dependent bug lives in. Anything a test can see afterwards is something
+    /// the editor carried across the resize.
+    pub fn resize(self: *Harness, cols: usize) !void {
+        const cells = cols * self.grid.rows;
+        self.grid.cells = try self.alloc.realloc(self.grid.cells, cells);
+        self.grid.attrs = try self.alloc.realloc(self.grid.attrs, cells);
+        self.grid.styles = try self.alloc.realloc(self.grid.styles, cells);
+        self.grid.cols = cols;
     }
 
     /// Load a document, with the caret at the start.
@@ -409,7 +440,7 @@ pub const Harness = struct {
 
     /// One real frame. Everything else here is sugar over this.
     pub fn frame(self: *Harness, in: Input) !void {
-        theme.active = test_theme;
+        theme.active = self.active_theme;
         self.recorder.reset();
         var canvas = self.recorder.canvas(self.canvasSize());
         try ted.frame(self.alloc, &canvas, in, &self.state, &self.layout);
@@ -460,8 +491,8 @@ pub const Harness = struct {
     pub fn cellOrigin(self: *const Harness, col: usize, row: usize) geom.Point {
         _ = self;
         return .{
-            .x = ted.MARGIN_PX + (@as(f64, @floatFromInt(col)) * CELL),
-            .y = ted.MARGIN_PX + (@as(f64, @floatFromInt(row)) * CELL),
+            .x = MARGIN + (@as(f64, @floatFromInt(col)) * CELL),
+            .y = MARGIN + (@as(f64, @floatFromInt(row)) * CELL),
         };
     }
 
@@ -523,13 +554,13 @@ pub const Harness = struct {
     /// fractional offset lands between cells and is placed in the nearer one — the grid cannot
     /// express sub-cell offsets, which is what the op log is for.
     fn rowOf(self: *const Harness, y: f64) ?usize {
-        const r = @round((y - ted.MARGIN_PX) / CELL);
+        const r = @round((y - MARGIN) / CELL);
         if (r < 0 or r >= @as(f64, @floatFromInt(self.grid.rows))) return null;
         return @intFromFloat(r);
     }
 
     fn colOf(self: *const Harness, x: f64) ?usize {
-        const c = @round((x - ted.MARGIN_PX) / CELL);
+        const c = @round((x - MARGIN) / CELL);
         if (c < 0 or c >= @as(f64, @floatFromInt(self.grid.cols))) return null;
         return @intFromFloat(c);
     }

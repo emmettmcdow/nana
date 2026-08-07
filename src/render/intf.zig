@@ -11,6 +11,7 @@ const app = @import("app.zig");
 const runtime = @import("../runtime.zig");
 const session = @import("../session.zig");
 const settings = @import("../settings.zig");
+const style = @import("../style.zig");
 const theme = @import("theme.zig");
 const std = @import("std");
 
@@ -49,6 +50,10 @@ var state: ?AppState = null;
 /// handed it rather than reaching for one of its own.
 var layout: ?app.Layout = null;
 var settings_store: settings.Settings = .{};
+/// The user's style file, watched for changes. Kept apart from `settings_store`: settings are
+/// the app's to write (the font-size menu does), the style file is the user's, and the editor
+/// only ever reads it.
+var style_store: style.Store = .{};
 
 /// Menu commands that have come in since the last frame, folded into that frame's `Input` and
 /// cleared once it has consumed them.
@@ -139,6 +144,7 @@ fn defaultWorkspacePath(alloc: std.mem.Allocator) ![]u8 {
 /// default directory is never touched for someone who doesn't use it.
 export fn nana_render_init(path: ?[*:0]const u8) void {
     settings_store = settings.load(gpa.allocator());
+    style_store = style.Store.init(gpa.allocator());
     state = AppState.init(gpa.allocator().alloc(u8, GAP_BUF_SIZE) catch unreachable);
     layout = app.Layout.init(gpa.allocator()) catch unreachable;
 
@@ -201,6 +207,7 @@ export fn nana_render_deinit() void {
     }
     if (layout) |*l| l.deinit(gpa.allocator());
     layout = null;
+    style_store.deinit(gpa.allocator());
     session.close();
     runtime.mutex.lock();
     defer runtime.mutex.unlock();
@@ -273,9 +280,17 @@ export fn nana_render_frame(ctx: CGContextRef, width: f64, height: f64, in: *con
     // than competing with the keyboard — and one it doesn't is meant to be thrown away.
     pending = .{};
 
+    // The style file is stat'd at most a few times a second (`Store.poll` rate-limits itself),
+    // so this costs nothing per frame. A reload changes lengths the layout was computed
+    // against — padding, block margins, the heading scale — and only the ones folded into
+    // `content_w` or the font size would be noticed by the staleness check, so the layout is
+    // dropped outright rather than left to work out what moved.
+    if (style_store.poll(gpa.allocator())) {
+        if (layout) |*l| l.invalidate();
+    }
     // Cheap enough to redo per frame, and it means an appearance change takes effect on the
     // next redraw with no invalidation to remember.
-    theme.active = theme.forAppearance(in.system_dark, settings_store.font_size);
+    theme.active = style_store.current.toTheme(in.system_dark, settings_store.font_size);
 
     // A settled query becomes a pending refresh.
     if (query_changed_ms) |t| {
