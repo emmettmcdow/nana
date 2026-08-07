@@ -42,6 +42,62 @@ test "one long line wraps across as many rows as it takes" {
     );
 }
 
+test "a wrap falls after a space rather than inside a word" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 6 });
+    defer h.deinit();
+
+    // 11 characters fit, so breaking on width alone would cut "worlds" after its 'l'.
+    try h.open("hello worlds");
+    try h.idle();
+    try h.expectGrid(
+        \\hello
+        \\worlds
+    );
+}
+
+test "the space a wrap falls on stays on the row it ended" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 6 });
+    defer h.deinit();
+
+    // Here the width-only break already lands between two words. Letting the space begin the
+    // next row instead would read as an indent under text that has none.
+    try h.open("hello world again");
+    try h.idle();
+    try h.expectGrid(
+        \\hello world
+        \\again
+    );
+}
+
+test "a word wider than the column breaks mid-word rather than emptying the row" {
+    var h = try Harness.init(alloc, .{ .cols = 6, .rows = 6 });
+    defer h.deinit();
+
+    // 5 characters fit and "abcdefgh" needs 8, so no retreat can rescue it. Retreating anyway
+    // would strand "ab" alone on the first row and still break the word on the next one.
+    try h.open("ab abcdefgh");
+    try h.idle();
+    try h.expectGrid(
+        \\ab ab
+        \\cdefg
+        \\h
+    );
+}
+
+test "a wrapped list item breaks between words" {
+    var h = try Harness.init(alloc, .{ .cols = 12, .rows = 6 });
+    defer h.deinit();
+
+    // The continuation row is narrower than the first — it hangs under the marker — so this also
+    // covers the retreat being measured against a budget that changes row to row.
+    try h.open("- one two three");
+    try h.idle();
+    try h.expectGrid(
+        \\- one two
+        \\  three
+    );
+}
+
 test "a hard newline breaks a row even when there is room left" {
     var h = try Harness.init(alloc, .{ .cols = 20, .rows = 4 });
     defer h.deinit();
@@ -255,11 +311,11 @@ test "a rewrap does not leave a margin behind on the row that inherits a block's
     // the row below.
     try h.resize(10);
     try h.idle();
-    // (The continuation row keeps the space the wrap fell on, which is the layout's own
-    // behaviour and not what this test is about.)
+    // (The space the wrap fell on stays on the row it ended, not the one it began — see
+    // `wrapPoint`. Not what this test is about either way.)
     try h.expectGrid(
         \\aaaa bbbb
-        \\ cccc
+        \\cccc
         \\
         \\H
         \\

@@ -1019,10 +1019,56 @@ fn maxFitLineEnd(
     }
 
     if (best == start_i) {
+        // Not even one character fits. Emit it anyway: a row has to advance, or `splitLines`
+        // never terminates. Nothing to retreat to either, so this returns straight out.
         const seq = std.unicode.utf8ByteSequenceLength(full_text[start_i]) catch 1;
-        best = @min(start_i + seq, end_i);
+        return @min(start_i + seq, end_i);
     }
-    return best;
+    return wrapPoint(m, reveal, tokens, full_text, start_i, best, end_i, max_width);
+}
+
+/// Move a character-level wrap point back to where a word ends, so a row does not split a word
+/// down the middle.
+///
+/// Returns `best` unchanged when the row is not wrapping at all — it reached a newline or the end
+/// of the document — and when retreating would not help, for which see below.
+///
+/// A space is ASCII, so it can never be a UTF-8 continuation byte: every offset this returns is
+/// already on a codepoint boundary, and the search needs no decoding of its own.
+fn wrapPoint(
+    m: Measurer,
+    reveal: Reveal,
+    tokens: []const Token,
+    full_text: []const u8,
+    start_i: usize,
+    best: usize,
+    end_i: usize,
+    max_width: f64,
+) usize {
+    if (best >= end_i) return best;
+
+    // The break already falls between words. Let the spaces ride along on the row they end rather
+    // than pushing them onto the next one, where they would read as a stray indent. Overhanging
+    // the column costs nothing: a space draws no glyph.
+    if (full_text[best] == ' ') {
+        var b = best;
+        while (b < end_i and full_text[b] == ' ') b += 1;
+        return b;
+    }
+
+    // Mid-word. The only retreat worth making is to the start of the word being split, so scan
+    // back for the space that begins it — anything earlier would give up a word that fit.
+    var b = best;
+    while (b > start_i and full_text[b - 1] != ' ') b -= 1;
+    if (b == start_i) return best; // the row is one unbroken word; it has to break somewhere
+
+    // Retreat only if that word will actually fit on a row of its own. A word wider than the
+    // column gets broken wherever it falls no matter what we do here, and retreating for it would
+    // leave this row nearly empty and *still* break the word on the next one.
+    var word_end = b;
+    while (word_end < end_i and full_text[word_end] != ' ') word_end += 1;
+    const attr = attributedRange(full_text, tokens, b, word_end, reveal, m.run_buf);
+    return if (m.attributedW(attr) < max_width) b else best;
 }
 
 /// The source line containing `cursor_i`, excluding its trailing newline.
