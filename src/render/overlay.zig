@@ -39,6 +39,7 @@ const BTN_SIZE: f64 = 44;
 const BTN_GAP: f64 = 12;
 const BTN_MARGIN: f64 = 20;
 const LIST_MAX_W: f64 = 400;
+const LIST_MAX_H: f64 = 600;
 
 // ****************************************************************************************** Types
 /// Where this frame's chrome sits. Computed once at the top of `frame` so every widget call
@@ -70,9 +71,10 @@ pub fn frame(
     var ctx = ui.Ctx.init(&state.ui, in.mouse, in.mouse_down);
     defer ctx.end();
 
+    var dismiss_list: bool = false;
     if (layout.panel) |p| {
         if (ctx.released and !p.contains(ctx.mouse)) {
-            state.list_visible = false;
+            dismiss_list = true;
         }
 
         ui.panel(&ctx, canvas, t, p);
@@ -107,7 +109,11 @@ pub fn frame(
     }
 
     if (ui.button(&ctx, canvas, t, 1, layout.toggle_list, if (state.list_visible) "x" else "=")) {
-        state.list_visible = !state.list_visible;
+        if (state.list_visible) {
+            dismiss_list = true;
+        } else {
+            state.list_visible = true;
+        }
         state.list_scroll = 0;
         // Opening on a stale query would show yesterday's results against an empty-looking
         // field, so start clean either way.
@@ -116,6 +122,10 @@ pub fn frame(
     }
     if (ui.button(&ctx, canvas, t, 2, layout.new_note, "+")) {
         actions.new_note = true;
+        state.list_visible = false;
+    }
+
+    if (dismiss_list) {
         state.list_visible = false;
     }
 }
@@ -170,11 +180,15 @@ fn clearQuery(state: *AppState) void {
 fn layoutUi(size: geom.Size, list_visible: bool, font_size: f64) UiLayout {
     const bx = size.w - BTN_MARGIN - BTN_SIZE;
     const by = size.h - BTN_MARGIN - BTN_SIZE;
+
+    const panel_w = @min(LIST_MAX_W, size.w * 0.4);
+    const panel_h = @min(LIST_MAX_H, size.h * 0.6);
+
     const panel: ?Rect = if (list_visible) .{
-        .x = size.w - @min(LIST_MAX_W, size.w * 0.4),
-        .y = 0,
-        .w = @min(LIST_MAX_W, size.w * 0.4),
-        .h = size.h,
+        .x = (size.w / 2) - (panel_w / 2),
+        .y = (size.h / 3) - (panel_h / 2),
+        .w = panel_w,
+        .h = panel_h,
     } else null;
 
     const field_h = font_size * 2.0;
