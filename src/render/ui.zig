@@ -130,22 +130,81 @@ pub fn listRow(
     label: []const u8,
     selected: bool,
 ) bool {
+    const pad: f64 = 12;
     const it = interact(ctx, id, rect);
     if (it.hovered or it.held or selected) {
         canvas.fillRect(rect, surface(t, it));
     }
 
     const font = Font{ .size = t.font_size };
-    const size = canvas.measureText(label, font);
-    const pad: f64 = 12;
+    const line_end = @min(256, maxFitLineEnd(canvas, label, t, rect.w - 2 * pad));
+    var label_buf: [256]u8 = undefined;
+    const mod_label = if (line_end == label.len) label else b: {
+        @memcpy(label_buf[0..line_end], label[0..line_end]);
+        if (256 - line_end >= 3) {
+            // 0xE2 0x80 0xA6 - Ellipsis Character in UTF-8
+            label_buf[line_end] = 0xE2;
+            label_buf[line_end + 1] = 0x80;
+            label_buf[line_end + 2] = 0xA6;
+            break :b label_buf[0 .. line_end + 3];
+        } else {
+            // Better to cut off a word than drop the ellipsis
+            label_buf[line_end - 3] = 0xE2;
+            label_buf[line_end - 2] = 0x80;
+            label_buf[line_end - 1] = 0xA6;
+            break :b label_buf[0..line_end];
+        }
+    };
+
+    const size = canvas.measureText(mod_label, font);
     _ = canvas.drawText(
-        label,
+        mod_label,
         rect.x + pad,
         rect.y + (rect.h - size.h) / 2,
         font,
         t.text,
     );
     return it.clicked;
+}
+
+/// Similar to same function in ted.zig, but more suited to this particular use-case.
+fn maxFitLineEnd(canvas: *Canvas, full_text: []const u8, t: Theme, max_width: f64) usize {
+    var best: usize = 0;
+    var lo: usize = 0;
+    var hi: usize = full_text.len;
+
+    const font = Font{ .size = t.font_size };
+    while (lo < hi) {
+        const mid = lo + ((hi - lo) + 1) / 2;
+        var probe = mid;
+        while (probe < full_text.len and (full_text[probe] & 0xC0) == 0x80) probe += 1;
+
+        const w = canvas.measureText(full_text[0..probe], font).w;
+        if (w < max_width) {
+            best = @max(best, probe);
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+
+    if (best == 0) {
+        // Not even one character fits. Emit it anyway: a row has to advance, or `splitLines`
+        // never terminates. Nothing to retreat to either, so this returns straight out.
+        const seq = std.unicode.utf8ByteSequenceLength(full_text[0]) catch 1;
+        return @min(seq, full_text.len);
+    }
+
+    // From wrapPoint
+    if (best >= full_text.len) return best;
+
+    // Mid-word. The only retreat worth making is to the start of the word being split, so scan
+    // back for the space that begins it — anything earlier would give up a word that fit.
+    var b = best;
+    while (b > 0 and full_text[b - 1] != ' ') b -= 1;
+    while (b > 0 and full_text[b - 1] == ' ') b -= 1;
+    if (b == 0) return best; // the row is one unbroken word; it has to break somewhere
+    return b;
 }
 
 /// A panel: an opaque surface that also swallows pointer input, so clicks that miss its

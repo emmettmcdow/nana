@@ -365,6 +365,72 @@ test "clicking blank space inside the panel leaves the list open" {
     try expect(state.list_visible);
 }
 
+test "a title too wide for its row is truncated with an ellipsis" {
+    var buf: [16]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer app.deinitHistory(&state, testing_allocator);
+    state.list_visible = true;
+
+    var rec = testing.Recorder.init(testing_allocator);
+    defer rec.deinit();
+
+    // Under the recorder every character is one cell wide, so this is several times the panel's
+    // width whatever the theme's font size happens to be.
+    const title = "A note whose title runs on well past the edge of the list panel. " ** 3;
+    const notes = [_]NoteEntry{.{ .path = "/notes/long.md", .title = title }};
+
+    var actions = FrameActions{};
+    runFrame(&rec, .{}, &state, &notes, &actions);
+
+    const rows = layoutUi(canvas_size, true, th().font_size).rows.?;
+    const drawn = rowLabel(&rec, rows) orelse return error.NoRowLabelDrawn;
+
+    // Clipping alone is not truncation: the run must be *asked for* short, with the ellipsis
+    // standing in for what was dropped. A clipped row hands Core Text the whole string and lets
+    // the raster cut it mid-glyph, which reads as a word the user simply can't finish.
+    try expect(drawn.utf8.len < title.len);
+    try expect(std.mem.endsWith(u8, drawn.utf8, "…"));
+    // What survives is the head of the title, not some other string.
+    try expect(std.mem.startsWith(u8, title, drawn.utf8[0 .. drawn.utf8.len - "…".len]));
+    // And the whole run, ellipsis included, stays inside the row it belongs to.
+    try expect(drawn.rect.x + drawn.rect.w <= rows.x + rows.w);
+}
+
+test "a title that fits is drawn whole, with no ellipsis" {
+    // The other side of the rule: truncation that triggers early costs the user the end of a
+    // perfectly readable title, and nothing on screen says it was shortened.
+    var buf: [16]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer app.deinitHistory(&state, testing_allocator);
+    state.list_visible = true;
+
+    var rec = testing.Recorder.init(testing_allocator);
+    defer rec.deinit();
+
+    const title = "Short note";
+    const notes = [_]NoteEntry{.{ .path = "/notes/short.md", .title = title }};
+
+    var actions = FrameActions{};
+    runFrame(&rec, .{}, &state, &notes, &actions);
+
+    const rows = layoutUi(canvas_size, true, th().font_size).rows.?;
+    const drawn = rowLabel(&rec, rows) orelse return error.NoRowLabelDrawn;
+    try expectEqualStrings(title, drawn.utf8);
+}
+
+/// The text run drawn for the first list row, found by where it landed rather than by what it
+/// says — the label under test is precisely the thing these tests can't assume the content of.
+///
+/// The query field's placeholder and the two button captions are the other runs in the frame, and
+/// all three are drawn outside `rows`.
+fn rowLabel(rec: *const testing.Recorder, rows: Rect) ?testing.Op.Text {
+    for (rec.ops.items) |op| switch (op) {
+        .text => |t| if (rows.contains(.{ .x = t.rect.x, .y = t.rect.y })) return t,
+        else => {},
+    };
+    return null;
+}
+
 test "the query field and the row area divide the panel between them" {
     const layout = layoutUi(.{ .w = 1000, .h = 800 }, true, 20);
     const p = layout.panel.?;
