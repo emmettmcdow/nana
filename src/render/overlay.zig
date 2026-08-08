@@ -87,6 +87,10 @@ pub fn frame(
 
         canvas.pushClip(rows);
         defer canvas.popClip();
+        // The same bounds for the pointer as for the paint: the first and last rows can hang
+        // past the row area, and the part that isn't drawn must not be hoverable or clickable.
+        const saved_clip = ctx.pushClip(rows);
+        defer ctx.popClip(saved_clip);
 
         if (notes.len == 0) {
             // Distinguish "nothing matched" from "nothing saved" — an empty rectangle leaves
@@ -363,6 +367,114 @@ test "clicking blank space inside the panel leaves the list open" {
     runFrame(&rec, .{ .mouse = inside, .mouse_down = false }, &state, &.{}, &actions);
 
     try expect(state.list_visible);
+}
+
+/// Enough rows to overflow the tallest panel the layout can produce, so the list is always
+/// scrolled and the first and last rows are always the cut-off ones.
+fn manyNotes() [64]NoteEntry {
+    return [_]NoteEntry{.{ .path = "/notes/a.md", .title = "a note" }} ** 64;
+}
+
+test "the part of a row scrolled past the bottom of the list is not clickable" {
+    // Regression: rows were clipped when drawn but hit-tested against their full rect, so the
+    // half of the last row hanging below the panel stayed live — it highlighted under the
+    // pointer and opened its note when clicked, both of them outside the list entirely.
+    var buf: [16]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer app.deinitHistory(&state, testing_allocator);
+    state.list_visible = true;
+
+    var rec = testing.Recorder.init(testing_allocator);
+    defer rec.deinit();
+
+    const notes = manyNotes();
+    const layout = layoutUi(canvas_size, true, th().font_size);
+    const rows = layout.rows.?;
+    const rh = layout.row_h;
+
+    // Half a row up, so whichever row meets the bottom edge is cut by it rather than ending on
+    // it. `i` is that row: the last one `frame` draws.
+    state.list_scroll = rh / 2;
+    const i: usize = @intFromFloat(@floor((rows.h + rh / 2) / rh));
+    const row_bottom = rows.y + (@as(f64, @floatFromInt(i)) * rh) - rh / 2 + rh;
+    const list_bottom = rows.y + rows.h;
+    try expect(row_bottom > list_bottom); // it really does hang past the edge
+
+    // Midway through the hidden strip: inside row `i`, outside the list.
+    const below = geom.Point{ .x = rows.x + rows.w / 2, .y = (list_bottom + row_bottom) / 2 };
+    try expect(below.y >= list_bottom and below.y < row_bottom);
+
+    var actions = FrameActions{};
+    runFrame(&rec, .{ .mouse = below }, &state, &notes, &actions);
+    try expectEqual(@as(?ui.Id, null), state.ui.hot); // no highlight out here
+
+    runFrame(&rec, .{ .mouse = below, .mouse_down = true }, &state, &notes, &actions);
+    runFrame(&rec, .{ .mouse = below, .mouse_down = false }, &state, &notes, &actions);
+    try expectEqual(@as(?usize, null), actions.open_note);
+    // Below the panel is the document, so the click dismisses the list like any other miss.
+    try expect(!state.list_visible);
+}
+
+test "the part of a row scrolled above the top of the list is not clickable" {
+    var buf: [16]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer app.deinitHistory(&state, testing_allocator);
+    state.list_visible = true;
+
+    var rec = testing.Recorder.init(testing_allocator);
+    defer rec.deinit();
+
+    const notes = manyNotes();
+    const layout = layoutUi(canvas_size, true, th().font_size);
+    const rows = layout.rows.?;
+    const rh = layout.row_h;
+
+    // Scrolled down half a row: the top row is cut by the edge the query field sits above.
+    state.list_scroll = rh / 2;
+    const first_top = rows.y - rh / 2;
+
+    // Just above the list's top edge: over the first row's rect, but over a part of it that
+    // was never painted. The gap between the field and the rows is narrower than half a row,
+    // so this hugs the edge rather than splitting the hidden strip.
+    const above = geom.Point{ .x = rows.x + rows.w / 2, .y = rows.y - 1 };
+    try expect(above.y >= first_top and above.y < rows.y);
+    try expect(!layout.query.?.contains(above));
+
+    var actions = FrameActions{};
+    runFrame(&rec, .{ .mouse = above }, &state, &notes, &actions);
+    try expectEqual(@as(?ui.Id, null), state.ui.hot);
+
+    runFrame(&rec, .{ .mouse = above, .mouse_down = true }, &state, &notes, &actions);
+    runFrame(&rec, .{ .mouse = above, .mouse_down = false }, &state, &notes, &actions);
+    try expectEqual(@as(?usize, null), actions.open_note);
+    // Still inside the panel, though, so this one is a miss the panel swallows.
+    try expect(state.list_visible);
+}
+
+test "a row fully inside the list is still clickable while the list is scrolled" {
+    // The guard above must not cost the rows that are actually on screen their clicks.
+    var buf: [16]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer app.deinitHistory(&state, testing_allocator);
+    state.list_visible = true;
+
+    var rec = testing.Recorder.init(testing_allocator);
+    defer rec.deinit();
+
+    const notes = manyNotes();
+    const layout = layoutUi(canvas_size, true, th().font_size);
+    const rows = layout.rows.?;
+    const rh = layout.row_h;
+
+    state.list_scroll = rh / 2;
+    // Row 1 sits whole inside the list once row 0 has been cut in half by the top edge.
+    const mid = geom.Point{ .x = rows.x + rows.w / 2, .y = rows.y + rh };
+    try expect(mid.y >= rows.y and mid.y < rows.y + rows.h);
+
+    var actions = FrameActions{};
+    runFrame(&rec, .{ .mouse = mid, .mouse_down = true }, &state, &notes, &actions);
+    runFrame(&rec, .{ .mouse = mid, .mouse_down = false }, &state, &notes, &actions);
+    try expectEqual(@as(?usize, 1), actions.open_note);
 }
 
 test "a title too wide for its row is truncated with an ellipsis" {

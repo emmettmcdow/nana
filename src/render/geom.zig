@@ -28,6 +28,17 @@ pub const Rect = struct {
         return p.x >= self.x and p.x < self.x + self.w and
             p.y >= self.y and p.y < self.y + self.h;
     }
+
+    /// The area the two rects have in common. Disjoint rects give back a non-positive width or
+    /// height rather than a null, which `contains` already reads as "nothing is inside" — so an
+    /// empty intersection needs no special case at the call site.
+    pub fn intersect(self: Rect, other: Rect) Rect {
+        const x0 = @max(self.x, other.x);
+        const y0 = @max(self.y, other.y);
+        const x1 = @min(self.x + self.w, other.x + other.w);
+        const y1 = @min(self.y + self.h, other.y + other.h);
+        return .{ .x = x0, .y = y0, .w = x1 - x0, .h = y1 - y0 };
+    }
 };
 
 /// A text-drawing request: the face to use, plus decorations that ride along with it. The
@@ -106,6 +117,23 @@ test "Rect.contains top-left origin" {
     try expect(!r.contains(.{ .x = 110, .y = 30 })); // right edge exclusive
     try expect(!r.contains(.{ .x = 50, .y = 60 })); // bottom edge exclusive
     try expect(!r.contains(.{ .x = 9, .y = 30 }));
+}
+
+test "Rect.intersect keeps the common area and empties when there is none" {
+    const r = Rect{ .x = 10, .y = 10, .w = 100, .h = 50 };
+    const overlapping = r.intersect(.{ .x = 60, .y = 0, .w = 100, .h = 100 });
+    try expect(overlapping.x == 60 and overlapping.y == 10);
+    try expect(overlapping.w == 50 and overlapping.h == 50);
+
+    // Containment either way returns the smaller rect unchanged.
+    const inner = Rect{ .x = 20, .y = 20, .w = 10, .h = 10 };
+    try expect(std.meta.eql(r.intersect(inner), inner));
+    try expect(std.meta.eql(inner.intersect(r), inner));
+
+    // Disjoint: no point is inside the result, which is all callers ask of it.
+    const apart = r.intersect(.{ .x = 500, .y = 500, .w = 10, .h = 10 });
+    try expect(!apart.contains(.{ .x = 500, .y = 500 }));
+    try expect(!apart.contains(.{ .x = 50, .y = 30 }));
 }
 
 test "Rect.fromOriginSize" {

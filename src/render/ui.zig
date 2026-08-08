@@ -39,6 +39,9 @@ pub const Ctx = struct {
     released: bool,
     /// Set once any widget claims the pointer this frame.
     captured: bool = false,
+    /// The area widgets can currently be hit in, or null for the whole canvas. The hit-testing
+    /// counterpart of `Canvas.pushClip` — see `pushClip` below.
+    clip: ?Rect = null,
 
     pub fn init(state: *State, mouse: Point, mouse_down: bool) Ctx {
         return .{
@@ -48,6 +51,30 @@ pub const Ctx = struct {
             .pressed = mouse_down and !state.was_down,
             .released = !mouse_down and state.was_down,
         };
+    }
+
+    /// Confine hit-testing to `rect`, and hand back the clip to restore afterwards:
+    ///
+    ///     const saved = ctx.pushClip(viewport);
+    ///     defer ctx.popClip(saved);
+    ///
+    /// A widget scrolled halfway out of a viewport is drawn cut in half by `Canvas.pushClip`,
+    /// but its rect is unchanged, so without the same clip here it stays hoverable and clickable
+    /// over the half that was never painted — including well outside the panel containing it.
+    /// Clips nest, each narrowing the last.
+    pub fn pushClip(self: *Ctx, rect: Rect) ?Rect {
+        const prev = self.clip;
+        self.clip = if (prev) |c| c.intersect(rect) else rect;
+        return prev;
+    }
+
+    pub fn popClip(self: *Ctx, prev: ?Rect) void {
+        self.clip = prev;
+    }
+
+    /// Whether the pointer is somewhere widgets can be hit at all this frame.
+    fn inClip(self: Ctx) bool {
+        return if (self.clip) |c| c.contains(self.mouse) else true;
     }
 
     /// Close the frame, carrying the button state forward. Must be called once per frame after
@@ -69,7 +96,7 @@ pub const Interaction = struct {
 /// Hit-test `rect` for widget `id` and update hot/active. The shared core of every widget —
 /// buttons and list rows differ only in how they draw.
 pub fn interact(ctx: *Ctx, id: Id, rect: Rect) Interaction {
-    const inside = rect.contains(ctx.mouse);
+    const inside = rect.contains(ctx.mouse) and ctx.inClip();
     if (inside) {
         ctx.state.hot = id;
         ctx.captured = true;
@@ -404,6 +431,42 @@ test "holding a widget for many frames yields exactly one click" {
     if (interact(&up, 1, test_rect).clicked) clicks += 1;
     up.end();
     try expectEqual(@as(usize, 1), clicks);
+}
+
+test "a clip keeps the hidden part of a widget from answering to the pointer" {
+    // The half of a scrolled row that the canvas clip cut away is still inside the row's rect.
+    // Without the same clip on the hit test it hovers and clicks like the part that was drawn.
+    const clip = Rect{ .x = 0, .y = 20, .w = 200, .h = 100 }; // cuts test_rect's top half
+    const hidden = Point{ .x = 50, .y = 15 };
+
+    var s = State{};
+    var ctx = Ctx.init(&s, hidden, true);
+    const saved = ctx.pushClip(clip);
+    const it = interact(&ctx, 1, test_rect);
+    try expect(!it.hovered);
+    try expect(!ctx.captured);
+    try expectEqual(@as(?Id, null), s.active); // and no press to release into a click later
+
+    // Past the clip, the visible half still behaves normally.
+    ctx.popClip(saved);
+    try expect(interact(&ctx, 1, test_rect).hovered);
+}
+
+test "clips nest, each narrowing the last" {
+    var s = State{};
+    var ctx = Ctx.init(&s, over, false);
+
+    const outer = ctx.pushClip(.{ .x = 0, .y = 0, .w = 100, .h = 100 });
+    try expect(interact(&ctx, 1, test_rect).hovered);
+
+    // A wider inner clip must not widen the effective one back out.
+    const inner = ctx.pushClip(.{ .x = 0, .y = 0, .w = 1000, .h = 15 });
+    try expect(!interact(&ctx, 1, test_rect).hovered);
+
+    ctx.popClip(inner);
+    try expect(interact(&ctx, 1, test_rect).hovered);
+    ctx.popClip(outer);
+    try expectEqual(@as(?Rect, null), ctx.clip);
 }
 
 test "hot clears when the pointer leaves the widget it was over" {
