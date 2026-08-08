@@ -38,7 +38,7 @@ pub const QUERY_MAX: usize = 256;
 const BTN_SIZE: f64 = 44;
 const BTN_GAP: f64 = 12;
 const BTN_MARGIN: f64 = 20;
-const LIST_MAX_W: f64 = 400;
+const LIST_MAX_W: f64 = 800;
 const LIST_MAX_H: f64 = 600;
 
 // ****************************************************************************************** Types
