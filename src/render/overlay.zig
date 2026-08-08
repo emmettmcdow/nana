@@ -71,6 +71,10 @@ pub fn frame(
     defer ctx.end();
 
     if (layout.panel) |p| {
+        if (ctx.released and !p.contains(ctx.mouse)) {
+            state.list_visible = false;
+        }
+
         ui.panel(&ctx, canvas, t, p);
         _ = ui.textField(&ctx, canvas, t, 3, layout.query.?, state.query(), state.query_cursor, "Search notes");
 
@@ -196,6 +200,29 @@ fn layoutUi(size: geom.Size, list_visible: bool, font_size: f64) UiLayout {
 }
 
 // **************************************************************************************** Tests
+const testing = @import("testing.zig");
+
+/// Big enough that the panel, both buttons and a wide stretch of document all fit with room
+/// between them — a click "outside" needs somewhere to land.
+const canvas_size = geom.Size{ .w = 1000, .h = 800 };
+
+/// One frame through the real `frame`, drawing into a recorder rather than the screen.
+///
+/// The recording is thrown away: these tests are about what the click did to `state`, not about
+/// what was painted. It exists because `frame` draws and hit-tests in the same pass, so there is
+/// no way to ask it about a click without giving it a canvas.
+fn runFrame(
+    rec: *testing.Recorder,
+    in: Input,
+    state: *AppState,
+    notes: []const NoteEntry,
+    actions: *FrameActions,
+) void {
+    rec.reset();
+    var canvas = rec.canvas(canvas_size);
+    frame(&canvas, in, state, notes, actions);
+}
+
 test "typing edits the query and reports that it changed" {
     var buf: [16]u8 = undefined;
     var state = AppState.init(&buf);
@@ -270,6 +297,58 @@ test "backspace at the start of the query does nothing" {
     try expectEqual(@as(usize, 0), state.query_cursor);
     try expect(!editQuery(&state, .{ .backspaces = 1 }));
     try expectEqualStrings("ab", state.query());
+}
+
+test "clicking the document, clear of every widget, dismisses the list" {
+    var buf: [16]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer app.deinitHistory(&state, testing_allocator);
+    state.list_visible = true;
+
+    var rec = testing.Recorder.init(testing_allocator);
+    defer rec.deinit();
+
+    // Left of the panel and well above the corner buttons: the document, and nothing else.
+    // Asserted rather than assumed, so a layout change turns this into a failure that names the
+    // real cause instead of a click that quietly lands on a widget.
+    const layout = layoutUi(canvas_size, true, th().font_size);
+    const away = geom.Point{ .x = 100, .y = 400 };
+    try expect(!layout.panel.?.contains(away));
+    try expect(!layout.query.?.contains(away));
+    try expect(!layout.rows.?.contains(away));
+    try expect(!layout.toggle_list.contains(away));
+    try expect(!layout.new_note.contains(away));
+
+    var actions = FrameActions{};
+    // A real click is two frames — the press and the release — and the panel is up for both.
+    runFrame(&rec, .{ .mouse = away, .mouse_down = true }, &state, &.{}, &actions);
+    runFrame(&rec, .{ .mouse = away, .mouse_down = false }, &state, &.{}, &actions);
+
+    try expect(!state.list_visible);
+}
+
+test "clicking blank space inside the panel leaves the list open" {
+    // The other half of the rule above: the panel swallows its own misses, so a click on the
+    // empty area below the last row must not be mistaken for a click on the document.
+    var buf: [16]u8 = undefined;
+    var state = AppState.init(&buf);
+    defer app.deinitHistory(&state, testing_allocator);
+    state.list_visible = true;
+
+    var rec = testing.Recorder.init(testing_allocator);
+    defer rec.deinit();
+
+    const layout = layoutUi(canvas_size, true, th().font_size);
+    const rows = layout.rows.?;
+    const inside = geom.Point{ .x = rows.x + rows.w / 2, .y = rows.y + rows.h - 1 };
+    try expect(!layout.toggle_list.contains(inside));
+    try expect(!layout.new_note.contains(inside));
+
+    var actions = FrameActions{};
+    runFrame(&rec, .{ .mouse = inside, .mouse_down = true }, &state, &.{}, &actions);
+    runFrame(&rec, .{ .mouse = inside, .mouse_down = false }, &state, &.{}, &actions);
+
+    try expect(state.list_visible);
 }
 
 test "the query field and the row area divide the panel between them" {
